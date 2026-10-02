@@ -1,0 +1,33 @@
+# Real output captured 2026-10-02 from the local demo servers (demo-servers/).
+# Omitted: k6 progress bars, the k6 end-of-test summary and the k6 "thresholds ... have been crossed" log line; everything else is verbatim.
+# Format: '=== scene' starts a scene, '$ ' is the typed command, other lines are output.
+=== scene
+$ ./mcpload run --url http://localhost:3001/mcp --scenario scenarios/agent-session.js --duration 20s
+agents ✓ [ 100% ] 10 VUs  20s
+mcpload: wrote report.json
+
+mcpload verdicts (agent-session, 2025-11-25, 23s, 2108 reqs, 10 errors):
+  SKIPPED  memory_leak        Skipped: no server-side sampler (--sampler none).
+  SKIPPED  session_leak       Skipped: no server-side sampler (--sampler none).
+  SKIPPED  fd_leak            Skipped: no server-side sampler (--sampler none).
+  SKIPPED  latency_drift      Skipped: run too short to judge drift (23 s of load; at least 120 s needed).
+  SKIPPED  error_drift        Skipped: run too short to judge drift (23 s of load; at least 120 s needed).
+  PASS     session_not_found  No 404 session-not-found responses.
+  PASS     threshold          All 20 thresholds passed.
+  PASS     generator          160 of 160 planned iterations ran (0.00% dropped). k6 used up to ~2% of CPU of 12 cores, ~2% on average over the run.
+mcpload result: PASS
+=== scene
+$ ./mcpload run --url http://localhost:3004/mcp --scenario scenarios/lb-check.js --duration 20s
+lb   ✓ [ 100% ] 10 VUs  20s
+mcpload: wrote report.json
+
+mcpload verdicts (lb-check, 2025-11-25, 21s, 6669 reqs, 2534 errors):
+  SKIPPED  memory_leak        Skipped: no server-side sampler (--sampler none).
+  SKIPPED  session_leak       Skipped: no server-side sampler (--sampler none).
+  SKIPPED  fd_leak            Skipped: no server-side sampler (--sampler none).
+  SKIPPED  latency_drift      Skipped: run too short to judge drift (21 s of load; at least 120 s needed).
+  SKIPPED  error_drift        Skipped: run too short to judge drift (21 s of load; at least 120 s needed).
+  FAIL     session_not_found  2525 of 6669 requests (37.862%) got 404 session-not-found: requests for an Mcp-Session-Id reached a replica that does not hold the session (load balancer without sticky sessions or shared session store).
+  FAIL     threshold          8 of 23 thresholds failed: checks rate>=0.99 (observed 0.667267); checks{check:lb request ok} rate>=0.99 (observed 0.490727); mcp_errors{error_type:session_not_found} count<1 (observed 2525); mcp_tool_error_rate{tool:big} rate<0.01 (observed 0.543478); mcp_tool_error_rate{tool:fast} rate<0.01 (observed 0.496377); mcp_tool_error_rate{tool:flaky} rate<0.2 (observed 0.538961); mcp_tool_error_rate{tool:search} rate<0.01 (observed 0.517738); mcp_tool_error_rate{tool:slow} rate<0.01 (observed 0.4875).
+  PASS     generator          1057 of 1057 planned iterations ran (0.00% dropped). k6 used up to ~4% of CPU of 12 cores, ~3% on average over the run.
+mcpload result: FAIL

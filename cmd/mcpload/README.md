@@ -11,12 +11,12 @@ go build -ldflags "-X main.version=v0.3.0" -o mcpload .   # stamp a version
 go vet ./... && go test ./...
 ```
 
-`mcpload` needs the custom k6 binary. By default it uses `./k6.exe` or `./k6` in the working directory, then `k6` on `PATH`. Use `--k6` to point at a different one. The HTML template is embedded, so Node isn't needed.
+`mcpload` needs the custom k6 binary. By default it uses `./k6.exe` or `./k6` in the working directory, then next to the mcpload executable, then `k6` on `PATH`. Use `--k6` to point at a different one. The HTML template is embedded, so Node isn't needed.
 
 ## Commands
 
 ```text
-mcpload run --scenario <file.js> --url <mcp url> [flags]
+mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
 mcpload render <report.json> <out.html>
 mcpload validate <report.json>
 mcpload upload --url <upload server base url> --key <api key> <report.json>
@@ -35,10 +35,10 @@ mcpload version
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--scenario` | (required) | k6 script, e.g. `scenarios/soak.js` |
+| `--scenario` | `agent-session` | k6 script path (e.g. `scenarios/soak.js`, used as is) or a bundled scenario name (e.g. `soak`, `lb-check`). See [Choosing a scenario](#choosing-a-scenario). |
 | `--url` | (required) | MCP endpoint, passed to k6 as `MCP_URL` |
 | `--protocol` | `auto` | `MCP_PROTOCOL` |
-| `--k6` | `./k6.exe`, `./k6`, then `k6` on PATH | k6 binary built with xk6-mcpload |
+| `--k6` | `./k6.exe`, `./k6`, next to mcpload, then `k6` on PATH | k6 binary built with xk6-mcpload |
 | `--sampler` | `none` | `none`, `docker` or `prometheus` |
 | `--container` | | container name or id, for `--sampler docker` |
 | `--prom-url` | | Prometheus text endpoint, e.g. `http://localhost:3001/metrics`, for `--sampler prometheus` |
@@ -63,9 +63,22 @@ mcpload version
 
 Scenario knobs can also come from the shell environment (`SOAK_MIN=4 RATE=5 ./mcpload run ...`). `k6 run` passes the OS environment to the script, so mcpload reads it the same way: `k6 inspect` runs with `--include-system-env-vars`, and report phases use the OS values. The order of precedence, from highest to lowest, is explicit flags, then `--env`, then the OS environment, then the script's defaults.
 
+## Choosing a scenario
+
+The first test needs only the endpoint:
+
+```sh
+./mcpload run --url https://your-server/mcp
+```
+
+Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It looks for `scenarios/agent-session.js` in the current folder first, then next to the mcpload executable (release archives ship `mcpload`, `k6` and `scenarios/` together, so this works from any folder). A bare name such as `--scenario soak` or `--scenario lb-check` is looked up the same way as `scenarios/<name>.js`. A value that is an existing file, or that looks like a path (has a `/`, `\` or an extension such as `.js`), is used as is, as before. mcpload prints the script it picked (`mcpload: using scenario ...`). If nothing is found it exits 2 and lists the paths it tried.
+
 ## Examples
 
 ```sh
+# Default agent-session scenario, short smoke run
+./mcpload run --url http://localhost:3001/mcp --duration 15s
+
 # Healthy target, Prometheus sampler, short soak
 ./mcpload run --scenario scenarios/soak.js --url http://localhost:3001/mcp \
   --sampler prometheus --prom-url http://localhost:3001/metrics \

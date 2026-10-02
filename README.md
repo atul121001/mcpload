@@ -7,6 +7,14 @@
 
 mcpload is a free, open-source tool that puts your MCP server through a realistic workout. It sends traffic the way AI agents do, watches how the server holds up over time, and gives you a plain pass or fail with the reasons.
 
+<img src="docs/images/demo.svg" width="820" alt="Terminal demo: mcpload tests a healthy MCP server and reports PASS, then tests a server behind a load balancer without sticky sessions and reports FAIL with session_not_found.">
+
+One command is all it takes:
+
+```bash
+./mcpload run --url https://your-server.example.com/mcp
+```
+
 > **Status:** early release. Commands and options may change before 1.0.
 
 ---
@@ -98,20 +106,20 @@ cd mcpload
 | Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
 | Linux | `mcpload_<version>_linux_amd64.tar.gz` |
 
-Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.1).
+Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.2).
 
 Linux (Intel/AMD):
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.1/mcpload_0.1.1_linux_amd64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.1_linux_amd64/mcpload' 'mcpload_0.1.1_linux_amd64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.2/mcpload_0.1.2_linux_amd64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.2_linux_amd64/mcpload' 'mcpload_0.1.2_linux_amd64/k6'
 ```
 
 Mac with Apple silicon:
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.1/mcpload_0.1.1_darwin_arm64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.1_darwin_arm64/mcpload' 'mcpload_0.1.1_darwin_arm64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.2/mcpload_0.1.2_darwin_arm64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.2_darwin_arm64/mcpload' 'mcpload_0.1.2_darwin_arm64/k6'
 ```
 
 For another platform, replace `linux_amd64` or `darwin_arm64` in all three places (for example `darwin_amd64` for an Intel Mac, `linux_arm64` for ARM Linux).
@@ -127,17 +135,17 @@ docker compose -f demo-servers/docker-compose.yml up -d --build
 **4. Test a healthy server.** One minute of agent traffic:
 
 ```bash
-./mcpload run --url http://localhost:3001/mcp --scenario scenarios/agent-session.js \
-  --duration 1m --out report.json --html report.html
+./mcpload run --url http://localhost:3001/mcp --duration 1m --html report.html
 ```
+
+With no `--scenario`, mcpload runs the standard agent-session test.
 
 You should see a **PASS**. Open `report.html` in your browser to see per-tool timings.
 
 **5. Now test a broken one.** This server sits behind a load balancer that forgets which agent belongs to which server:
 
 ```bash
-./mcpload run --url http://localhost:3004/mcp --scenario scenarios/lb-check.js \
-  --out lb.json --html lb.html
+./mcpload run --url http://localhost:3004/mcp --scenario lb-check --html lb.html
 ```
 
 You should see a **FAIL** with `session_not_found`. That's the tool catching a real class of bug.
@@ -170,8 +178,7 @@ When you're done: `docker compose -f demo-servers/docker-compose.yml down`
 ```bash
 ./mcpload run --url https://staging.example.com/mcp \
   --env MCP_TOKEN=your-token \
-  --scenario scenarios/agent-session.js \
-  --vus 5 --duration 2m --out report.json --html report.html
+  --vus 5 --duration 2m --html report.html
 ```
 
 `--vus 5` means 5 simulated agents at the same time. Start small and raise it step by step.
@@ -209,7 +216,7 @@ For memory checks, mcpload also needs a way to read your server's memory. You ca
 - the Docker container it runs in (`--sampler docker --container my-mcp-server`).
 
 ```bash
-./mcpload run --url https://staging.example.com/mcp --scenario scenarios/soak.js \
+./mcpload run --url https://staging.example.com/mcp --scenario soak \
   --env MCP_TOKEN=your-token --soak-min 30 \
   --sampler prometheus --prom-url https://staging.example.com/metrics \
   --out soak.json --html soak.html
@@ -271,8 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up -d --build        # start your MCP server
-      # No release is tagged yet. Pin a tag or commit SHA once releases exist.
-      - uses: atul121001/mcpload/action@main
+      - uses: atul121001/mcpload-action@v1
         with:
           url: http://localhost:8080/mcp
           scenario: agent-session
@@ -284,7 +290,21 @@ jobs:
           comment-on-pr: 'true'
 ```
 
-All inputs and outputs are documented in [action/action.yml](action/action.yml). Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
+`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.1.2` instead. All inputs and outputs are documented in [action/action.yml](action/action.yml). Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
+
+---
+
+## Show that your server is tested
+
+If you run mcpload against your MCP server (for example in CI), you can add this badge to your server's README:
+
+[![soak-tested with mcpload](https://img.shields.io/badge/soak--tested%20with-mcpload-2ea44f)](https://github.com/atul121001/mcpload)
+
+```markdown
+[![soak-tested with mcpload](https://img.shields.io/badge/soak--tested%20with-mcpload-2ea44f)](https://github.com/atul121001/mcpload)
+```
+
+The badge says that you test with mcpload. It doesn't show a live result, so keep the test running in CI to keep it honest.
 
 ---
 

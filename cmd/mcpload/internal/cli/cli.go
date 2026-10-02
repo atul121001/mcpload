@@ -34,7 +34,7 @@ var errUsage = errors.New("usage")
 const usageText = `mcpload - load and soak testing for remote MCP servers
 
 Usage:
-  mcpload run --scenario <file.js> --url <mcp url> [flags]
+  mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
   mcpload render <report.json> <out.html>
   mcpload validate <report.json>
   mcpload upload --url <upload server base url> --key <api key> <report.json>

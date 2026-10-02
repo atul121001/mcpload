@@ -48,11 +48,11 @@ type runOpts struct {
 	set                             map[string]bool
 }
 
-const runSynopsis = "mcpload run --scenario <file.js> --url <mcp url> [flags]"
+const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]"
 
 func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs := newFlagSet("run", runSynopsis, stderr)
-	fs.StringVar(&o.scenario, "scenario", "", "k6 scenario script, e.g. scenarios/soak.js (required)")
+	fs.StringVar(&o.scenario, "scenario", "", "k6 scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload (default agent-session)")
 	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to k6 as MCP_URL (required)")
 	fs.StringVar(&o.protocol, "protocol", "auto", "MCP protocol version or 'auto' (MCP_PROTOCOL)")
 	fs.StringVar(&o.k6, "k6", "", "k6 binary built with xk6-mcpload (default: ./k6 in the current folder, then next to mcpload, then k6 on PATH)")
@@ -107,12 +107,15 @@ func (o *runOpts) validate(pos []string) error {
 	if len(pos) > 0 {
 		return fmt.Errorf("unexpected arguments: %v", pos)
 	}
-	if o.scenario == "" || o.url == "" {
-		return errors.New("--scenario and --url are required")
+	if o.url == "" {
+		return errors.New("--url is required")
 	}
-	if _, err := os.Stat(o.scenario); err != nil {
-		return fmt.Errorf("scenario: %w", err)
+	cwd, _ := os.Getwd()
+	scenario, err := resolveScenario(o.scenario, cwd, exeDir())
+	if err != nil {
+		return err
 	}
+	o.scenario = scenario
 	switch o.samplerKind {
 	case "none":
 	case "docker":
@@ -273,6 +276,7 @@ func newRunID() string {
 
 func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	logf := func(format string, a ...any) { fmt.Fprintf(stderr, "mcpload: "+format+"\n", a...) }
+	logf("using scenario %s", o.scenario)
 
 	bin, err := k6run.FindBinary(o.k6)
 	if err != nil {
