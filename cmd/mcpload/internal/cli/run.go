@@ -45,6 +45,7 @@ type runOpts struct {
 	leakSlope, minR2                float64
 	includePayloads                 bool
 	k6Out                           string
+	waitReady                       time.Duration
 	set                             map[string]bool
 }
 
@@ -77,6 +78,7 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.minR2, "min-r2", 0.7, "minimum R² for a leak slope to count")
 	fs.BoolVar(&o.includePayloads, "include-payloads", false, "keep tool arguments/results (INCLUDE_PAYLOADS=1)")
 	fs.StringVar(&o.k6Out, "k6-out", "", "keep k6's raw outputs (metrics.ndjson, summary.json) in this directory")
+	fs.DurationVar(&o.waitReady, "wait-ready", 0, "before starting, wait up to this long (e.g. 2m) for the server to answer an MCP handshake (0 = don't wait)")
 	return fs
 }
 
@@ -128,6 +130,9 @@ func (o *runOpts) validate(pos []string) error {
 		}
 	default:
 		return fmt.Errorf("--sampler must be none, docker or prometheus (got %q)", o.samplerKind)
+	}
+	if o.waitReady < 0 {
+		return errors.New("--wait-ready must not be negative")
 	}
 	if o.interval < time.Second {
 		return errors.New("--interval must be at least 1s")
@@ -303,6 +308,23 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	var soakPh report.Phases
 	if soak {
 		if soakPh, err = soakPhases(envMap); err != nil {
+			return 0, err
+		}
+	}
+
+	if o.waitReady > 0 {
+		probe, err := newReadyProbe(envMap)
+		if err != nil {
+			return 0, err
+		}
+		if probe.OAuth {
+			logf("--wait-ready: the readiness probe does not fetch an OAuth token; a 401/403 answer counts as ready")
+		}
+		// Ctrl-C while waiting stops mcpload before k6 or the sampler start.
+		wctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		err = waitReady(wctx, probe, readyWait{Max: o.waitReady}, logf)
+		stop()
+		if err != nil {
 			return 0, err
 		}
 	}

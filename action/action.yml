@@ -78,6 +78,12 @@ inputs:
       Blank lines and lines starting with # are ignored.
     required: false
     default: ''
+  wait-ready:
+    description: >-
+      Before the test, wait up to this long (e.g. 2m) for the server to answer an MCP handshake, for servers
+      that take a while to start. Empty = don't wait. The step fails (exit code 2) if the server isn't ready in time.
+    required: false
+    default: ''
   label:
     description: Short display name of the target in the report
     required: false
@@ -260,6 +266,7 @@ runs:
         IN_P99: ${{ inputs.p99-ms }}
         IN_ERR: ${{ inputs.err-rate }}
         IN_ENV: ${{ inputs.env }}
+        IN_WAIT_READY: ${{ inputs.wait-ready }}
         IN_LABEL: ${{ inputs.label }}
         IN_EXTRA: ${{ inputs.extra-args }}
         IN_OUT_DIR: ${{ inputs.output-dir }}
@@ -305,6 +312,7 @@ runs:
         [ -n "$IN_CONTAINER" ]    && add --container "$IN_CONTAINER"
         [ -n "$IN_PROM_URL" ]     && add --prom-url "$IN_PROM_URL"
         [ -n "$IN_INTERVAL" ]     && add --interval "$IN_INTERVAL"
+        [ -n "$IN_WAIT_READY" ]   && add --wait-ready "$IN_WAIT_READY"
         [ -n "$IN_LABEL" ]        && add --label "$IN_LABEL"
         [ -n "$IN_P95" ]          && add --env "P95_MS=$IN_P95"
         [ -n "$IN_P99" ]          && add --env "P99_MS=$IN_P99"
