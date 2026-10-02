@@ -106,20 +106,20 @@ cd mcpload
 | Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
 | Linux | `mcpload_<version>_linux_amd64.tar.gz` |
 
-Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.2).
+Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.3).
 
 Linux (Intel/AMD):
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.2/mcpload_0.1.2_linux_amd64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.2_linux_amd64/mcpload' 'mcpload_0.1.2_linux_amd64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.3/mcpload_0.1.3_linux_amd64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.3_linux_amd64/mcpload' 'mcpload_0.1.3_linux_amd64/k6'
 ```
 
 Mac with Apple silicon:
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.2/mcpload_0.1.2_darwin_arm64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.2_darwin_arm64/mcpload' 'mcpload_0.1.2_darwin_arm64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.3/mcpload_0.1.3_darwin_arm64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.3_darwin_arm64/mcpload' 'mcpload_0.1.3_darwin_arm64/k6'
 ```
 
 For another platform, replace `linux_amd64` or `darwin_arm64` in all three places (for example `darwin_amd64` for an Intel Mac, `linux_arm64` for ARM Linux).
@@ -291,7 +291,7 @@ jobs:
           comment-on-pr: 'true'
 ```
 
-`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.1.2` instead. All inputs and outputs are documented in [action/action.yml](action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
+`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.1.3` instead. All inputs and outputs are documented in [action/action.yml](action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
 
 ---
 

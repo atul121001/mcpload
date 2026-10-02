@@ -15,7 +15,7 @@ xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --outpu
 Or build straight from a release, without cloning:
 
 ```bash
-xk6 build v2.3.0 --with github.com/atul121001/mcpload/xk6-mcpload@v0.1.2
+xk6 build v2.3.0 --with github.com/atul121001/mcpload/xk6-mcpload@v0.1.3
 ```
 
 Tests: `cd xk6-mcpload && go test ./... && go vet ./...`
