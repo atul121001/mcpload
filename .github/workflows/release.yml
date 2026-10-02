@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      K6_VERSION: v2.3.0
+      MCPLOAD_K6_VERSION: v2.3.0
       XK6_VERSION: v1.4.14
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
             mkdir -p "$out"
             echo "::group::$name"
             GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-              xk6 build "$K6_VERSION" \
+              xk6 build "$MCPLOAD_K6_VERSION" \
                 --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload \
                 --output "$out/k6$ext"
             (cd cmd/mcpload && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
