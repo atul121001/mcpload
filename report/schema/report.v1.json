@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpload.dev/schema/report.v1.json",
+  "title": "mcpload report",
+  "description": "report.json written by the mcpload CLI. schemaVersion \"1\". Additive changes keep the major version; consumers MUST ignore unknown properties.",
+  "type": "object",
+  "required": ["schemaVersion", "tool", "run", "phases", "summary", "tools", "thresholds", "series", "verdicts", "payloadsIncluded"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "tool": {
+      "type": "object",
+      "description": "The program that wrote the report.",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "examples": ["mcpload"] },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "startedAt", "endedAt", "durationS", "scenario", "protocol", "target", "k6Version", "load"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "durationS": { "type": "number", "minimum": 0 },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "oauth-refresh"] },
+        "protocol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Protocol actually negotiated (resolved from 'auto'), e.g. '2025-06-18' or '2026-07-28'.",
+          "examples": ["2025-06-18", "2026-07-28"]
+        },
+        "target": {
+          "type": "object",
+          "required": ["url"],
+          "properties": {
+            "url": { "type": "string", "format": "uri" },
+            "label": { "type": "string" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "description": "Git revision of the system under test, when known (e.g. from CI).",
+          "required": ["sha"],
+          "properties": {
+            "sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+            "ref": { "type": "string" }
+          }
+        },
+        "k6Version": { "type": "string", "minLength": 1 },
+        "load": { "$ref": "#/$defs/load" }
+      }
+    },
+    "phases": {
+      "type": "object",
+      "description": "Phase boundaries in seconds since run start. Warm-up is [0, warmupEndS), constant load [warmupEndS, loadEndS), cool-down (zero load) [loadEndS, cooldownEndS]. Scenarios without phases set warmupEndS = 0 and cooldownEndS = loadEndS.",
+      "required": ["warmupEndS", "loadEndS", "cooldownEndS"],
+      "properties": {
+        "warmupEndS": { "type": "number", "minimum": 0 },
+        "loadEndS": { "type": "number", "minimum": 0 },
+        "cooldownEndS": { "type": "number", "minimum": 0 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["reqs", "errors", "errorRate", "byErrorType"],
+      "properties": {
+        "reqs": { "type": "integer", "minimum": 0, "description": "Total mcp_reqs." },
+        "errors": { "type": "integer", "minimum": 0, "description": "Total mcp_errors." },
+        "errorRate": { "$ref": "#/$defs/rate" },
+        "byErrorType": {
+          "type": "object",
+          "description": "mcp_errors broken down by the error_type tag. Keys not in the known list are allowed (forward compatibility).",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "properties": {
+            "http": { "type": "integer", "minimum": 0 },
+            "jsonrpc": { "type": "integer", "minimum": 0 },
+            "tool_iserror": { "type": "integer", "minimum": 0 },
+            "timeout": { "type": "integer", "minimum": 0 },
+            "session_not_found": { "type": "integer", "minimum": 0 },
+            "header_mismatch": { "type": "integer", "minimum": 0 },
+            "auth": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Per-tool statistics over tools/call requests (mcp_req_duration{method:tools/call} grouped by the tool tag). Latencies in milliseconds.",
+      "items": {
+        "type": "object",
+        "required": ["name", "reqs", "errors", "errorRate", "p50", "p95", "p99", "max"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "reqs": { "type": "integer", "minimum": 0 },
+          "errors": { "type": "integer", "minimum": 0 },
+          "errorRate": { "$ref": "#/$defs/rate" },
+          "p50": { "$ref": "#/$defs/ms" },
+          "p95": { "$ref": "#/$defs/ms" },
+          "p99": { "$ref": "#/$defs/ms" },
+          "max": { "$ref": "#/$defs/ms" }
+        }
+      }
+    },
+    "thresholds": {
+      "type": "array",
+      "description": "k6 threshold results, one entry per expression.",
+      "items": {
+        "type": "object",
+        "required": ["metric", "expr", "passed", "observed"],
+        "properties": {
+          "metric": { "type": "string", "minLength": 1, "examples": ["mcp_req_duration{tool:search}", "mcp_tool_error_rate"] },
+          "expr": { "type": "string", "minLength": 1, "examples": ["p(95)<800", "rate<0.01", "count<1"] },
+          "passed": { "type": "boolean" },
+          "observed": { "type": ["number", "null"], "description": "Observed value of the aggregation in expr (ms for durations, 0..1 for rates, raw for counts). null when there were no samples." }
+        }
+      }
+    },
+    "series": {
+      "type": "object",
+      "description": "Time series as parallel arrays. Every array has the same length as t. null marks a missing sample.",
+      "required": ["intervalS", "t", "client", "server"],
+      "properties": {
+        "intervalS": { "type": "number", "exclusiveMinimum": 0 },
+        "t": { "type": "array", "items": { "type": "number", "minimum": 0 }, "description": "Bucket timestamps, seconds since run start." },
+        "client": {
+          "type": "object",
+          "required": ["p95Ms", "errorRate", "rps"],
+          "properties": {
+            "p95Ms": { "$ref": "#/$defs/series" },
+            "errorRate": { "$ref": "#/$defs/series" },
+            "rps": { "$ref": "#/$defs/series" }
+          }
+        },
+        "server": {
+          "type": "object",
+          "required": ["sampler", "rssBytes"],
+          "properties": {
+            "sampler": { "enum": ["docker", "prometheus", "none"] },
+            "rssBytes": { "$ref": "#/$defs/series", "description": "Resident memory. Empty array when sampler is 'none'." },
+            "heapBytes": { "$ref": "#/$defs/series" },
+            "openFds": { "$ref": "#/$defs/series" },
+            "activeSessions": { "$ref": "#/$defs/series" }
+          }
+        }
+      }
+    },
+    "verdicts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/verdict" }
+    },
+    "payloadsIncluded": {
+      "type": "boolean",
+      "description": "True only when the CLI ran with --include-payloads. Tool arguments/results are otherwise absent from the report."
+    }
+  },
+  "$defs": {
+    "ms": { "type": "number", "minimum": 0 },
+    "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "series": { "type": "array", "items": { "type": ["number", "null"] } },
+    "load": {
+      "type": "object",
+      "description": "Load shape configuration as passed to k6.",
+      "required": ["executor"],
+      "properties": {
+        "executor": {
+          "type": "string",
+          "examples": ["constant-arrival-rate", "ramping-arrival-rate", "ramping-vus", "constant-vus", "per-vu-iterations"]
+        },
+        "vus": { "type": "integer", "minimum": 0, "description": "VUs (vu executors) or preAllocatedVUs (arrival-rate executors)." },
+        "maxVus": { "type": "integer", "minimum": 0 },
+        "arrivalRate": { "type": "number", "minimum": 0, "description": "Iterations (agent sessions) started per arrivalTimeUnitS during constant load." },
+        "arrivalTimeUnitS": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "required": ["id", "status", "signal", "message"],
+      "properties": {
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold"] },
+        "status": { "enum": ["pass", "fail", "warn", "skipped"] },
+        "signal": {
+          "type": "string",
+          "description": "Path of the series (or metric) the verdict is computed from, e.g. 'server.rssBytes', 'client.p95Ms', 'mcp_errors{error_type:session_not_found}'."
+        },
+        "slopePerMin": { "type": "number", "description": "Linear-regression slope over the constant-load window, in the signal's unit per minute (bytes/min for rssBytes)." },
+        "r2": { "type": "number", "minimum": 0, "maximum": 1 },
+        "baseline": { "type": "number", "description": "Post-warm-up baseline of the signal, in the signal's unit." },
+        "cooldownRecovered": { "type": "boolean", "description": "Whether the signal returned near baseline during cool-down." },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

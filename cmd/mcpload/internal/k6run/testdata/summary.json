@@ -1,0 +1,7 @@
+{
+  "metrics": {
+    "mcp_req_duration{tool:search}": {"p(95)": 38.5, "thresholds": {"p(95)<30": true}},
+    "mcp_connect_duration": {"p(95)": 50, "thresholds": {"p(95)<1500": false}},
+    "mcp_reqs": {"count": 7, "rate": 0.28}
+  }
+}

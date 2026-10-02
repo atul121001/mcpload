@@ -1,0 +1,96 @@
+# Example: nightly 30-minute soak with leak verdicts from a Prometheus sampler.
+#
+# Runs the soak scenario against the demo servers and samples each server's /metrics
+# (process_resident_memory_bytes, mcp_active_sessions). ts-healthy must pass; ts-leaky must be
+# flagged (memory_leak / session_leak), which proves the verdicts still fire.
+#
+# Optional report upload: set the repository secret MCPLOAD_KEY (API key for the upload server) and the
+# repository variable MCPLOAD_URL (base URL of a server that accepts report uploads). Without them the reports stay as workflow artifacts.
+name: example-nightly-soak
+
+on:
+  schedule:
+    - cron: '17 2 * * *' # 02:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      soak-min:
+        description: Constant-load minutes (the job's timeout-minutes of 75 caps the soak; warm-up 3 + cool-down 5 + setup leave roughly 60 min max)
+        default: '30'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    # warm-up (3m) + load + cool-down (5m) + build/start overhead
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ts-healthy
+            port: 3001
+            expect: pass
+          - target: ts-leaky
+            port: 3002
+            expect: fail
+    name: soak (${{ matrix.target }}, expect ${{ matrix.expect }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start ${{ matrix.target }}
+        working-directory: demo-servers
+        env:
+          TARGET: ${{ matrix.target }}
+          PORT: ${{ matrix.port }}
+        run: |
+          # ts-leaky reuses the ts-server image that the ts-healthy service builds.
+          docker compose build ts-healthy
+          docker compose up -d "$TARGET"
+          for i in $(seq 1 60); do
+            curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1 && break
+            [ "$i" = 60 ] && { echo "::error::$TARGET did not become healthy"; docker compose logs; exit 1; }
+            sleep 2
+          done
+
+      - name: Soak
+        id: soak
+        uses: ./action
+        with:
+          url: http://localhost:${{ matrix.port }}/mcp
+          scenario: soak
+          soak-min: ${{ inputs.soak-min || '30' }}
+          warmup-min: '3'
+          cooldown-min: '5'
+          sampler: prometheus
+          prom-url: http://localhost:${{ matrix.port }}/metrics
+          interval: 10s
+          label: ${{ matrix.target }}
+          artifact-name: mcpload-soak-${{ matrix.target }}
+          fail-on: never
+          upload-url: ${{ vars.MCPLOAD_URL }}
+          api-key: ${{ secrets.MCPLOAD_KEY }}
+
+      - name: Check verdict matches expectation
+        env:
+          RESULT: ${{ steps.soak.outputs.result }}
+          EXPECT: ${{ matrix.expect }}
+          RUN_URL: ${{ steps.soak.outputs.run-url }}
+        run: |
+          echo "result=$RESULT expected=$EXPECT ${RUN_URL:+uploaded: $RUN_URL}"
+          [ "$RESULT" = "$EXPECT" ] || { echo "::error::expected $EXPECT, got $RESULT"; exit 1; }
+
+      - name: Server logs
+        if: failure()
+        working-directory: demo-servers
+        run: docker compose logs --tail=200
+
+      - name: Stop demo servers
+        if: always()
+        working-directory: demo-servers
+        run: docker compose down -v

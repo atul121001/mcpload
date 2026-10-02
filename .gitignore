@@ -1,0 +1,15 @@
+node_modules/
+.next/
+dist/
+*.exe
+k6
+k6.exe
+__pycache__/
+.venv/
+report*.json
+!docs/**/*.json
+.env*
+!report/schema/report.v*.json
+
+# local-only folder, not part of this repository
+web/

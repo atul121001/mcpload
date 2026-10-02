@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcpload report</title>
+<meta name="generator" content="mcpload report template v1">
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --phase-warm: rgba(137,135,129,0.10);
+  --phase-cool: rgba(42,120,214,0.07);
+  --good: #0ca30c;  --good-ink: #006300;
+  --warn: #fab219;  --warn-ink: #8a5a00;
+  --bad:  #d03b3b;  --bad-ink: #b02a2a;
+  --skip: #898781;
+  --bad-wash: rgba(208,59,59,0.10);
+  --good-wash: rgba(12,163,12,0.09);
+  --warn-wash: rgba(250,178,25,0.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926;
+    --phase-warm: rgba(195,194,183,0.08); --phase-cool: rgba(57,135,229,0.10);
+    --good-ink: #0ca30c; --warn-ink: #fab219; --bad-ink: #e66767;
+    --bad-wash: rgba(230,103,103,0.14); --good-wash: rgba(12,163,12,0.14); --warn-wash: rgba(250,178,25,0.12);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926;
+  --phase-warm: rgba(195,194,183,0.08); --phase-cool: rgba(57,135,229,0.10);
+  --good-ink: #0ca30c; --warn-ink: #fab219; --bad-ink: #e66767;
+  --bad-wash: rgba(230,103,103,0.14); --good-wash: rgba(12,163,12,0.14); --warn-wash: rgba(250,178,25,0.12);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; font-weight: 650; }
+h2 { font-size: 16px; margin: 32px 0 12px; font-weight: 650; }
+h3 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+.muted { color: var(--muted); }
+.sub { color: var(--ink-2); }
+code, .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+
+/* header */
+header.top { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.overall { display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 10px; font-weight: 700; font-size: 20px; letter-spacing: .02em; border: 1px solid var(--border); }
+.overall.pass { background: var(--good-wash); color: var(--good-ink); }
+.overall.fail { background: var(--bad-wash); color: var(--bad-ink); }
+.overall.warn { background: var(--warn-wash); color: var(--warn-ink); }
+.overall small { display: block; font-size: 12px; font-weight: 500; color: var(--ink-2); letter-spacing: 0; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 20px; margin-top: 16px; }
+.meta div { min-width: 0; }
+.meta dt { color: var(--muted); font-size: 12px; }
+.meta dd { margin: 0; overflow-wrap: anywhere; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+.stat .v { font-size: 22px; font-weight: 650; }
+.stat .l { color: var(--muted); font-size: 12px; }
+
+/* verdicts */
+.verdicts { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.verdict { border-left: 4px solid var(--skip); }
+.verdict.pass { border-left-color: var(--good); }
+.verdict.fail { border-left-color: var(--bad); }
+.verdict.warn { border-left-color: var(--warn); }
+.verdict .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 650; padding: 1px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+.badge.pass { background: var(--good-wash); color: var(--good-ink); }
+.badge.fail { background: var(--bad-wash); color: var(--bad-ink); }
+.badge.warn { background: var(--warn-wash); color: var(--warn-ink); }
+.badge.skipped { background: var(--border); color: var(--ink-2); }
+.verdict .kv { color: var(--ink-2); font-size: 12.5px; margin-top: 6px; overflow-wrap: anywhere; }
+.verdict p { margin: 0; }
+
+/* tables */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-2); font-weight: 600; font-size: 12.5px; }
+td.breach { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
+td.breach::after { content: " \2716"; font-size: 11px; }
+td.ok-budget::after { content: ""; }
+.small { font-size: 12px; }
+
+/* charts */
+.charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 820px) { .charts.two { grid-template-columns: 1fr 1fr; } }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 2px 0 6px; }
+.legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
+.legend i.dash { border-top-style: dashed; }
+.legend i.box { height: 10px; border: 1px solid var(--border); }
+.tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); white-space: nowrap; display: none; z-index: 2; }
+.tip b { font-weight: 650; }
+.axis text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.baseline { stroke: var(--axis); stroke-width: 1; }
+.phase-label { fill: var(--muted); font-size: 10.5px; }
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--ink-2); font-size: 12.5px; }
+.empty { padding: 32px; text-align: center; color: var(--muted); }
+footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
+
+@media print {
+  :root { color-scheme: light; }
+  body { background: #fff; font-size: 11.5px; }
+  main { max-width: none; padding: 0; }
+  .card { break-inside: avoid; border-color: #ccc; }
+  .verdict, .chart, tr { break-inside: avoid; }
+  h2 { break-after: avoid; }
+  details, .tip { display: none !important; }
+  .overall, .badge, td.breach { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .charts.two { grid-template-columns: 1fr 1fr; }
+}
+@page { margin: 14mm; }
+</style>
+</head>
+<body>
+<main id="app"><div class="empty">No report data embedded. Render with <code>node report/render.mjs report.json out.html</code>.</div></main>
+
+<!-- render.mjs replaces the contents of this tag with report.json -->
+<script type="application/json" id="report-data">null</script>
+
+<script>
+(function () {
+  'use strict';
+  var el = document.getElementById('report-data');
+  var R;
+  try { R = JSON.parse(el.textContent); } catch (e) { R = null; }
+  var app = document.getElementById('app');
+  if (!R || R.schemaVersion == null) return;
+  if (String(R.schemaVersion).split('.')[0] !== '1') {
+    app.innerHTML = '<div class="empty">Unsupported report schemaVersion ' + esc(R.schemaVersion) + ' (this template reads v1).</div>';
+    return;
+  }
+
+  // ---------- formatting ----------
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  var MB = 1024 * 1024;
+  function num(x, d) { if (x == null || isNaN(x)) return '–'; return Number(x).toLocaleString('en-US', { maximumFractionDigits: d == null ? 0 : d, minimumFractionDigits: 0 }); }
+  function ms(x) { if (x == null) return '–'; return x >= 1000 ? num(x / 1000, 2) + ' s' : num(x, x < 10 ? 1 : 0) + ' ms'; }
+  function pct(x, d) { if (x == null) return '–'; return num(x * 100, d == null ? 2 : d) + '%'; }
+  function mb(x) { return x == null ? '–' : num(x / MB, 1) + ' MiB'; }
+  function dur(s) { s = Math.round(s); var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60; return (h ? h + 'h ' : '') + (m || h ? m + 'm ' : '') + (ss ? ss + 's' : (h || m ? '' : '0s')); }
+  function mmss(s) { var m = Math.floor(s / 60), ss = Math.round(s % 60); return m + ':' + (ss < 10 ? '0' : '') + ss; }
+  var ICON = { pass: '✔', fail: '✖', warn: '⚠', skipped: '–' };
+
+  var run = R.run, S = R.series, P = R.phases, sum = R.summary;
+  var verdicts = R.verdicts || [], thresholds = R.thresholds || [];
+  var failedT = thresholds.filter(function (t) { return !t.passed; });
+  var failedV = verdicts.filter(function (v) { return v.status === 'fail'; });
+  var warnV = verdicts.filter(function (v) { return v.status === 'warn'; });
+  var overall = (failedT.length || failedV.length) ? 'fail' : (warnV.length ? 'warn' : 'pass');
+  document.title = (overall === 'fail' ? 'FAIL' : 'PASS') + ' · ' + (run.target.label || run.target.url) + ' · mcpload';
+
+  // ---------- threshold lookup: tool -> {p95:bool, p99:bool, rate:bool} (true = breached) ----------
+  var breach = {};
+  thresholds.forEach(function (t) {
+    var m = /\{(?:[^}]*,)?tool:([^,}]+)/.exec(t.metric); if (!m) return;
+    var tool = m[1], b = breach[tool] || (breach[tool] = {});
+    var key = /p\(95\)/.test(t.expr) ? 'p95' : /p\(99\)/.test(t.expr) ? 'p99' : /p\(50\)|med/.test(t.expr) ? 'p50' : /max/.test(t.expr) ? 'max' : /rate/.test(t.expr) ? 'errorRate' : null;
+    if (key) { b[key] = (b[key] || false) || !t.passed; b[key + '_expr'] = t.expr; }
+  });
+
+  // ---------- header ----------
+  var h = [];
+  var overallText = overall === 'fail' ? 'FAIL' : 'PASS';
+  var overallSub = overall === 'fail'
+    ? [failedV.length ? failedV.length + ' verdict' + (failedV.length > 1 ? 's' : '') + ' failed' : '', failedT.length ? failedT.length + ' threshold' + (failedT.length > 1 ? 's' : '') + ' breached' : ''].filter(Boolean).join(' · ')
+    : overall === 'warn' ? warnV.length + ' warning' + (warnV.length > 1 ? 's' : '') : 'all verdicts and thresholds passed';
+  h.push('<header class="top"><div><div class="muted small">mcpload ' + esc(run.scenario) + ' report</div>');
+  h.push('<h1>' + esc(run.target.label || run.target.url) + '</h1>');
+  h.push('<div class="sub mono">' + esc(run.target.url) + '</div></div>');
+  h.push('<div class="overall ' + overall + '" role="status"><span aria-hidden="true">' + ICON[overall === 'warn' ? 'warn' : overall] + '</span><div>' + overallText + '<small>' + esc(overallSub) + '</small></div></div></header>');
+  var meta = [
+    ['Run', '<span class="mono">' + esc(run.id) + '</span>'],
+    ['Started', esc(new Date(run.startedAt).toISOString().replace('T', ' ').replace(/\.\d+Z$|Z$/, ' UTC'))],
+    ['Duration', esc(dur(run.durationS))],
+    ['Protocol', '<span class="mono">' + esc(run.protocol) + '</span>'],
+    ['Load', esc(loadText(run.load))],
+    ['Sampler', esc(S.server.sampler)],
+    ['k6 / tool', esc(run.k6Version) + ' · ' + esc(R.tool.name) + ' ' + esc(R.tool.version)],
+  ];
+  if (run.git) meta.push(['Git', '<span class="mono">' + esc(run.git.sha.slice(0, 12)) + '</span>' + (run.git.ref ? ' <span class="muted">' + esc(run.git.ref.replace(/^refs\/heads\//, '')) + '</span>' : '')]);
+  meta.push(['Payloads', R.payloadsIncluded ? 'included' : 'not included']);
+  h.push('<section class="card" style="margin-top:16px"><dl class="meta">' + meta.map(function (m) { return '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '</dd></div>'; }).join('') + '</dl></section>');
+
+  var errTypes = Object.keys(sum.byErrorType || {}).filter(function (k) { return sum.byErrorType[k] > 0; })
+    .sort(function (a, b) { return sum.byErrorType[b] - sum.byErrorType[a]; })
+    .map(function (k) { return esc(k) + ' ' + num(sum.byErrorType[k]); }).join(' · ');
+  h.push('<section class="stats">' +
+    stat(num(sum.reqs), 'requests') +
+    stat(num(sum.errors), 'errors' + (errTypes ? ' <span class="muted">(' + errTypes + ')</span>' : '')) +
+    stat(pct(sum.errorRate, 3), 'error rate') +
+    stat(num(thresholds.length - failedT.length) + ' / ' + num(thresholds.length), 'thresholds passed') +
+    '</section>');
+
+  // ---------- verdicts ----------
+  h.push('<h2>Verdicts</h2><section class="verdicts">');
+  var order = { fail: 0, warn: 1, pass: 2, skipped: 3 };
+  verdicts.slice().sort(function (a, b) { return order[a.status] - order[b.status]; }).forEach(function (v) {
+    var kv = [];
+    var isBytes = /bytes/i.test(v.signal);
+    var isMs = /Ms$/.test(v.signal);
+    if (v.slopePerMin != null) kv.push('slope ' + (isBytes ? num(v.slopePerMin / MB, 2) + ' MiB/min' : isMs ? num(v.slopePerMin, 2) + ' ms/min' : num(v.slopePerMin, 4) + '/min'));
+    if (v.r2 != null) kv.push('R² ' + num(v.r2, 2));
+    if (v.baseline != null) kv.push('baseline ' + (isBytes ? mb(v.baseline) : isMs ? ms(v.baseline) : /errorRate/.test(v.signal) ? pct(v.baseline, 3) : num(v.baseline, 1)));
+    if (v.cooldownRecovered != null) kv.push(v.cooldownRecovered ? 'recovered in cool-down' : 'no cool-down recovery');
+    h.push('<article class="card verdict ' + esc(v.status) + '"><div class="head"><h3>' + esc(v.id.replace(/_/g, ' ')) + '</h3>' +
+      '<span class="badge ' + esc(v.status) + '"><span aria-hidden="true">' + (ICON[v.status] || '') + '</span>' + esc(v.status) + '</span></div>' +
+      '<p>' + esc(v.message) + '</p>' +
+      '<div class="kv"><span class="mono">' + esc(v.signal) + '</span>' + (kv.length ? ' · ' + esc(kv.join(' · ')) : '') + '</div></article>');
+  });
+  h.push('</section>');
+
+  // ---------- per-tool table ----------
+  h.push('<h2>Per-tool latency and errors</h2><section class="card tablewrap"><table><thead><tr>' +
+    '<th>Tool</th><th>Requests</th><th>Errors</th><th>Error rate</th><th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr></thead><tbody>');
+  (R.tools || []).slice().sort(function (a, b) { return b.reqs - a.reqs; }).forEach(function (t) {
+    var b = breach[t.name] || {};
+    function cell(key, text) {
+      var cls = b[key] ? ' class="breach"' : '';
+      var title = b[key + '_expr'] ? ' title="threshold ' + esc(b[key + '_expr']) + (b[key] ? ' breached' : ' met') + '"' : '';
+      return '<td' + cls + title + '>' + text + '</td>';
+    }
+    h.push('<tr><td class="mono">' + esc(t.name) + '</td><td>' + num(t.reqs) + '</td><td>' + num(t.errors) + '</td>' +
+      cell('errorRate', pct(t.errorRate)) + cell('p50', ms(t.p50)) + cell('p95', ms(t.p95)) + cell('p99', ms(t.p99)) + cell('max', ms(t.max)) + '</tr>');
+  });
+  h.push('</tbody></table><div class="muted small" style="margin-top:8px">Highlighted cells breached a k6 threshold. Latencies are <code>mcp_req_duration</code> for <code>tools/call</code>.</div></section>');
+
+  // ---------- charts ----------
+  var hasRss = S.server.rssBytes && S.server.rssBytes.length === S.t.length && S.server.sampler !== 'none';
+  h.push('<h2>Server memory</h2>');
+  if (hasRss) h.push('<section class="card chart" id="c-mem"></section>');
+  else h.push('<section class="card empty">No server-side samples (sampler: ' + esc(S.server.sampler) + '). Memory verdicts need <code>--sampler docker</code> or <code>prometheus</code>.</section>');
+  var extra = [];
+  if (S.server.activeSessions && S.server.activeSessions.length === S.t.length) extra.push('c-sess');
+  if (S.server.openFds && S.server.openFds.length === S.t.length) extra.push('c-fds');
+  if (extra.length) h.push('<div class="charts two" style="margin-top:12px">' + extra.map(function (id) { return '<section class="card chart" id="' + id + '"></section>'; }).join('') + '</div>');
+  h.push('<h2>Client latency and errors</h2><div class="charts two"><section class="card chart" id="c-p95"></section><section class="card chart" id="c-err"></section></div>');
+  h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-rps"></section></div>');
+
+  // ---------- thresholds table ----------
+  if (thresholds.length) {
+    h.push('<h2>Thresholds</h2><section class="card tablewrap"><table><thead><tr><th>Metric</th><th>Expression</th><th>Observed</th><th>Result</th></tr></thead><tbody>');
+    thresholds.slice().sort(function (a, b) { return (a.passed - b.passed); }).forEach(function (t) {
+      var obs = t.observed == null ? '–' : /duration|ttfb/.test(t.metric) ? ms(t.observed) : /rate/.test(t.expr) ? pct(t.observed, 3) : num(t.observed, 2);
+      h.push('<tr><td class="mono">' + esc(t.metric) + '</td><td class="mono">' + esc(t.expr) + '</td><td' + (t.passed ? '' : ' class="breach"') + '>' + obs + '</td>' +
+        '<td><span class="badge ' + (t.passed ? 'pass' : 'fail') + '"><span aria-hidden="true">' + (t.passed ? ICON.pass : ICON.fail) + '</span>' + (t.passed ? 'pass' : 'fail') + '</span></td></tr>');
+    });
+    h.push('</tbody></table></section>');
+  }
+
+  h.push('<footer>Generated by ' + esc(R.tool.name) + ' ' + esc(R.tool.version) + ' · report schema v' + esc(R.schemaVersion) +
+    ' · phases: warm-up 0–' + mmss(P.warmupEndS) + ', load ' + mmss(P.warmupEndS) + '–' + mmss(P.loadEndS) + ', cool-down ' + mmss(P.loadEndS) + '–' + mmss(P.cooldownEndS) +
+    (R.payloadsIncluded ? '' : ' · tool arguments and results not included') + '</footer>');
+  app.innerHTML = h.join('');
+
+  function stat(v, l) { return '<div class="card stat"><div class="v">' + v + '</div><div class="l">' + l + '</div></div>'; }
+  function loadText(l) {
+    if (!l) return '–';
+    var parts = [l.executor];
+    if (l.arrivalRate != null) parts.push(num(l.arrivalRate, 2) + ' sessions/' + (l.arrivalTimeUnitS && l.arrivalTimeUnitS !== 1 ? num(l.arrivalTimeUnitS) + 's' : 's'));
+    if (l.vus != null) parts.push(num(l.vus) + (l.maxVus ? '–' + num(l.maxVus) : '') + ' VUs');
+    return parts.join(' · ');
+  }
+
+  // ---------- regression over the constant-load window (same method as the CLI) ----------
+  function linfit(t, y, from, to) {
+    var xs = [], ys = [];
+    for (var i = 0; i < t.length; i++) if (t[i] >= from && t[i] < to && y[i] != null) { xs.push(t[i]); ys.push(y[i]); }
+    var n = xs.length; if (n < 3) return null;
+    var mx = 0, my = 0; for (i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; } mx /= n; my /= n;
+    var sxy = 0, sxx = 0; for (i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) * (xs[i] - mx); }
+    var slope = sxy / sxx; return { slope: slope, at: function (x) { return my + slope * (x - mx); } };
+  }
+
+  // ---------- tiny SVG line chart (no dependencies; prints crisply) ----------
+  function niceTicks(lo, hi, n) {
+    if (hi === lo) { hi = lo + 1; }
+    var span = hi - lo, step = Math.pow(10, Math.floor(Math.log10(span / n))), err = span / n / step;
+    step *= err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1;
+    var t0 = Math.floor(lo / step) * step, out = [];
+    for (var v = t0; v <= hi + step * 0.5; v += step) out.push(+v.toFixed(10));
+    return out;
+  }
+  var drawn = [];
+  function lineChart(id, o, again) {
+    var host = document.getElementById(id); if (!host) return;
+    if (!again) drawn.push([id, o]);
+    var W = Math.max(320, Math.round((host.clientWidth || 1032) - 32)), H = o.height || 260, m = { l: 64, r: 16, t: 18, b: 30 };
+    var t = S.t, xMax = Math.max(P.cooldownEndS, t[t.length - 1] || 0), xMin = 0;
+    var all = []; o.series.forEach(function (s) { s.values.forEach(function (v) { if (v != null) all.push(v); }); });
+    var yLo = o.zero ? 0 : Math.min.apply(null, all), yHi = Math.max.apply(null, all);
+    if (!all.length) { yLo = 0; yHi = 1; }
+    var pad = (yHi - yLo) * 0.08 || Math.abs(yHi) * 0.1 || 1; if (!o.zero) yLo -= pad; yHi += pad;
+    var u = o.unit || 1, ticks = niceTicks(yLo / u, yHi / u, W < 600 ? 3 : 4).map(function (v) { return v * u; }); yLo = Math.min(yLo, ticks[0]); yHi = Math.max(yHi, ticks[ticks.length - 1]);
+    function X(v) { return m.l + (v - xMin) / (xMax - xMin || 1) * (W - m.l - m.r); }
+    function Y(v) { return H - m.b - (v - yLo) / (yHi - yLo || 1) * (H - m.t - m.b); }
+    var s = [];
+    s.push('<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(o.title) + '">');
+    // phase shading
+    if (P.warmupEndS > 0) s.push('<rect x="' + X(0) + '" y="' + m.t + '" width="' + (X(P.warmupEndS) - X(0)) + '" height="' + (H - m.t - m.b) + '" style="fill:var(--phase-warm)"/>');
+    if (P.cooldownEndS > P.loadEndS) s.push('<rect x="' + X(P.loadEndS) + '" y="' + m.t + '" width="' + (X(P.cooldownEndS) - X(P.loadEndS)) + '" height="' + (H - m.t - m.b) + '" style="fill:var(--phase-cool)"/>');
+    [['warm-up', 0, P.warmupEndS], ['constant load', P.warmupEndS, P.loadEndS], ['cool-down', P.loadEndS, P.cooldownEndS]].forEach(function (ph) {
+      if (ph[2] - ph[1] <= 0 || X(ph[2]) - X(ph[1]) < ph[0].length * 6 + 12) return;
+      s.push('<text class="phase-label" x="' + (X(ph[1]) + 6) + '" y="' + (m.t + 12) + '">' + ph[0] + '</text>');
+    });
+    // grid + y axis
+    s.push('<g class="axis">');
+    ticks.forEach(function (v) {
+      if (v < yLo - 1e-9 || v > yHi + 1e-9) return;
+      s.push('<line class="gridline" x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>');
+      s.push('<text x="' + (m.l - 8) + '" y="' + (Y(v) + 4) + '" text-anchor="end">' + esc(o.yFmt(v)) + '</text>');
+    });
+    var xStep = xMax > 3600 ? 600 : xMax > 1200 ? 300 : xMax > 300 ? 60 : 10;
+    if (W < 600 && xMax > 1200) xStep *= 2;
+    for (var xv = 0; xv <= xMax; xv += xStep) s.push('<text x="' + X(xv) + '" y="' + (H - m.b + 18) + '" text-anchor="middle">' + mmss(xv) + '</text>');
+    s.push('<line class="baseline" x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + (H - m.b) + '" y2="' + (H - m.b) + '"/></g>');
+    // series
+    o.series.forEach(function (sr) {
+      var d = '', pen = false;
+      sr.values.forEach(function (v, i) {
+        var xx = sr.t ? sr.t[i] : t[i];
+        if (v == null) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + X(xx).toFixed(1) + ' ' + Y(v).toFixed(1); pen = true;
+      });
+      s.push('<path d="' + d + '" fill="none" style="stroke:' + sr.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (sr.dash ? ' stroke-dasharray="7 5"' : '') + '/>');
+    });
+    // hover layer
+    s.push('<line class="xh" x1="0" x2="0" y1="' + m.t + '" y2="' + (H - m.b) + '" style="stroke:var(--muted)" stroke-width="1" visibility="hidden"/>');
+    o.series.forEach(function (sr, k) { if (!sr.noHover) s.push('<circle class="dot' + k + '" r="4.5" style="fill:' + sr.color + ';stroke:var(--surface)" stroke-width="2" visibility="hidden"/>'); });
+    s.push('<rect class="hit" x="' + m.l + '" y="' + m.t + '" width="' + (W - m.l - m.r) + '" height="' + (H - m.t - m.b) + '" fill="transparent"/>');
+    s.push('</svg>');
+    var legend = o.series.length > 1 ? '<div class="legend">' + o.series.map(function (sr) {
+      return '<span><i class="' + (sr.dash ? 'dash' : '') + '" style="border-top-color:' + sr.color + '"></i>' + esc(sr.name) + '</span>';
+    }).join('') + '<span><i class="box" style="background:var(--phase-warm)"></i>warm-up</span><span><i class="box" style="background:var(--phase-cool)"></i>cool-down</span></div>' : '';
+    // data table (screen only; accessibility / exact values)
+    var rows = t.map(function (tt, i) { return '<tr><td>' + mmss(tt) + '</td>' + o.series.filter(function (sr) { return !sr.noHover; }).map(function (sr) { return '<td>' + esc(sr.values[i] == null ? '–' : o.tipFmt(sr.values[i])) + '</td>'; }).join('') + '</tr>'; }).join('');
+    var table = '<details><summary>Data table</summary><div class="tablewrap" style="max-height:260px;overflow:auto"><table class="small"><thead><tr><th>t</th>' +
+      o.series.filter(function (sr) { return !sr.noHover; }).map(function (sr) { return '<th>' + esc(sr.name) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div></details>';
+    host.innerHTML = '<h3>' + esc(o.title) + '</h3>' + (o.subtitle ? '<div class="muted small">' + o.subtitle + '</div>' : '') + legend + s.join('') + table + '<div class="tip"></div>';
+
+    var svg = host.querySelector('svg'), tip = host.querySelector('.tip'), xh = svg.querySelector('.xh');
+    function hide() { tip.style.display = 'none'; xh.setAttribute('visibility', 'hidden'); o.series.forEach(function (sr, k) { var c = svg.querySelector('.dot' + k); if (c) c.setAttribute('visibility', 'hidden'); }); }
+    function move(ev) {
+      var r = svg.getBoundingClientRect(); if (!r.width) return;
+      var px = (ev.clientX - r.left) / r.width * W;
+      var tv = xMin + (px - m.l) / (W - m.l - m.r) * (xMax - xMin);
+      var best = 0, bd = Infinity; for (var i = 0; i < t.length; i++) { var dd = Math.abs(t[i] - tv); if (dd < bd) { bd = dd; best = i; } }
+      var x = X(t[best]); xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
+      var lines = ['<b>' + mmss(t[best]) + '</b> <span class="muted">' + phaseAt(t[best]) + '</span>'];
+      o.series.forEach(function (sr, k) {
+        if (sr.noHover) return;
+        var c = svg.querySelector('.dot' + k), v = sr.values[best];
+        if (v == null) { c.setAttribute('visibility', 'hidden'); lines.push(esc(sr.name) + ': –'); return; }
+        c.setAttribute('cx', x); c.setAttribute('cy', Y(v)); c.setAttribute('visibility', 'visible');
+        lines.push('<span style="color:' + sr.color + '">●</span> ' + esc(sr.name) + ': <b>' + esc(o.tipFmt(v)) + '</b>');
+      });
+      tip.innerHTML = lines.join('<br>'); tip.style.display = 'block';
+      var hr = host.getBoundingClientRect(), left = ev.clientX - hr.left + 14;
+      if (left + tip.offsetWidth > hr.width - 8) left = ev.clientX - hr.left - tip.offsetWidth - 14;
+      tip.style.left = left + 'px'; tip.style.top = (r.top - hr.top + 24) + 'px';
+    }
+    var hit = svg.querySelector('.hit');
+    hit.addEventListener('mousemove', move); hit.addEventListener('mouseleave', hide);
+    hit.addEventListener('touchstart', function (e) { move(e.touches[0]); }, { passive: true });
+    hit.addEventListener('touchmove', function (e) { move(e.touches[0]); }, { passive: true });
+  }
+  function phaseAt(x) { return x < P.warmupEndS ? 'warm-up' : x < P.loadEndS ? 'load' : 'cool-down'; }
+
+  var C1 = 'var(--series-1)', C2 = 'var(--series-2)';
+
+  if (hasRss) {
+    var mv = verdicts.filter(function (v) { return v.id === 'memory_leak'; })[0];
+    var fit = linfit(S.t, S.server.rssBytes, P.warmupEndS, P.loadEndS);
+    var series = [{ name: 'RSS', values: S.server.rssBytes, color: C1 }];
+    if (fit) series.push({ name: 'linear fit (load window)', values: [fit.at(P.warmupEndS), fit.at(P.loadEndS)], t: [P.warmupEndS, P.loadEndS], color: C2, dash: true, noHover: true });
+    var subtitle = mv ? '<span class="badge ' + esc(mv.status) + '">' + (ICON[mv.status] || '') + ' ' + esc(mv.status) + '</span> ' +
+      (mv.slopePerMin != null ? num(mv.slopePerMin / MB, 2) + ' MiB/min' : '') + (mv.r2 != null ? ' · R² ' + num(mv.r2, 2) : '') +
+      (mv.baseline != null ? ' · baseline ' + mb(mv.baseline) : '') + (mv.cooldownRecovered != null ? (mv.cooldownRecovered ? ' · recovered in cool-down' : ' · no recovery in cool-down') : '')
+      : (fit ? 'fit slope ' + num(fit.slope * 60 / MB, 2) + ' MiB/min' : '');
+    lineChart('c-mem', { title: 'Resident memory (RSS)', subtitle: subtitle, series: series, yFmt: function (v) { return num(v / MB, 0) + ' MiB'; }, tipFmt: mb, unit: MB, height: 300 });
+  }
+  if (extra.indexOf('c-sess') >= 0) lineChart('c-sess', { title: 'Active sessions (server)', series: [{ name: 'sessions', values: S.server.activeSessions, color: C1 }], zero: true, yFmt: function (v) { return num(v, 1); }, tipFmt: function (v) { return num(v, 0); }, height: 200 });
+  if (extra.indexOf('c-fds') >= 0) lineChart('c-fds', { title: 'Open file descriptors', series: [{ name: 'fds', values: S.server.openFds, color: C1 }], zero: true, yFmt: function (v) { return num(v, 0); }, tipFmt: function (v) { return num(v, 0); }, height: 200 });
+  lineChart('c-p95', { title: 'Client p95 latency (all requests)', series: [{ name: 'p95', values: S.client.p95Ms, color: C1 }], zero: true, yFmt: ms, tipFmt: ms, height: 220 });
+  lineChart('c-err', { title: 'Client error rate', series: [{ name: 'error rate', values: S.client.errorRate, color: C1 }], zero: true, yFmt: function (v) { return pct(v, 2); }, tipFmt: function (v) { return pct(v, 3); }, height: 220 });
+  var lastW = window.innerWidth, rt;
+  window.addEventListener('resize', function () {
+    if (window.innerWidth === lastW) return; lastW = window.innerWidth;
+    clearTimeout(rt); rt = setTimeout(function () { drawn.forEach(function (d) { lineChart(d[0], d[1], true); }); }, 150);
+  });
+  lineChart('c-rps', { title: 'Throughput (requests/s)', series: [{ name: 'req/s', values: S.client.rps, color: C1 }], zero: true, yFmt: function (v) { return num(v, 0); }, tipFmt: function (v) { return num(v, 1) + ' req/s'; }, height: 180 });
+})();
+</script>
+</body>
+</html>

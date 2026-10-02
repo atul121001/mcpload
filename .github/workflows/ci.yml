@@ -1,0 +1,154 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go (vet, test, xk6 build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: xk6-mcpload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Follows the `go` directive in go.mod (1.26 or later, per docs/ARCHITECTURE.md D2).
+          go-version-file: xk6-mcpload/go.mod
+          cache-dependency-path: xk6-mcpload/go.sum
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Install xk6
+        run: go install go.k6.io/xk6@v1.4.14
+      - name: Build k6 with xk6-mcpload
+        run: |
+          xk6 build --with "github.com/atul121001/mcpload/xk6-mcpload=." --output ./k6
+          ./k6 version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k6-mcpload-linux-amd64
+          path: xk6-mcpload/k6
+          retention-days: 7
+
+  report:
+    name: report (schema + examples)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: report
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: report/package-lock.json
+      - run: npm ci
+      - name: Examples are reproducible
+        run: |
+          node examples/generate.mjs
+          git diff --exit-code -- examples/healthy.json examples/leaky.json
+      - name: Validate examples against schema
+        run: node validate.mjs examples/healthy.json examples/leaky.json
+      - name: Render HTML reports
+        run: |
+          node render.mjs examples/healthy.json "$RUNNER_TEMP/healthy.html"
+          node render.mjs examples/leaky.json "$RUNNER_TEMP/leaky.html"
+          grep -q 'id="report-data">{"schemaVersion":"1"' "$RUNNER_TEMP/leaky.html"
+
+  scenarios:
+    name: scenarios (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # scenarios/package.json sets "type": "module", so node parses these as ES modules.
+      # (--check only parses; the k6/x/mcpload import is not resolved.)
+      - run: for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f" || exit 1; echo "ok $f"; done
+
+  cli:
+    name: cli (cmd/mcpload vet, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cmd/mcpload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/mcpload/go.mod
+          # go.* always matches go.mod, so caching works even before the module has a go.sum.
+          cache-dependency-path: cmd/mcpload/go.*
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build
+        run: |
+          go build -trimpath -o ./mcpload .
+          ./mcpload version
+      - name: Validate example reports with the CLI
+        run: |
+          ./mcpload validate ../../report/examples/healthy.json
+          ./mcpload validate ../../report/examples/leaky.json
+
+  action:
+    name: action (summary script + workflow lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Summary script renders the example reports
+        run: |
+          node action/summary.mjs report/examples/healthy.json --out "$RUNNER_TEMP/healthy.md" --github-output "$RUNNER_TEMP/healthy.out"
+          node action/summary.mjs report/examples/leaky.json --out "$RUNNER_TEMP/leaky.md" --github-output "$RUNNER_TEMP/leaky.out"
+          node action/summary.mjs "$RUNNER_TEMP/missing.json" --out "$RUNNER_TEMP/missing.md" --github-output "$RUNNER_TEMP/missing.out"
+          grep -qx 'result=pass' "$RUNNER_TEMP/healthy.out"
+          grep -qx 'result=fail' "$RUNNER_TEMP/leaky.out"
+          grep -qx 'result=error' "$RUNNER_TEMP/missing.out"
+          grep -q 'memory_leak' "$RUNNER_TEMP/leaky.md"
+          cat "$RUNNER_TEMP/leaky.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  demo-servers:
+    name: demo-servers (compose build + health + smoke)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: demo-servers
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - name: Start and wait for /healthz
+        run: |
+          docker compose up -d
+          for port in 3001 3002 3003 3004 3005 3006 3007; do
+            for i in $(seq 1 60); do
+              curl -fsS "http://localhost:$port/healthz" >/dev/null 2>&1 && { echo "port $port healthy"; break; }
+              [ "$i" = 60 ] && { echo "::error::port $port not healthy"; docker compose logs --tail=100; exit 1; }
+              sleep 2
+            done
+          done
+      - name: Smoke test (asserts status codes and payloads per target)
+        run: ./smoke.sh
+      - name: Server logs
+        if: failure()
+        run: docker compose logs --tail=200
+      - if: always()
+        run: docker compose down -v

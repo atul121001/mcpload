@@ -1,0 +1,97 @@
+# Example: gate pull requests on MCP load-test budgets with the mcpload Action.
+#
+# The job starts the demo MCP servers (demo-servers/docker-compose.yml) and runs the Action
+# from this repository (`uses: ./action`). In your own repository, start your server the same
+# way and pin the Action to a release tag or a full commit SHA, e.g.
+# `uses: atul121001/mcpload/action@vX.Y.Z` or `@<40-char commit SHA>`, rather than a moving branch like @main.
+#
+#  1. ts-healthy (port 3001): agent-session for 1 minute, must stay inside the budgets -> gates the PR.
+#  2. lb-stateful (port 3004): calibration check. Two replicas without sticky sessions must be
+#     flagged (session_not_found), so this step uses fail-on: never and asserts result == 'fail'.
+name: example-pr-gate
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write # PR comment
+
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-load-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start demo MCP servers
+        working-directory: demo-servers
+        run: |
+          docker compose up -d --build ts-healthy lb-stateful
+          for port in 3001 3004; do
+            for i in $(seq 1 60); do
+              curl -fsS "http://localhost:$port/healthz" >/dev/null 2>&1 && { echo "port $port up"; break; }
+              [ "$i" = 60 ] && { echo "::error::port $port did not become healthy"; docker compose logs; exit 1; }
+              sleep 2
+            done
+          done
+
+      - name: Load gate (ts-healthy)
+        id: gate
+        uses: ./action
+        with:
+          url: http://localhost:3001/mcp
+          scenario: agent-session
+          vus: '10'
+          duration: 1m
+          p95-ms: '800'
+          p99-ms: '2000'
+          err-rate: '0.01'
+          env: |
+            TOOL_BUDGETS={"flaky":{"errRate":0.2}}
+          sampler: docker
+          container: mcpload-demo-ts-healthy-1
+          label: ts-healthy
+          artifact-name: mcpload-ts-healthy
+          comment-on-pr: 'true'
+          upload-url: ${{ vars.MCPLOAD_URL }}
+          api-key: ${{ secrets.MCPLOAD_KEY }}
+
+      - name: Calibration (lb-stateful must be flagged)
+        id: lb
+        uses: ./action
+        with:
+          url: http://localhost:3004/mcp
+          scenario: lb-check
+          duration: 30s
+          label: lb-stateful
+          artifact-name: mcpload-lb-stateful
+          fail-on: never
+
+      - name: Assert lb-stateful was flagged
+        env:
+          PASSED: ${{ steps.lb.outputs.passed }}
+          RESULT: ${{ steps.lb.outputs.result }}
+        run: |
+          echo "lb-stateful: result=$RESULT passed=$PASSED"
+          if [ "$RESULT" != "fail" ]; then
+            echo "::error::expected lb-stateful to fail with session_not_found, got result=$RESULT"
+            exit 1
+          fi
+
+      - name: Server logs
+        if: failure()
+        working-directory: demo-servers
+        run: docker compose logs --tail=200
+
+      - name: Stop demo servers
+        if: always()
+        working-directory: demo-servers
+        run: docker compose down -v

@@ -1,0 +1,139 @@
+{
+  "paused": null,
+  "vus": null,
+  "duration": null,
+  "iterations": null,
+  "stages": null,
+  "scenarios": {
+    "cooldown": {
+      "executor": "per-vu-iterations",
+      "startTime": "5m0s",
+      "gracefulStop": "0s",
+      "env": null,
+      "exec": "idle",
+      "tags": null,
+      "vus": 1,
+      "iterations": 1,
+      "maxDuration": "2m0s"
+    },
+    "load": {
+      "executor": "constant-arrival-rate",
+      "startTime": "1m0s",
+      "gracefulStop": "30s",
+      "env": null,
+      "exec": "session",
+      "tags": null,
+      "rate": 2,
+      "timeUnit": "1s",
+      "duration": "4m0s",
+      "preAllocatedVUs": 20,
+      "maxVUs": 200
+    },
+    "warmup": {
+      "executor": "ramping-arrival-rate",
+      "startTime": null,
+      "gracefulStop": "30s",
+      "env": null,
+      "exec": "session",
+      "tags": null,
+      "startRate": 0,
+      "timeUnit": "1s",
+      "stages": [
+        {
+          "duration": "1m0s",
+          "target": 2
+        }
+      ],
+      "preAllocatedVUs": 20,
+      "maxVUs": 200
+    }
+  },
+  "executionSegment": null,
+  "executionSegmentSequence": null,
+  "noSetup": null,
+  "setupTimeout": null,
+  "noTeardown": null,
+  "teardownTimeout": null,
+  "handleSummaryTimeout": null,
+  "rps": null,
+  "dns": {
+    "ttl": null,
+    "select": null,
+    "policy": null
+  },
+  "maxRedirects": null,
+  "userAgent": null,
+  "batch": null,
+  "batchPerHost": null,
+  "httpDebug": null,
+  "insecureSkipTLSVerify": null,
+  "tlsCipherSuites": null,
+  "tlsVersion": null,
+  "tlsAuth": null,
+  "tlsAIAFetch": null,
+  "throw": null,
+  "thresholds": {
+    "mcp_connect_duration": [
+      "p(95)\u003c1500"
+    ],
+    "mcp_req_duration{tool:big}": [
+      "p(95)\u003c800",
+      "p(99)\u003c2000"
+    ],
+    "mcp_req_duration{tool:fast}": [
+      "p(95)\u003c800",
+      "p(99)\u003c2000"
+    ],
+    "mcp_req_duration{tool:flaky}": [
+      "p(95)\u003c800",
+      "p(99)\u003c2000"
+    ],
+    "mcp_req_duration{tool:search}": [
+      "p(95)\u003c800",
+      "p(99)\u003c2000"
+    ],
+    "mcp_req_duration{tool:slow}": [
+      "p(95)\u003c800",
+      "p(99)\u003c2000"
+    ],
+    "mcp_tool_error_rate{tool:big}": [
+      "rate\u003c0.01"
+    ],
+    "mcp_tool_error_rate{tool:fast}": [
+      "rate\u003c0.01"
+    ],
+    "mcp_tool_error_rate{tool:flaky}": [
+      "rate\u003c0.15"
+    ],
+    "mcp_tool_error_rate{tool:search}": [
+      "rate\u003c0.01"
+    ],
+    "mcp_tool_error_rate{tool:slow}": [
+      "rate\u003c0.01"
+    ]
+  },
+  "blacklistIPs": null,
+  "blockHostnames": null,
+  "hosts": null,
+  "noConnectionReuse": null,
+  "noVUConnectionReuse": null,
+  "minIterationDuration": null,
+  "ext": null,
+  "summaryTrendStats": [
+    "avg",
+    "min",
+    "med",
+    "p(95)",
+    "p(99)",
+    "max"
+  ],
+  "summaryTimeUnit": null,
+  "systemTags": null,
+  "tags": {
+    "scenario_name": "soak"
+  },
+  "metricSamplesBufferSize": null,
+  "noCookiesReset": null,
+  "discardResponseBodies": null,
+  "features": null
+}

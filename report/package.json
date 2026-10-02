@@ -1,0 +1,19 @@
+{
+  "name": "@mcpload/report",
+  "version": "0.1.0",
+  "private": true,
+  "description": "mcpload report.json schema, validator, and static HTML renderer",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "generate": "node examples/generate.mjs",
+    "validate": "node validate.mjs examples/healthy.json examples/leaky.json",
+    "render": "node render.mjs examples/healthy.json examples/healthy.html && node render.mjs examples/leaky.json examples/leaky.html",
+    "test": "npm run validate"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

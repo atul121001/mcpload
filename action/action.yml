@@ -1,0 +1,445 @@
+name: mcpload
+description: >-
+  Load/soak test a remote MCP server with k6 + xk6-mcpload, gate on per-tool p95/p99 and error budgets
+  plus leak verdicts, publish report.json/report.html and an optional PR comment.
+author: Atul Mishra
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  url:
+    description: >-
+      MCP endpoint to test (streamable HTTP), e.g. http://localhost:3001/mcp.
+      Don't put secrets in URLs or extra-args; they're printed in the log — use env.
+    required: true
+  scenario:
+    description: >-
+      Scenario script. Empty = bundled agent-session (or bundled soak when soak-min is set).
+      A bare name (agent-session, burst, soak, lb-check, oauth-refresh) picks the bundled script;
+      anything else is a path relative to the workspace.
+    required: false
+    default: ''
+  protocol:
+    description: auto | 2026-07-28 | 2025-11-25 | 2025-06-18 | ...
+    required: false
+    default: auto
+  vus:
+    description: Virtual users (scenario default when empty)
+    required: false
+    default: ''
+  duration:
+    description: Test duration, e.g. 2m (scenario default when empty)
+    required: false
+    default: ''
+  soak-min:
+    description: Constant-load minutes for a soak run (switches the default scenario to soak)
+    required: false
+    default: ''
+  warmup-min:
+    description: Soak warm-up minutes (default 10% of soak-min, at least 1)
+    required: false
+    default: ''
+  cooldown-min:
+    description: Soak cool-down minutes (default 5)
+    required: false
+    default: ''
+  sampler:
+    description: Server resource sampler, none | docker | prometheus. Leak verdicts need docker or prometheus.
+    required: false
+    default: none
+  container:
+    description: Container name for sampler=docker
+    required: false
+    default: ''
+  prom-url:
+    description: Prometheus /metrics URL of the server for sampler=prometheus
+    required: false
+    default: ''
+  interval:
+    description: Sampling / series bucket interval, e.g. 10s
+    required: false
+    default: ''
+  p95-ms:
+    description: Default per-tool p95 budget in ms (scenario default 800)
+    required: false
+    default: ''
+  p99-ms:
+    description: Default per-tool p99 budget in ms (scenario default 2000)
+    required: false
+    default: ''
+  err-rate:
+    description: Default per-tool error-rate budget as a fraction (scenario default 0.01)
+    required: false
+    default: ''
+  env:
+    description: >-
+      Extra scenario environment, one K=V per line (e.g. TOOL_MIX={"search":1}, MCP_TOKEN=...).
+      Blank lines and lines starting with # are ignored.
+    required: false
+    default: ''
+  label:
+    description: Short display name of the target in the report
+    required: false
+    default: ''
+  extra-args:
+    description: >-
+      Extra arguments appended to `mcpload run` (whitespace-split), e.g. --leak-slope-mb-per-min 2.
+      Don't put secrets in URLs or extra-args; they're printed in the log — use env.
+    required: false
+    default: ''
+  upload-url:
+    description: Optional. Base URL of a server that accepts report uploads (POST {url}/api/v1/runs). The report is uploaded when this and api-key are set.
+    required: false
+    default: ''
+  api-key:
+    description: API key for the upload server (pass a secret, e.g. secrets.MCPLOAD_KEY)
+    required: false
+    default: ''
+  comment-on-pr:
+    description: >-
+      Post/update a summary comment on the pull request (needs pull-requests write permission).
+      Don't combine with pull_request_target on untrusted PR code.
+    required: false
+    default: 'false'
+  github-token:
+    description: Token used for the PR comment
+    required: false
+    default: ${{ github.token }}
+  fail-on:
+    description: >-
+      fail = fail the step when the run fails its verdicts or budgets; never = only report.
+      A tool error (no report produced, exit code 2) always fails the step.
+    required: false
+    default: fail
+  output-dir:
+    description: Directory (relative to the workspace) for report.json and report.html
+    required: false
+    default: mcpload-report
+  artifact-name:
+    description: Name of the uploaded workflow artifact; must be unique per workflow run. Also keys the PR comment.
+    required: false
+    default: mcpload-report
+  go-version:
+    description: Go version used to build k6 (xk6) and the mcpload CLI
+    required: false
+    default: '1.26'
+  xk6-version:
+    description: xk6 version to install (go install go.k6.io/xk6@<version>)
+    required: false
+    default: v1.4.14
+
+outputs:
+  passed:
+    description: "'true' when the run passed its verdicts and budgets, else 'false'"
+    value: ${{ steps.summary.outputs.passed }}
+  result:
+    description: pass | fail | error
+    value: ${{ steps.summary.outputs.result }}
+  exit-code:
+    description: Exit code of `mcpload run` (0 pass, 1 fail, 2 error)
+    value: ${{ steps.run.outputs.exit-code }}
+  report-path:
+    description: Absolute path of report.json
+    value: ${{ steps.run.outputs.report-path }}
+  html-path:
+    description: Absolute path of report.html
+    value: ${{ steps.run.outputs.html-path }}
+  run-url:
+    description: URL returned by the upload server, if any (empty when not uploaded)
+    value: ${{ steps.upload.outputs.run-url }}
+  artifact-url:
+    description: URL of the uploaded report artifact
+    value: ${{ steps.artifact.outputs.artifact-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve paths and cache key
+      id: paths
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+        GO_VERSION: ${{ inputs.go-version }}
+        XK6_VERSION: ${{ inputs.xk6-version }}
+      run: |
+        set -euo pipefail
+        ROOT="$(cd "$GITHUB_ACTION_PATH/.." && pwd)"
+        for d in xk6-mcpload cmd/mcpload scenarios; do
+          [ -d "$ROOT/$d" ] || { echo "::error::mcpload action: $ROOT/$d not found (the action must be used from the full mcpload repository)"; exit 2; }
+        done
+        EXE=""; [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
+        if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
+        HASH="$(cd "$ROOT" && find xk6-mcpload cmd/mcpload -type f \
+                  ! -name k6 ! -name k6.exe ! -name mcpload ! -name mcpload.exe ! -path '*/.git/*' -print \
+                | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $SHA | $SHA | cut -c1-24)"
+        REF="$(printf '%s' "${ACTION_REF:-local}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)"
+        KEY="mcpload-bin-v1-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-xk6$XK6_VERSION-$HASH-$REF"
+        BIN="$RUNNER_TEMP/mcpload-bin"
+        # A previous invocation in the same job already built these binaries.
+        PREBUILT=false
+        if [ -f "$BIN/.key" ] && [ "$(cat "$BIN/.key")" = "$KEY" ] && [ -x "$BIN/k6$EXE" ] && [ -x "$BIN/mcpload$EXE" ]; then PREBUILT=true; fi
+        {
+          echo "root=$ROOT"
+          echo "bin=$BIN"
+          echo "exe=$EXE"
+          echo "key=$KEY"
+          echo "prebuilt=$PREBUILT"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore k6 + mcpload binaries
+      id: cache
+      if: steps.paths.outputs.prebuilt != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.bin }}
+        key: ${{ steps.paths.outputs.key }}
+
+    - name: Set up Go
+      if: steps.paths.outputs.prebuilt != 'true' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Build k6 (xk6-mcpload) and mcpload
+      if: steps.paths.outputs.prebuilt != 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ROOT: ${{ steps.paths.outputs.root }}
+        BIN: ${{ steps.paths.outputs.bin }}
+        EXE: ${{ steps.paths.outputs.exe }}
+        KEY: ${{ steps.paths.outputs.key }}
+        XK6_VERSION: ${{ inputs.xk6-version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$BIN"
+        echo "::group::xk6 build"
+        go install "go.k6.io/xk6@$XK6_VERSION"
+        XK6="$(go env GOPATH)/bin/xk6$EXE"
+        (cd "$ROOT/xk6-mcpload" && "$XK6" build --with "github.com/atul121001/mcpload/xk6-mcpload=." --output "$BIN/k6$EXE")
+        echo "::endgroup::"
+        echo "::group::go build mcpload"
+        (cd "$ROOT/cmd/mcpload" && go build -trimpath -o "$BIN/mcpload$EXE" .)
+        echo "::endgroup::"
+        printf '%s' "$KEY" > "$BIN/.key"
+
+    - name: Check binaries
+      shell: bash
+      env:
+        BIN: ${{ steps.paths.outputs.bin }}
+        EXE: ${{ steps.paths.outputs.exe }}
+      run: |
+        "$BIN/k6$EXE" version
+        "$BIN/mcpload$EXE" version
+
+    - name: Run mcpload
+      id: run
+      shell: bash
+      env:
+        ROOT: ${{ steps.paths.outputs.root }}
+        BIN: ${{ steps.paths.outputs.bin }}
+        EXE: ${{ steps.paths.outputs.exe }}
+        IN_URL: ${{ inputs.url }}
+        IN_SCENARIO: ${{ inputs.scenario }}
+        IN_PROTOCOL: ${{ inputs.protocol }}
+        IN_VUS: ${{ inputs.vus }}
+        IN_DURATION: ${{ inputs.duration }}
+        IN_SOAK_MIN: ${{ inputs.soak-min }}
+        IN_WARMUP_MIN: ${{ inputs.warmup-min }}
+        IN_COOLDOWN_MIN: ${{ inputs.cooldown-min }}
+        IN_SAMPLER: ${{ inputs.sampler }}
+        IN_CONTAINER: ${{ inputs.container }}
+        IN_PROM_URL: ${{ inputs.prom-url }}
+        IN_INTERVAL: ${{ inputs.interval }}
+        IN_P95: ${{ inputs.p95-ms }}
+        IN_P99: ${{ inputs.p99-ms }}
+        IN_ERR: ${{ inputs.err-rate }}
+        IN_ENV: ${{ inputs.env }}
+        IN_LABEL: ${{ inputs.label }}
+        IN_EXTRA: ${{ inputs.extra-args }}
+        IN_OUT_DIR: ${{ inputs.output-dir }}
+        GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        GIT_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
+      run: |
+        set -uo pipefail
+        mkdir -p "$IN_OUT_DIR"
+        OUT="$(cd "$IN_OUT_DIR" && pwd)"
+        REPORT="$OUT/report.json"; HTML="$OUT/report.html"
+        rm -f "$REPORT" "$HTML"
+        {
+          echo "out-dir=$OUT"
+          echo "report-path=$REPORT"
+          echo "html-path=$HTML"
+        } >> "$GITHUB_OUTPUT"
+
+        scenario="$IN_SCENARIO"
+        if [ -z "$scenario" ]; then
+          if [ -n "$IN_SOAK_MIN" ]; then scenario=soak; else scenario=agent-session; fi
+        fi
+        case "$scenario" in
+          */*|*.js) ;;
+          *) scenario="$ROOT/scenarios/$scenario.js" ;;
+        esac
+        [ -f "$scenario" ] || { echo "::error::scenario not found: $scenario"; echo "exit-code=2" >> "$GITHUB_OUTPUT"; exit 0; }
+
+        args=(run --scenario "$scenario" --url "$IN_URL" --k6 "$BIN/k6$EXE"
+              --protocol "${IN_PROTOCOL:-auto}" --sampler "${IN_SAMPLER:-none}"
+              --git-sha "$GIT_SHA" --git-ref "$GIT_REF" --out "$REPORT" --html "$HTML")
+        shown=("${args[@]}")
+        add() { args+=("$@"); shown+=("$@"); }
+        [ -n "$IN_VUS" ]          && add --vus "$IN_VUS"
+        [ -n "$IN_DURATION" ]     && add --duration "$IN_DURATION"
+        [ -n "$IN_SOAK_MIN" ]     && add --soak-min "$IN_SOAK_MIN"
+        [ -n "$IN_WARMUP_MIN" ]   && add --warmup-min "$IN_WARMUP_MIN"
+        [ -n "$IN_COOLDOWN_MIN" ] && add --cooldown-min "$IN_COOLDOWN_MIN"
+        [ -n "$IN_CONTAINER" ]    && add --container "$IN_CONTAINER"
+        [ -n "$IN_PROM_URL" ]     && add --prom-url "$IN_PROM_URL"
+        [ -n "$IN_INTERVAL" ]     && add --interval "$IN_INTERVAL"
+        [ -n "$IN_LABEL" ]        && add --label "$IN_LABEL"
+        [ -n "$IN_P95" ]          && add --env "P95_MS=$IN_P95"
+        [ -n "$IN_P99" ]          && add --env "P99_MS=$IN_P99"
+        [ -n "$IN_ERR" ]          && add --env "ERR_RATE=$IN_ERR"
+        # env: one K=V per line; values are passed through but not echoed (they may hold tokens).
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="${line%$'\r'}"
+          line="${line#"${line%%[![:space:]]*}"}"
+          [ -z "$line" ] && continue
+          case "$line" in \#*) continue ;; esac
+          case "$line" in
+            *=*) args+=(--env "$line"); shown+=(--env "${line%%=*}=***") ;;
+            *) echo "::error::env line is not K=V: ${line%%=*}"; echo "exit-code=2" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+        done <<< "$IN_ENV"
+        if [ -n "$IN_EXTRA" ]; then
+          read -r -a extra <<< "$IN_EXTRA"
+          add "${extra[@]}"
+        fi
+
+        echo "mcpload ${shown[*]}"
+        "$BIN/mcpload$EXE" "${args[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "mcpload exited with $code"
+        exit 0
+
+    - name: Upload report
+      id: upload
+      if: inputs.upload-url != '' && inputs.api-key != ''
+      shell: bash
+      env:
+        BIN: ${{ steps.paths.outputs.bin }}
+        EXE: ${{ steps.paths.outputs.exe }}
+        REPORT: ${{ steps.run.outputs.report-path }}
+        UPLOAD_URL: ${{ inputs.upload-url }}
+        MCPLOAD_KEY: ${{ inputs.api-key }}
+      run: |
+        set -uo pipefail
+        echo "::add-mask::$MCPLOAD_KEY"
+        if [ ! -f "$REPORT" ]; then echo "::warning::no report to upload"; exit 0; fi
+        # The key travels in the MCPLOAD_KEY env var, not on the command line.
+        if ! resp="$("$BIN/mcpload$EXE" upload --url "$UPLOAD_URL" "$REPORT")"; then
+          echo "$resp"
+          echo "::warning::mcpload upload failed; continuing"
+          exit 0
+        fi
+        echo "$resp"
+        # Expect the API response JSON {runId,status,regression,url}; fall back to the last URL printed.
+        run_url="$(printf '%s' "$resp" | node -e '
+          let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            let url = "";
+            for (const chunk of [s, ...s.split(/\r?\n/).reverse()]) {
+              try { const j = JSON.parse(chunk); if (j && typeof j.url === "string") { url = j.url; break; } } catch {}
+            }
+            if (!url) { const m = s.match(/https?:\/\/[^\s"<>]+/g); if (m) url = m[m.length - 1]; }
+            process.stdout.write(url);
+          });')"
+        echo "run-url=$run_url" >> "$GITHUB_OUTPUT"
+
+    - name: Upload report artifact
+      id: artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.run.outputs.out-dir }}
+        if-no-files-found: warn
+
+    - name: Write job summary
+      id: summary
+      shell: bash
+      env:
+        ROOT: ${{ steps.paths.outputs.root }}
+        REPORT: ${{ steps.run.outputs.report-path }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        RUN_URL: ${{ steps.upload.outputs.run-url }}
+        ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        MARKER: mcpload-report:${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+        TMP="$(mktemp -d "$RUNNER_TEMP/mcpload-summary.XXXXXX")"
+        node "$ROOT/action/summary.mjs" "${REPORT:-report.json}" --out "$TMP/summary.md" \
+          --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" --exit-code "${EXIT_CODE:-2}" \
+          --marker "$MARKER" --github-output "$TMP/result.txt"
+        cat "$TMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        result="$(sed -n 's/^result=//p' "$TMP/result.txt" | tail -n1)"
+        # A CLI error wins over whatever report may exist; passed = exit 0 and the report's overall rule says pass.
+        if [ "${EXIT_CODE:-2}" = "2" ]; then result=error; fi
+        if [ "${EXIT_CODE:-2}" = "0" ] && [ "$result" = "pass" ]; then passed=true; else passed=false; fi
+        if [ "$result" = "pass" ] && [ "$passed" = "false" ]; then result=fail; fi
+        {
+          echo "result=$result"
+          echo "passed=$passed"
+          echo "comment-file=$TMP/summary.md"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Comment on pull request
+      if: inputs.comment-on-pr == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      uses: actions/github-script@v7
+      env:
+        COMMENT_FILE: ${{ steps.summary.outputs.comment-file }}
+        MARKER: mcpload-report:${{ inputs.artifact-name }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+          const marker = `<!-- ${process.env.MARKER} -->`;
+          const issue_number = context.payload.pull_request && context.payload.pull_request.number;
+          if (!issue_number) { core.info('not a pull request; skipping comment'); return; }
+          const { owner, repo } = context.repo;
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              core.info(`updated comment ${existing.html_url}`);
+            } else {
+              const { data } = await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              core.info(`created comment ${data.html_url}`);
+            }
+          } catch (e) {
+            core.warning(`could not comment on the PR (${e.status || ''} ${e.message}). The job needs 'permissions: pull-requests: write'; PRs from forks get a read-only token.`);
+          }
+
+    - name: Gate
+      shell: bash
+      env:
+        RESULT: ${{ steps.summary.outputs.result }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        case "$FAIL_ON" in fail|never) ;; *) echo "::error::fail-on must be 'fail' or 'never', got '$FAIL_ON'"; exit 2 ;; esac
+        if [ "$RESULT" = "error" ] || [ "${EXIT_CODE:-2}" = "2" ]; then
+          echo "::error::mcpload errored (exit code ${EXIT_CODE:-none}); see the 'Run mcpload' step log"
+          exit 2
+        fi
+        if [ "$RESULT" = "pass" ] && [ "$EXIT_CODE" = "0" ]; then
+          echo "mcpload: PASS"
+          exit 0
+        fi
+        if [ "$FAIL_ON" = "never" ]; then
+          echo "::warning::mcpload: FAIL (not failing the job because fail-on=never)"
+          exit 0
+        fi
+        echo "::error::mcpload: FAIL (verdicts or budgets); see the job summary"
+        exit 1

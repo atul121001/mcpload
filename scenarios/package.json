@@ -1,0 +1,7 @@
+{
+  "name": "@mcpload/scenarios",
+  "private": true,
+  "description": "k6 scenario library for mcpload (run with a k6 binary built with xk6-mcpload, not node). type=module lets `node --check` syntax-check these files.",
+  "license": "Apache-2.0",
+  "type": "module"
+}
