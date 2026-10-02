@@ -80,34 +80,44 @@ Speed and errors for each tool, from the healthy run. Any cell over its budget i
 
 The repo includes small demo MCP servers, some healthy and some deliberately broken, so you can see both a pass and a fail without touching a real server.
 
-**You need:** [Docker](https://docs.docker.com/get-docker/), [Go 1.26+](https://go.dev/dl/) and Git.
+**You need:** [Docker](https://docs.docker.com/get-docker/) (to run the demo servers) and Git. No programming tools are needed.
 
-**1. Get the code**
+**1. Get the code.** This includes the demo servers and ready-made test scenarios.
 
 ```bash
 git clone https://github.com/atul121001/mcpload.git
 cd mcpload
 ```
 
-**2. Start the demo servers.** They run only on your own machine (127.0.0.1).
+**2. Download mcpload into that folder.** Each download contains two programs: `mcpload` (the command you use) and `k6` (the load generator, with MCP support built in).
+
+| Your computer | Download from [Releases](https://github.com/atul121001/mcpload/releases/latest) |
+|---|---|
+| Windows | `mcpload_<version>_windows_amd64.zip` |
+| Mac with Apple silicon (M1 or newer) | `mcpload_<version>_darwin_arm64.tar.gz` |
+| Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
+| Linux | `mcpload_<version>_linux_amd64.tar.gz` |
+
+Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line (here for Linux, version 0.1.0):
+
+```bash
+curl -L https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_linux_amd64.tar.gz \
+  | tar -xz --strip-components=1 --wildcards "*/mcpload" "*/k6"
+```
+
+> **Mac:** if macOS says the app "cannot be opened because the developer cannot be verified", run `xattr -d com.apple.quarantine mcpload k6` once in the folder.
+
+**3. Start the demo servers.** They run only on your own machine (127.0.0.1).
 
 ```bash
 docker compose -f demo-servers/docker-compose.yml up -d --build
-```
-
-**3. Build the two tools.** This makes `k6` (the load generator, with MCP support built in) and `mcpload` (the command you'll actually use). It takes a minute the first time.
-
-```bash
-go install go.k6.io/xk6@latest
-xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output ./k6
-(cd cmd/mcpload && go build -o ../../mcpload .)
 ```
 
 **4. Test a healthy server.** One minute of agent traffic:
 
 ```bash
 ./mcpload run --url http://localhost:3001/mcp --scenario scenarios/agent-session.js \
-  --k6 ./k6 --duration 1m --out report.json --html report.html
+  --duration 1m --out report.json --html report.html
 ```
 
 You should see a **PASS**. Open `report.html` in your browser to see per-tool timings.
@@ -116,12 +126,25 @@ You should see a **PASS**. Open `report.html` in your browser to see per-tool ti
 
 ```bash
 ./mcpload run --url http://localhost:3004/mcp --scenario scenarios/lb-check.js \
-  --k6 ./k6 --out lb.json --html lb.html
+  --out lb.json --html lb.html
 ```
 
 You should see a **FAIL** with `session_not_found`. That's the tool catching a real class of bug.
 
-> **On Windows,** the commands are the same with `k6.exe` and `mcpload.exe`. [docs/QUICKSTART.md](docs/QUICKSTART.md) has PowerShell versions of everything.
+> **On Windows,** use `.\mcpload.exe` in place of `./mcpload`. [docs/QUICKSTART.md](docs/QUICKSTART.md) has PowerShell versions of everything.
+
+<details>
+<summary><b>Prefer to build from source?</b></summary>
+
+You need [Go 1.26+](https://go.dev/dl/). From the repo folder:
+
+```bash
+go install go.k6.io/xk6@latest
+xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output ./k6
+(cd cmd/mcpload && go build -o ../../mcpload .)
+```
+
+</details>
 
 When you're done: `docker compose -f demo-servers/docker-compose.yml down`
 
@@ -136,7 +159,7 @@ When you're done: `docker compose -f demo-servers/docker-compose.yml down`
 ```bash
 ./mcpload run --url https://staging.example.com/mcp \
   --env MCP_TOKEN=your-token \
-  --scenario scenarios/agent-session.js --k6 ./k6 \
+  --scenario scenarios/agent-session.js \
   --vus 5 --duration 2m --out report.json --html report.html
 ```
 
@@ -163,7 +186,7 @@ That means: 95% of calls under 800 ms, 99% under 2 seconds, and fewer than 1% er
 - the Docker container it runs in (`--sampler docker --container my-mcp-server`).
 
 ```bash
-./mcpload run --url https://staging.example.com/mcp --scenario scenarios/soak.js --k6 ./k6 \
+./mcpload run --url https://staging.example.com/mcp --scenario scenarios/soak.js \
   --env MCP_TOKEN=your-token --soak-min 30 \
   --sampler prometheus --prom-url https://staging.example.com/metrics \
   --out soak.json --html soak.html

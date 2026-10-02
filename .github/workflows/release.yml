@@ -1,0 +1,109 @@
+name: release
+
+# Push a tag like v0.1.0 to build ready-to-run archives for Windows, macOS and
+# Linux and publish them as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      K6_VERSION: v2.3.0
+      XK6_VERSION: v1.4.14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: xk6-mcpload/go.mod
+          cache: false
+
+      - name: Install xk6
+        run: go install go.k6.io/xk6@"$XK6_VERSION"
+
+      - name: Build archives
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${target%/*}"; arch="${target#*/}"
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            name="mcpload_${TAG#v}_${os}_${arch}"
+            out="build/$name"
+            mkdir -p "$out"
+            echo "::group::$name"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              xk6 build "$K6_VERSION" \
+                --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload \
+                --output "$out/k6$ext"
+            (cd cmd/mcpload && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X main.version=$TAG" -o "../../$out/mcpload$ext" .)
+            cp -r scenarios "$out/"
+            rm -f "$out/scenarios/package.json"
+            cp LICENSE README.md "$out/"
+            if [ "$os" = windows ]; then
+              (cd build && zip -qr "../dist/$name.zip" "$name")
+            else
+              tar -C build -czf "dist/$name.tar.gz" "$name"
+            fi
+            echo "::endgroup::"
+          done
+          (cd dist && sha256sum * > checksums.txt)
+          ls -l dist
+
+      - name: Smoke-test the Linux build
+        run: |
+          set -euo pipefail
+          dir="build/mcpload_${GITHUB_REF_NAME#v}_linux_amd64"
+          "$dir/mcpload" version
+          "$dir/k6" version | grep -q 'k6/x/mcpload'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          Ready-to-run downloads. Each archive contains \`mcpload\`, a \`k6\` build with MCP support, and the \`scenarios/\` folder. No Go toolchain needed.
+
+          | Your computer | Download |
+          |---|---|
+          | Windows | \`mcpload_${TAG#v}_windows_amd64.zip\` |
+          | Mac with Apple silicon (M1 or newer) | \`mcpload_${TAG#v}_darwin_arm64.tar.gz\` |
+          | Mac with Intel | \`mcpload_${TAG#v}_darwin_amd64.tar.gz\` |
+          | Linux | \`mcpload_${TAG#v}_linux_amd64.tar.gz\` (or \`linux_arm64\`) |
+
+          Unpack it, open a terminal in the folder, and run \`./mcpload run --url <your MCP URL> --scenario scenarios/agent-session.js\`. See the README for the full walkthrough.
+
+          On macOS, if you see "cannot be opened because the developer cannot be verified", run \`xattr -d com.apple.quarantine mcpload k6\` in the folder once.
+
+          Verify downloads with \`checksums.txt\` (SHA-256).
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "$TAG" dist/* --repo "$REPO" --title "mcpload $TAG" --notes-file notes.md

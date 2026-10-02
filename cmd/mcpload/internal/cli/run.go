@@ -54,7 +54,7 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.scenario, "scenario", "", "k6 scenario script, e.g. scenarios/soak.js (required)")
 	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to k6 as MCP_URL (required)")
 	fs.StringVar(&o.protocol, "protocol", "auto", "MCP protocol version or 'auto' (MCP_PROTOCOL)")
-	fs.StringVar(&o.k6, "k6", "", "k6 binary built with xk6-mcpload (default ./k6.exe or ./k6, then k6 on PATH)")
+	fs.StringVar(&o.k6, "k6", "", "k6 binary built with xk6-mcpload (default: ./k6 in the current folder, then next to mcpload, then k6 on PATH)")
 	fs.StringVar(&o.samplerKind, "sampler", "none", "server sampler: none | docker | prometheus")
 	fs.StringVar(&o.container, "container", "", "container name or id for --sampler docker")
 	fs.StringVar(&o.promURL, "prom-url", "", "Prometheus text endpoint (e.g. http://host:3001/metrics) for --sampler prometheus")

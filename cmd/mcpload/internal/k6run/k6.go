@@ -19,7 +19,8 @@ import (
 )
 
 // FindBinary resolves the k6 binary: an explicit path wins; otherwise ./k6.exe
-// (Windows) or ./k6 in the working directory, then k6 on PATH.
+// (Windows) or ./k6 in the working directory, then next to the mcpload
+// executable (release archives ship both together), then k6 on PATH.
 func FindBinary(explicit string) (string, error) {
 	if explicit != "" {
 		if p, err := exec.LookPath(explicit); err == nil {
@@ -39,9 +40,18 @@ func FindBinary(explicit string) (string, error) {
 			return filepath.Abs(name)
 		}
 	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for _, name := range local {
+			p := filepath.Join(dir, name)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p, nil
+			}
+		}
+	}
 	p, err := exec.LookPath("k6")
 	if err != nil {
-		return "", errors.New("k6 binary not found (looked for ./k6.exe, ./k6 and k6 on PATH); build it with xk6 or pass --k6")
+		return "", errors.New("k6 binary not found (looked in the current folder, next to mcpload, and on PATH); download a release or pass --k6")
 	}
 	return p, nil
 }
