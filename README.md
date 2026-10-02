@@ -311,8 +311,6 @@ Settings for each: [scenarios/README.md](scenarios/README.md).
 - [Roadmap](docs/ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 
-**Need help testing a production MCP server?** Commercial readiness audits are available. Contact via the [GitHub profile](https://github.com/atul121001).
-
 ## License
 
 [Apache-2.0](LICENSE)
