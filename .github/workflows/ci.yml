@@ -54,9 +54,15 @@ jobs:
           cache: npm
           cache-dependency-path: report/package-lock.json
       - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/mcpload/go.mod
+          cache-dependency-path: cmd/mcpload/go.*
+      # generate.mjs writes the data; the Go analysis fills in the verdicts.
       - name: Examples are reproducible
         run: |
           node examples/generate.mjs
+          (cd ../cmd/mcpload && go test ./internal/analysis -run TestExamples -update)
           git diff --exit-code -- examples/healthy.json examples/leaky.json
       - name: Validate examples against schema
         run: node validate.mjs examples/healthy.json examples/leaky.json
