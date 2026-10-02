@@ -31,7 +31,9 @@ const fmtPct = (v) => (v === null || v === undefined || !Number.isFinite(v) ? '�
 const fmtInt = (v) => (Number.isFinite(v) ? v.toLocaleString('en-US') : '–');
 const fmtDur = (s) => {
   if (!Number.isFinite(s)) return '–';
-  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  // Round once, up front, so 119.6 s reads "2m" rather than "1m 60s".
+  const total = Math.max(0, Math.round(s));
+  const m = Math.floor(total / 60), r = total % 60;
   return m ? `${m}m${r ? ` ${r}s` : ''}` : `${r}s`;
 };
 // Markdown table cells: escape pipes and strip newlines.
@@ -96,6 +98,29 @@ export function renderMarkdown(report, o = {}) {
   const byType = Object.entries(s.byErrorType || {}).filter(([, n]) => n > 0);
   const typeText = byType.length ? ` · by type: ${byType.map(([k, n]) => `\`${cell(k)}\` ${fmtInt(n)}`).join(', ')}` : '';
   lines.push(`**Requests** ${fmtInt(s.reqs)} · **Errors** ${fmtInt(s.errors)} (${fmtPct(s.errorRate)})${typeText}`, '');
+
+  // Load generator health (optional fields; older reports don't have them).
+  const gen = run.generator && typeof run.generator === 'object' ? run.generator : null;
+  const genFacts = [];
+  if (Number.isFinite(s.iterations)) genFacts.push(`**Iterations** ${fmtInt(s.iterations)}`);
+  if (Number.isFinite(s.droppedIterations)) {
+    const planned = Number.isFinite(s.iterations) ? s.iterations + s.droppedIterations : NaN;
+    const share = planned > 0 ? ` (${fmtPct(s.droppedIterations / planned)} of planned)` : '';
+    genFacts.push(`**Dropped iterations** ${fmtInt(s.droppedIterations)}${share}`);
+  }
+  if (gen) {
+    const cpu = [];
+    if (Number.isFinite(gen.cpuAvgPct)) cpu.push(`avg ${gen.cpuAvgPct.toFixed(0)}%`);
+    if (Number.isFinite(gen.cpuMaxPct)) cpu.push(`max ${gen.cpuMaxPct.toFixed(0)}%`);
+    const cores = Number.isFinite(gen.cores) ? `${gen.cores} core${gen.cores === 1 ? '' : 's'}` : '';
+    if (cpu.length) genFacts.push(`**k6 CPU** ${cpu.join(', ')}${cores ? ` on ${cores}` : ''}`);
+    else if (cores) genFacts.push(`**Generator** ${cores}`);
+  }
+  if (genFacts.length) lines.push(genFacts.join(' · '), '');
+  const genVerdict = (Array.isArray(report.verdicts) ? report.verdicts : []).find((v) => v && v.id === 'generator');
+  if (genVerdict && (genVerdict.status === 'warn' || genVerdict.status === 'fail')) {
+    lines.push(`> **Load generator ${genVerdict.status === 'fail' ? 'failed' : 'warning'}:** ${cell(genVerdict.message || 'k6 could not keep up with the planned load').replace(/\.\s*$/, '')}. Latency figures may include load-generator overhead; lower the load or run k6 on a separate machine.`, '');
+  }
 
   if (!res.passed) {
     const reasons = [

@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // FindBinary resolves the k6 binary: an explicit path wins; otherwise ./k6.exe
@@ -87,9 +88,11 @@ func EnvArgs(env []string) []string {
 	return args
 }
 
-// Inspect runs `k6 inspect` on the script with the given env and parses the options.
+// Inspect runs `k6 inspect` on the script with the given env and parses the
+// options. Like `k6 run` (whose --include-system-env-vars defaults to true),
+// the script sees the OS environment, with the -e values winning.
 func Inspect(ctx context.Context, bin, script string, env []string) (*Options, error) {
-	args := append([]string{"inspect"}, EnvArgs(env)...)
+	args := append([]string{"inspect", "--include-system-env-vars"}, EnvArgs(env)...)
 	args = append(args, script)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var stderr bytes.Buffer
@@ -111,8 +114,28 @@ type RunConfig struct {
 	ExtraArgs   []string // extra k6 run flags, before the script
 	Stdout      io.Writer
 	Stderr      io.Writer
-	// OnStart is called right after the process started.
-	OnStart func()
+	// OnStart is called right after the process started, with its pid.
+	OnStart func(pid int)
+	// Signals, when set, are forwarded to k6 so it stops gracefully (on
+	// Windows as CTRL_BREAK to k6's own process group). k6 is killed after
+	// Grace (default DefaultGrace) or on a second signal.
+	Signals <-chan os.Signal
+	Grace   time.Duration
+	// OnSignal, when set, is called for each received signal (for logging).
+	OnSignal func(sig os.Signal, forced bool)
+}
+
+// DefaultGrace is how long k6 may take to stop after a forwarded signal.
+const DefaultGrace = 30 * time.Second
+
+// Result is the outcome of one `k6 run`.
+type Result struct {
+	ExitCode    int
+	Interrupted bool          // a signal was forwarded to k6
+	Killed      bool          // k6 was killed (grace expired or second signal)
+	CPU         time.Duration // total user+system CPU time of the k6 process
+	Started     time.Time
+	Ended       time.Time
 }
 
 // SummaryTrendStats is passed to k6 so the summary export carries the common
@@ -139,26 +162,80 @@ const (
 
 // Run executes k6 and waits. It returns k6's exit code; err is set only when
 // the process could not be started or waited for.
-func Run(c RunConfig) (int, error) {
-	cmd := exec.Command(c.Bin, c.Args()...)
+func Run(c RunConfig) (Result, error) {
+	return runCmd(exec.Command(c.Bin, c.Args()...), c)
+}
+
+// runCmd starts cmd in its own process group (so a terminal Ctrl-C reaches
+// mcpload only, which forwards it once), forwards c.Signals and waits.
+func runCmd(cmd *exec.Cmd, c RunConfig) (Result, error) {
+	res := Result{ExitCode: -1}
 	cmd.Stdout = c.Stdout
 	cmd.Stderr = c.Stderr
 	cmd.Stdin = nil
+	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
-		return -1, fmt.Errorf("start k6: %w", err)
+		return res, fmt.Errorf("start k6: %w", err)
 	}
+	res.Started = time.Now()
 	if c.OnStart != nil {
-		c.OnStart()
+		c.OnStart(cmd.Process.Pid)
 	}
-	err := cmd.Wait()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	grace := c.Grace
+	if grace <= 0 {
+		grace = DefaultGrace
+	}
+	var graceC <-chan time.Time
+	var err error
+wait:
+	for {
+		select {
+		case err = <-done:
+			break wait
+		case sig := <-c.Signals:
+			forced := res.Interrupted
+			if c.OnSignal != nil {
+				c.OnSignal(sig, forced)
+			}
+			if forced {
+				res.Killed = true
+				_ = cmd.Process.Kill()
+				continue
+			}
+			res.Interrupted = true
+			if ierr := interruptProcess(cmd.Process, sig); ierr != nil {
+				res.Killed = true
+				_ = cmd.Process.Kill()
+				continue
+			}
+			t := time.NewTimer(grace)
+			defer t.Stop()
+			graceC = t.C
+		case <-graceC:
+			graceC = nil
+			if c.OnSignal != nil {
+				c.OnSignal(nil, true)
+			}
+			res.Killed = true
+			_ = cmd.Process.Kill()
+		}
+	}
+	res.Ended = time.Now()
+	if ps := cmd.ProcessState; ps != nil {
+		res.CPU = ps.UserTime() + ps.SystemTime()
+	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return ee.ExitCode(), nil
+		res.ExitCode = ee.ExitCode()
+		return res, nil
 	}
 	if err != nil {
-		return -1, fmt.Errorf("wait k6: %w", err)
+		return res, fmt.Errorf("wait k6: %w", err)
 	}
-	return 0, nil
+	res.ExitCode = 0
+	return res, nil
 }
 
 // SummaryExport is the subset of k6's --summary-export file mcpload uses.

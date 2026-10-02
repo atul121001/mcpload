@@ -21,6 +21,13 @@ const (
 	MetricErrors          = "mcp_errors"
 	MetricConnectDuration = "mcp_connect_duration"
 	methodToolsCall       = "tools/call"
+
+	// k6 built-in metrics.
+	MetricIterations        = "iterations"
+	MetricDroppedIterations = "dropped_iterations"
+
+	// ErrorTypeToolIsError is the error_type of a tools/call whose result had isError: true.
+	ErrorTypeToolIsError = "tool_iserror"
 )
 
 type line struct {
@@ -90,12 +97,30 @@ func TimeRange(r io.Reader) (first, last time.Time, err error) {
 type bucket struct {
 	reqs      float64
 	errors    float64
+	dropped   float64
 	durations []float64
+	// tools holds successful tools/call durations per tool.
+	tools map[string][]float64
+}
+
+// merge folds o into b.
+func (b *bucket) merge(o bucket) {
+	b.reqs += o.reqs
+	b.errors += o.errors
+	b.dropped += o.dropped
+	b.durations = append(b.durations, o.durations...)
+	for n, d := range o.tools {
+		if b.tools == nil {
+			b.tools = map[string][]float64{}
+		}
+		b.tools[n] = append(b.tools[n], d...)
+	}
 }
 
 type toolAgg struct {
 	reqs, errors float64
-	durations    []float64
+	samples      int       // all duration samples (successful or not)
+	durations    []float64 // successful calls only
 }
 
 // Aggregator folds NDJSON points into report aggregates.
@@ -107,6 +132,8 @@ type Aggregator struct {
 	tools       map[string]*toolAgg
 	reqs        float64
 	errors      float64
+	iterations  float64
+	dropped     float64
 	byErrorType map[string]float64
 	protoOK     map[string]int
 	protoAny    map[string]int
@@ -200,10 +227,24 @@ func (a *Aggregator) add(l *line) error {
 	case MetricReqDuration:
 		b := a.bucketFor(t)
 		b.durations = append(b.durations, v)
-		if tags["method"] == methodToolsCall && tags["tool"] != "" {
-			ta := a.tool(tags["tool"])
-			ta.durations = append(ta.durations, v)
+		if name := tags["tool"]; tags["method"] == methodToolsCall && name != "" {
+			ta := a.tool(name)
+			ta.samples++
+			// xk6-mcpload sets error_type only on failed requests; tool
+			// latency percentiles and series cover successful calls only.
+			if tags["error_type"] == "" {
+				ta.durations = append(ta.durations, v)
+				if b.tools == nil {
+					b.tools = map[string][]float64{}
+				}
+				b.tools[name] = append(b.tools[name], v)
+			}
 		}
+	case MetricIterations:
+		a.iterations += v
+	case MetricDroppedIterations:
+		a.dropped += v
+		a.bucketFor(t).dropped += v
 	case MetricReqs:
 		a.reqs += v
 		a.bucketFor(t).reqs += v
@@ -245,6 +286,9 @@ type Summary struct {
 	Errors      int64
 	ErrorRate   float64
 	ByErrorType map[string]int64
+	// Iterations and DroppedIterations are k6's iterations and
+	// dropped_iterations counters; ToolErrors is mcp_errors{error_type:tool_iserror}.
+	Iterations, DroppedIterations, ToolErrors int64
 }
 
 // Summary returns the totals over the whole run.
@@ -254,6 +298,9 @@ func (a *Aggregator) Summary() Summary {
 		s.ByErrorType[sanitizeKey(k)] += round(v)
 	}
 	s.ErrorRate = ratio(s.Errors, s.Reqs)
+	s.Iterations = round(a.iterations)
+	s.DroppedIterations = round(a.dropped)
+	s.ToolErrors = round(a.byErrorType[ErrorTypeToolIsError])
 	return s
 }
 
@@ -277,8 +324,8 @@ func (a *Aggregator) Tools() []ToolStats {
 		t := a.tools[n]
 		sort.Float64s(t.durations)
 		ts := ToolStats{Name: n, Reqs: round(t.reqs), Errors: round(t.errors)}
-		if ts.Reqs < int64(len(t.durations)) {
-			ts.Reqs = int64(len(t.durations))
+		if ts.Reqs < int64(t.samples) {
+			ts.Reqs = int64(t.samples)
 		}
 		if ts.Errors > ts.Reqs {
 			ts.Errors = ts.Reqs
@@ -296,25 +343,46 @@ func (a *Aggregator) Tools() []ToolStats {
 }
 
 // ClientSeries is report.series.client; each slice has n entries.
+// DroppedIterations counts k6 dropped_iterations per bucket (0 when none).
+// Tools maps each tool to the p95 (ms) of its successful tools/call durations
+// per bucket (nil for buckets without successful calls).
 type ClientSeries struct {
-	P95Ms, ErrorRate, RPS []*float64
+	P95Ms, ErrorRate, RPS, DroppedIterations []*float64
+	Tools                                    map[string][]*float64
 }
 
 // Buckets is the number of client buckets that saw data.
 func (a *Aggregator) Buckets() int { return len(a.buckets) }
 
-// Client returns n buckets of client series. p95 and error rate are null for
-// buckets without requests; rps is 0 there.
-func (a *Aggregator) Client(n int) ClientSeries {
+// Client returns n buckets of client series; samples past the last bucket
+// (clock skew at shutdown) are folded into it. See Series.
+func (a *Aggregator) Client(n int) ClientSeries { return a.Series(n, true) }
+
+// Series returns n buckets of client series. p95 and error rate are null for
+// buckets without requests; rps and dropped iterations are 0 there. With
+// foldTail, samples past bucket n-1 are folded into it; otherwise they are
+// left out of the series (a trimmed partial last bucket) while still counting
+// in Summary and Tools.
+func (a *Aggregator) Series(n int, foldTail bool) ClientSeries {
 	cs := ClientSeries{
-		P95Ms:     make([]*float64, n),
-		ErrorRate: make([]*float64, n),
-		RPS:       make([]*float64, n),
+		P95Ms:             make([]*float64, n),
+		ErrorRate:         make([]*float64, n),
+		RPS:               make([]*float64, n),
+		DroppedIterations: make([]*float64, n),
+		Tools:             map[string][]*float64{},
+	}
+	for name := range a.tools {
+		cs.Tools[name] = make([]*float64, n)
 	}
 	iv := a.Interval.Seconds()
 	for i := 0; i < n; i++ {
 		var b bucket
-		if i < len(a.buckets) {
+		switch {
+		case i == n-1 && foldTail && len(a.buckets) > n:
+			for _, o := range a.buckets[i:] {
+				b.merge(o)
+			}
+		case i < len(a.buckets):
 			b = a.buckets[i]
 		}
 		if len(b.durations) > 0 {
@@ -325,26 +393,32 @@ func (a *Aggregator) Client(n int) ClientSeries {
 			cs.ErrorRate[i] = ptr(math.Min(1, b.errors/b.reqs))
 		}
 		cs.RPS[i] = ptr(b.reqs / iv)
-	}
-	// Samples past the last bucket (clock skew at shutdown) are folded into it.
-	if n > 0 && len(a.buckets) > n {
-		var reqs, errs float64
-		var d []float64
-		for _, b := range a.buckets[n-1:] {
-			reqs += b.reqs
-			errs += b.errors
-			d = append(d, b.durations...)
-		}
-		if len(d) > 0 {
+		cs.DroppedIterations[i] = ptr(b.dropped)
+		for name, d := range b.tools {
+			if len(d) == 0 {
+				continue
+			}
 			sort.Float64s(d)
-			cs.P95Ms[n-1] = ptr(Percentile(d, 0.95))
+			cs.Tools[name][i] = ptr(Percentile(d, 0.95))
 		}
-		if reqs > 0 {
-			cs.ErrorRate[n-1] = ptr(math.Min(1, errs/reqs))
-		}
-		cs.RPS[n-1] = ptr(reqs / iv)
 	}
 	return cs
+}
+
+// KeepBuckets returns how many interval buckets a run of durationS seconds
+// gets: ceil(durationS/interval), minus a trailing bucket that covers less
+// than half an interval (its rate would show a false drop and skew fits).
+// trimmed reports whether that bucket was dropped. At least one bucket is kept.
+func KeepBuckets(durationS float64, interval time.Duration) (n int, trimmed bool) {
+	iv := interval.Seconds()
+	n = int(math.Ceil(durationS/iv - 1e-9))
+	if n < 1 {
+		return 1, false
+	}
+	if n > 1 && durationS-float64(n-1)*iv < 0.5*iv {
+		return n - 1, true
+	}
+	return n, false
 }
 
 // Protocol returns the negotiated protocol: the most frequent protocol tag on
@@ -474,8 +548,14 @@ type ServerSeries struct {
 
 // AlignServer averages sampler points into n buckets of interval starting at
 // origin. Points before origin go to bucket 0 only if within one interval;
-// points after the last bucket go to the last one.
+// points after the last bucket go to the last one (see AlignServerN).
 func AlignServer(points []ServerPoint, origin time.Time, interval time.Duration, n int) ServerSeries {
+	return AlignServerN(points, origin, interval, n, true)
+}
+
+// AlignServerN is AlignServer; without foldTail, points at or after the end
+// of bucket n-1 are dropped (used when a partial last bucket was trimmed).
+func AlignServerN(points []ServerPoint, origin time.Time, interval time.Duration, n int, foldTail bool) ServerSeries {
 	type acc struct {
 		sum [4]float64
 		cnt [4]int
@@ -491,7 +571,7 @@ func AlignServer(points []ServerPoint, origin time.Time, interval time.Duration,
 			i = int(d / interval)
 		}
 		if i >= n {
-			if d > time.Duration(n+1)*interval {
+			if !foldTail || d > time.Duration(n+1)*interval {
 				continue
 			}
 			i = n - 1

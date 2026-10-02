@@ -161,6 +161,20 @@ credentials, not real ones. For the error breakdown, add `--out json=points.json
   aborts the session, a failed connect sleeps 50 ms instead of hot-looping, and VU 1 logs whether the target
   turned out stateful or stateless.
 
+## Known limits
+
+- **Leak detection floor.** With a 3-minute load window, the leak verdicts reliably catch growth of about
+  2 MiB/min or more. Slower leaks get lost in normal memory noise (GC, caches, allocator behaviour). Use at
+  least 10 minutes of steady load when hunting leaks; 30–60 minutes for slow ones. Leak verdicts are skipped
+  entirely on runs without a cool-down or with less than 2 minutes of load.
+- **Generator saturation.** When k6 runs short of CPU or can't start iterations on schedule, the latency it
+  records includes its own delay, and the server looks slower than it is. The `generator` verdict flags this
+  (dropped iterations above 1 % or k6 CPU above 85 %). The contention caveat above is an example of what
+  happens without it. Treat any run with a `generator` warning or failure as unreliable for latency.
+- **One workstation.** Every number in this document comes from a single Windows developer machine, with the
+  demo servers and k6 on the same host. Absolute latencies and thresholds will differ elsewhere; recalibrate
+  on your own hardware before relying on tight budgets.
+
 ## Known limitations and follow-ups
 
 - **Extension, OAuth**: a failed token fetch is not cached or backed off. Before the scenario-side backoff,

@@ -59,6 +59,10 @@ type Session struct {
 
 	nextID atomic.Int64
 	closed atomic.Bool
+	// fromCache is set when the session uses a stateless protocol taken from
+	// the ProtocolCache without any handshake; the first request that shows
+	// the server no longer speaks it drops the cache entry.
+	fromCache atomic.Bool
 }
 
 type observerKey struct{}
@@ -107,6 +111,12 @@ func (s *Session) clientCaps() map[string]any {
 func Connect(ctx context.Context, opts Options) (*Session, error) {
 	if opts.Protocol == "" {
 		opts.Protocol = ProtocolAuto
+	}
+	if verr := ValidateProtocol(opts.Protocol); verr != nil {
+		return nil, &Error{Type: ErrHTTP, Message: verr.Error()}
+	}
+	if verr := ValidateFallbackVersion(opts.FallbackVersion); verr != nil {
+		return nil, &Error{Type: ErrHTTP, Message: verr.Error()}
 	}
 	if opts.FallbackVersion == "" {
 		opts.FallbackVersion = DefaultFallbackVersion
@@ -171,33 +181,80 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 	return s, nil
 }
 
-// connectAuto probes with server/discover (stateless) and falls back to the
-// stateful handshake when the server doesn't speak the modern protocol.
+// connectAuto probes with server/discover (stateless). A modern server that
+// answers -32022 (UnsupportedProtocolVersion) listing a newer stateless
+// version in error.data.supported is probed once more with that version; the
+// stateful handshake is used only when the server doesn't speak any stateless
+// protocol revision we can use.
 func (s *Session) connectAuto(ctx context.Context, cs *ConnectStats) (int, *Error) {
 	cs.Method = "server/discover"
-	s.protocol, s.stateless = ProtocolStateless, true
 	obs := s.obs(ctx)
-	rec := &recordingObserver{}
-	status, err := s.discover(WithObserver(ctx, rec), ProtocolStateless)
-	fallback := err != nil && shouldFallback(err)
-	for _, t := range rec.tokens {
-		obs.OnTokenFetch(t)
-	}
-	if rec.req != nil {
-		st := *rec.req
-		if fallback {
-			// An expected "legacy server" answer to the probe is not an error;
-			// the status tag still shows what the server returned.
-			st.ErrorType = ""
+	version := ProtocolStateless
+	var status int
+	var err *Error
+	for attempt := 0; ; attempt++ {
+		s.protocol, s.stateless = version, true
+		rec := &recordingObserver{next: obs}
+		status, err = s.discover(WithObserver(ctx, rec), version)
+		retry := ""
+		if err != nil && attempt == 0 {
+			retry = statelessRetryVersion(err, version)
 		}
-		obs.OnRequest(st)
-	}
-	if !fallback {
-		return status, err
+		fallback := err != nil && retry == "" && shouldFallback(err)
+		if rq := rec.recorded(); rq != nil {
+			st := *rq
+			if retry != "" || fallback {
+				// An expected negotiation answer to the probe is not an
+				// error; the status tag still shows what the server returned.
+				st.ErrorType = ""
+			}
+			obs.OnRequest(st)
+		}
+		if retry != "" {
+			version = retry
+			continue
+		}
+		if !fallback {
+			return status, err
+		}
+		break
 	}
 	s.protocol, s.stateless = "", false
 	cs.Method = "initialize"
 	return s.initialize(ctx, s.opts.FallbackVersion)
+}
+
+// supportedVersions returns error.data.supported of an
+// UnsupportedProtocolVersion (-32022) error, or nil.
+func supportedVersions(err *Error) []string {
+	if err == nil || err.Code != CodeUnsupportedProtocolVersion || len(err.Data) == 0 {
+		return nil
+	}
+	var d struct {
+		Supported []string `json:"supported"`
+	}
+	if json.Unmarshal(err.Data, &d) != nil {
+		return nil
+	}
+	return d.Supported
+}
+
+// newestStateless returns the newest stateless (>= 2026-07-28) version in
+// vs other than exclude, or "".
+func newestStateless(vs []string, exclude string) string {
+	best := ""
+	for _, v := range vs {
+		if v != exclude && IsStateless(v) && ValidProtocolVersion(v) && v > best {
+			best = v
+		}
+	}
+	return best
+}
+
+// statelessRetryVersion returns the stateless version to retry with after the
+// server rejected tried with -32022, or "" when it offers none.
+func statelessRetryVersion(err *Error, tried string) string {
+	return newestStateless(supportedVersions(err), tried)
 }
 
 // connectCached connects with a protocol a previous auto negotiation
@@ -208,6 +265,7 @@ func (s *Session) connectCached(ctx context.Context, cs *ConnectStats, res Resol
 	if res.Stateless {
 		s.protocol, s.stateless = res.Protocol, true
 		s.Capabilities, s.ServerInfo = res.Capabilities, res.ServerInfo
+		s.fromCache.Store(true)
 		return 0, nil
 	}
 	cs.Method = "initialize"
@@ -216,6 +274,10 @@ func (s *Session) connectCached(ctx context.Context, cs *ConnectStats, res Resol
 
 // protocolRejected reports whether err means the server refused the
 // protocol version itself (as opposed to a transport, auth or server error).
+// It uses the same classification as connectAuto: a -32022 is a rejection
+// whether or not it offers another stateless version (in which case the
+// re-probe on the next connect picks that version), and so is any
+// "legacy server" answer (shouldFallback).
 func protocolRejected(err *Error) bool {
 	return err.Code == CodeUnsupportedProtocolVersion || shouldFallback(err)
 }
@@ -223,10 +285,14 @@ func protocolRejected(err *Error) bool {
 // shouldFallback implements the spec's rule: fall back to initialize on any
 // response that is not a recognised modern (2026-07-28) error. Transport
 // failures, timeouts, auth failures and 5xx are not treated as "legacy
-// server" signals.
+// server" signals, and neither is a -32022 whose error.data.supported offers
+// a stateless version (that is a modern server: retry with that version).
 func shouldFallback(err *Error) bool {
 	switch err.Type {
 	case ErrTimeout, ErrAuth, ErrHeaderMismatch:
+		return false
+	}
+	if newestStateless(supportedVersions(err), "") != "" {
 		return false
 	}
 	if err.HTTPStatus == 0 && err.Code == 0 {
@@ -332,10 +398,33 @@ func (s *Session) initialize(ctx context.Context, version string) (int, *Error) 
 		method: "notifications/initialized", sessionID: s.sessionID, protoHdr: s.protocol,
 	})
 	if n.err != nil {
+		// The server already created a session: release it (best effort)
+		// so a failing handshake under load does not leak server sessions.
+		if s.sessionID != "" {
+			s.abandonSession(ctx)
+		}
 		return n.stats.Status, n.err
 	}
 	return status, nil
 }
+
+// abandonSession best-effort DELETEs a session that was created by a
+// handshake that then failed. It runs even if ctx has ended, bounded by
+// Options.Timeout (or abandonTimeout); its outcome is only reported to the
+// observer.
+func (s *Session) abandonSession(ctx context.Context) {
+	dctx := context.WithoutCancel(ctx)
+	if s.opts.Timeout <= 0 {
+		var cancel context.CancelFunc
+		dctx, cancel = context.WithTimeout(dctx, abandonTimeout)
+		defer cancel()
+	}
+	_ = s.deleteSession(dctx)
+	s.sessionID = ""
+}
+
+// abandonTimeout bounds the cleanup DELETE when Options.Timeout is 0.
+const abandonTimeout = 5 * time.Second
 
 // Request sends an arbitrary JSON-RPC request and returns the raw result.
 // name is the Mcp-Name header value (stateless) and the tool metric tag for
@@ -361,22 +450,42 @@ func (s *Session) request(ctx context.Context, method, name string, params map[s
 			ex.params = params
 		}
 	}
+	var r exchangeResult
 	if toolCall {
 		// Classify isError before the observer sees the request.
-		return s.postTool(ctx, ex)
+		r = s.postTool(ctx, ex)
+	} else {
+		r = s.post(ctx, ex)
 	}
-	return s.post(ctx, ex)
+	if r.err != nil && staleProtocolError(r.err) && s.fromCache.CompareAndSwap(true, false) {
+		// The remembered stateless resolution no longer holds (server
+		// downgraded or replaced): make the next connect re-probe.
+		s.opts.ProtocolCache.Forget(s.opts.URL, s.opts.Protocol, s.opts.FallbackVersion)
+	}
+	return r
+}
+
+// staleProtocolError reports whether a request error on a session built from
+// a cached stateless resolution means the server no longer speaks that
+// protocol: a fallback-type answer (shouldFallback) or a -32022, but not an
+// ordinary JSON-RPC error returned with HTTP 2xx (e.g. a tool's invalid
+// params), which says nothing about the protocol.
+func staleProtocolError(err *Error) bool {
+	if err.Code == CodeUnsupportedProtocolVersion {
+		return true
+	}
+	if !shouldFallback(err) {
+		return false
+	}
+	return err.HTTPStatus/100 != 2 || err.Code == CodeMethodNotFound
 }
 
 // postTool wraps post so that a tools/call result with isError=true is
 // reported to the observer with error_type tool_iserror.
 func (s *Session) postTool(ctx context.Context, ex exchange) exchangeResult {
-	rec := &recordingObserver{}
-	r := s.post(WithObserver(ctx, rec), ex)
 	obs := s.obs(ctx)
-	for _, t := range rec.tokens {
-		obs.OnTokenFetch(t)
-	}
+	rec := &recordingObserver{next: obs}
+	r := s.post(WithObserver(ctx, rec), ex)
 	if r.err == nil && len(r.result) > 0 {
 		var probe struct {
 			IsError bool `json:"isError"`
@@ -385,19 +494,22 @@ func (s *Session) postTool(ctx context.Context, ex exchange) exchangeResult {
 			r.stats.ErrorType = ErrToolIsError
 		}
 	}
-	if rec.req != nil {
-		st := *rec.req
+	if rq := rec.recorded(); rq != nil {
+		st := *rq
 		st.ErrorType = r.stats.ErrorType
 		obs.OnRequest(st)
 	}
 	return r
 }
 
+// recordingObserver holds back the request event of one exchange (so the
+// caller can adjust its error type) and forwards token fetches to next right
+// away: a background token refresh may report after the exchange is over.
 type recordingObserver struct {
 	NopObserver
-	mu     sync.Mutex
-	req    *RequestStats
-	tokens []TokenStats
+	next Observer
+	mu   sync.Mutex
+	req  *RequestStats
 }
 
 func (o *recordingObserver) OnRequest(st RequestStats) {
@@ -406,10 +518,12 @@ func (o *recordingObserver) OnRequest(st RequestStats) {
 	o.mu.Unlock()
 }
 
-func (o *recordingObserver) OnTokenFetch(st TokenStats) {
+func (o *recordingObserver) OnTokenFetch(st TokenStats) { o.next.OnTokenFetch(st) }
+
+func (o *recordingObserver) recorded() *RequestStats {
 	o.mu.Lock()
-	o.tokens = append(o.tokens, st)
-	o.mu.Unlock()
+	defer o.mu.Unlock()
+	return o.req
 }
 
 // ListTools returns all tools, following nextCursor pagination.

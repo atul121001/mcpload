@@ -3,74 +3,90 @@
 // One realistic agent session: connect -> tools/list -> N rounds of weighted-random
 // parallel tools/call with think time -> close.
 import mcp from 'k6/x/mcpload';
+import exec from 'k6/execution';
 import { check, sleep } from 'k6';
 import { config, clientOptions, randInt, thinkSeconds } from './config.js';
+import { planTools, pick } from './tools.js';
+import { argsFromSchema } from './schema-args.js';
+
+export { argsFromSchema, pick };
 
 /** Create a client. Call this in the init context (top level of a scenario) so each VU gets one. */
 export function makeClient(overrides) {
   return new mcp.Client(clientOptions(overrides));
 }
 
-/** Placeholder args for a tool's required properties, derived from its JSON Schema. */
-export function argsFromSchema(inputSchema) {
-  const args = {};
-  if (!inputSchema || typeof inputSchema !== 'object') return args;
-  const props = inputSchema.properties || {};
-  for (const key of inputSchema.required || []) {
-    const p = props[key] || {};
-    if (p.default !== undefined) args[key] = p.default;
-    else if (Array.isArray(p.enum) && p.enum.length) args[key] = p.enum[0];
-    else if (p.type === 'string') args[key] = 'load-test';
-    else if (p.type === 'integer' || p.type === 'number') args[key] = typeof p.minimum === 'number' ? p.minimum : 1;
-    else if (p.type === 'boolean') args[key] = false;
-    else if (p.type === 'array') args[key] = [];
-    else if (p.type === 'object') args[key] = {};
-    else args[key] = 'load-test';
-  }
-  return args;
-}
-
-/**
- * Build the weighted tool table for this session from what the server listed.
- * If TOOL_MIX was set explicitly, only listed tools with weight > 0 are used.
- * Otherwise the default mix is used where it matches, falling back to uniform over listed tools.
- */
-export function toolTable(listed) {
-  const byName = {};
-  for (const t of listed) byName[t.name] = t;
-  const table = [];
-  let total = 0;
-  for (const name of Object.keys(config.toolMix)) {
-    const w = config.toolMix[name];
-    if (!(w > 0) || !byName[name]) continue;
-    total += w;
-    table.push({ name, cum: total, args: toolArgs(name, byName[name]) });
-  }
-  if (table.length === 0 && !config.toolMixExplicit) {
-    for (const t of listed) {
-      total += 1;
-      table.push({ name: t.name, cum: total, args: toolArgs(t.name, t) });
-    }
-  }
-  return { table, total };
-}
-
-function toolArgs(name, tool) {
-  if (config.toolArgs[name] !== undefined) return config.toolArgs[name];
-  return argsFromSchema(tool && tool.inputSchema);
-}
-
-/** Weighted random pick from a toolTable(). */
-export function pick(tt) {
-  const r = Math.random() * tt.total;
-  for (const e of tt.table) if (r < e.cum) return e;
-  return tt.table[tt.table.length - 1];
-}
-
 let loggedErrors = 0;
 function logError(msg) {
   // Keep logs readable under load: first 20 per VU only.
   if (loggedErrors++ < 20) console.warn(`[vu ${__VU}] ${msg}`);
+}
+
+let warnedUnknown = false;
+
+/**
+ * Build the weighted tool table for this session from what the server listed (see lib/tools.js#planTools):
+ * explicit TOOL_MIX -> its listed tools; unset -> demo mix on a demo server (all five demo tools listed),
+ * otherwise uniform over every listed tool. Warns once per VU about TOOL_MIX names the server doesn't list.
+ */
+export function toolTable(listed) {
+  const tt = planTools(listed, config);
+  if (tt.unknown.length && tt.table.length && !warnedUnknown) {
+    warnedUnknown = true;
+    console.warn(
+      `[vu ${__VU}] TOOL_MIX names not listed by the server (skipped): ${tt.unknown.join(', ')}; server lists: ${tt.listedNames.join(', ')}`,
+    );
+  }
+  return tt;
+}
+
+/**
+ * Record the 'tool mix matched' check. When nothing matched (e.g. a TOOL_MIX typo) warn with the unknown and
+ * listed names and back off CONNECT_BACKOFF_MS so the VU does not hot-loop. Returns true if there are tools to call.
+ */
+export function checkToolTable(tt, log) {
+  const ok = tt.table.length > 0;
+  check(null, { 'tool mix matched': () => ok });
+  if (!ok) {
+    (log || logError)(
+      tt.unknown.length
+        ? `TOOL_MIX matches no tool the server lists: unknown ${tt.unknown.join(', ')}; server lists: ${tt.listedNames.join(', ') || '(none)'}`
+        : `no callable tools (server lists: ${tt.listedNames.join(', ') || '(none)'})`,
+    );
+    if (config.connectBackoffMs > 0) sleep(config.connectBackoffMs / 1000);
+  }
+  return ok;
+}
+
+function runGroup(s, batch, idx, results, tagDefault) {
+  if (!idx.length) return;
+  const tags = exec.vu.metrics.tags;
+  if (tagDefault) tags.budget = 'default';
+  try {
+    const rs =
+      idx.length === 1
+        ? [s.callTool(batch[idx[0]].name, batch[idx[0]].args)]
+        : s.callParallel(idx.map((i) => ({ name: batch[i].name, args: batch[i].args })));
+    for (let j = 0; j < idx.length; j++) results[idx[j]] = rs[j];
+  } finally {
+    if (tagDefault) delete tags.budget;
+  }
+}
+
+/**
+ * Call a batch of [{name, args, ownBudget}] (entries from toolTable()/pick()). Calls to tools without their own
+ * threshold run as a separate callParallel group with the VU tag budget=default, so the catch-all thresholds
+ * mcp_req_duration{budget:default} / mcp_tool_error_rate{budget:default} cover them (and only them).
+ * Returns results in input order.
+ */
+export function callTools(s, batch) {
+  const own = [];
+  const dflt = [];
+  for (let i = 0; i < batch.length; i++) (batch[i].ownBudget ? own : dflt).push(i);
+  const results = new Array(batch.length);
+  runGroup(s, batch, own, results, false);
+  runGroup(s, batch, dflt, results, true);
+  return results;
 }
 
 /**
@@ -105,19 +121,13 @@ export function agentSession(client, opts) {
     if (!listOk) return out;
 
     const tt = toolTable(listed);
-    if (tt.table.length === 0) {
-      logError(`no tools from TOOL_MIX are offered by the server (listed: ${listed.map((t) => t.name).join(', ')})`);
-      return out;
-    }
+    if (!checkToolTable(tt)) return out;
     if (o.onSession) o.onSession(s);
 
     for (let r = 0; r < rounds; r++) {
       const batch = [];
-      for (let i = 0; i < parallel; i++) {
-        const e = pick(tt);
-        batch.push({ name: e.name, args: e.args });
-      }
-      const results = batch.length === 1 ? [s.callTool(batch[0].name, batch[0].args)] : s.callParallel(batch);
+      for (let i = 0; i < parallel; i++) batch.push(pick(tt));
+      const results = callTools(s, batch);
       out.calls += results.length;
       for (let i = 0; i < results.length; i++) {
         const res = results[i];

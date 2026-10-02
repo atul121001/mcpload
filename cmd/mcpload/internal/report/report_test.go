@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,5 +153,125 @@ func TestRenderHTML(t *testing.T) {
 	}
 	if !strings.Contains(html, "<title>mcpload · a/scriptb · soak</title>") {
 		t.Fatalf("bad title: %s", regexp.MustCompile(`<title>.*</title>`).FindString(html))
+	}
+}
+
+// nodeValidator returns a function running report/validate.mjs on a file, or nil when node/ajv are unavailable.
+func nodeValidator(t *testing.T) func(path string) (bool, string) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "report", "node_modules", "ajv")); err != nil {
+		return nil
+	}
+	return func(path string) (bool, string) {
+		out, err := exec.Command(node, filepath.Join(repoRoot, "report", "validate.mjs"), path).CombinedOutput()
+		return err == nil, string(out)
+	}
+}
+
+// Check must be as strict as validate.mjs + the JSON schema: every mutation
+// below is rejected by both, and the new optional fields are accepted by both.
+func TestCheckStrictMatchesValidateMjs(t *testing.T) {
+	validate := nodeValidator(t)
+	dir := t.TempDir()
+	cases := []struct {
+		name  string
+		want  string // substring of the Check error; "" = must be valid
+		apply func(r *Report)
+	}{
+		{"new fields valid", "", func(r *Report) {
+			r.Summary.Iterations, r.Summary.DroppedIterations, r.Summary.ToolErrors = I64(10), I64(0), I64(0)
+			r.Run.Generator = &Generator{Cores: 4, CPUAvgPct: F(12.5), CPUMaxPct: nil}
+			r.Verdicts = append(r.Verdicts, Verdict{ID: VerdictGenerator, Status: StatusPass, Signal: "summary.droppedIterations", Message: "ok"})
+		}},
+		{"offset without colon valid", "", func(r *Report) { r.Run.StartedAt = "2026-09-29T15:00:00+0200" }},
+		{"bad verdict id", "verdicts[0].id", func(r *Report) { r.Verdicts[0].ID = "memory" }},
+		{"bad status", "status invalid", func(r *Report) { r.Verdicts[0].Status = "ok" }},
+		{"relative url", "target.url", func(r *Report) { r.Run.Target.URL = "/mcp" }},
+		{"url with space", "target.url", func(r *Report) { r.Run.Target.URL = "http://local host/mcp" }},
+		{"bad time", "startedAt", func(r *Report) { r.Run.StartedAt = "2026-09-29 13:00:00" }},
+		{"time without zone", "endedAt", func(r *Report) { r.Run.EndedAt = "2026-09-29T13:40:00" }},
+		{"bad byErrorType key", "byErrorType key", func(r *Report) {
+			r.Summary.ByErrorType["Bad-Key"] = 1
+			r.Summary.Errors++
+			r.Summary.Reqs++
+		}},
+		{"empty tool name", "tool.name", func(r *Report) { r.Tool.Name = "" }},
+		{"empty scenario", "run.scenario", func(r *Report) { r.Run.Scenario = "" }},
+		{"bad git sha", "git.sha", func(r *Report) { r.Run.Git = &Git{SHA: "XYZ"} }},
+		{"negative duration", "durationS", func(r *Report) { r.Run.DurationS = -1 }},
+		{"rate > 1", "errorRate", func(r *Report) { r.Tools[0].ErrorRate = 1.5 }},
+		{"generator pct > 100", "cpuAvgPct", func(r *Report) { r.Run.Generator = &Generator{Cores: 2, CPUAvgPct: F(140)} }},
+		{"generator cores 0", "cores", func(r *Report) { r.Run.Generator = &Generator{Cores: 0} }},
+		{"zero arrival time unit", "arrivalTimeUnitS", func(r *Report) { r.Run.Load.ArrivalTimeUnitS = F(0) }},
+		{"negative t", "series.t", func(r *Report) { r.Series.T[0] = -30 }},
+		{"tool series length", "tools[search].p95Ms", func(r *Report) {
+			r.Series.Tools["search"] = ToolSeries{P95Ms: r.Series.Tools["search"].P95Ms[1:]}
+		}},
+		{"dropped series length", "client.droppedIterations", func(r *Report) { r.Series.Client.DroppedIterations = r.Series.Client.DroppedIterations[2:] }},
+		{"negative iterations", "summary.iterations", func(r *Report) { r.Summary.Iterations = I64(-1) }},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, err := ReadJSON(examplePath("leaky.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.apply(r)
+			err = r.Check()
+			if c.want == "" && err != nil {
+				t.Fatalf("Check rejected a valid report: %v", err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+				t.Fatalf("Check: want error containing %q, got %v", c.want, err)
+			}
+			if validate == nil {
+				return
+			}
+			path := filepath.Join(dir, fmt.Sprintf("case%d.json", i))
+			b, _ := Marshal(r)
+			if err := os.WriteFile(path, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ok, out := validate(path)
+			if ok != (c.want == "") {
+				t.Fatalf("validate.mjs disagrees with Check (valid=%v):\n%s", ok, out)
+			}
+		})
+	}
+}
+
+// A '$' in the label must be copied literally into <title> by both renderers.
+func TestRenderTitleDollar(t *testing.T) {
+	r, err := ReadJSON(examplePath("healthy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Run.Target.Label = "cost $$ $1 $' $&x api"
+	want := "<title>mcpload · cost $$ $1 $' $x api · soak</title>"
+	var buf bytes.Buffer
+	if err := RenderHTML(r, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("Go title: %s", regexp.MustCompile(`<title>.*</title>`).FindString(buf.String()))
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found")
+	}
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "r.json"), filepath.Join(dir, "r.html")
+	if err := WriteJSON(in, r); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := exec.Command(node, filepath.Join(repoRoot, "report", "render.mjs"), in, out, "--no-validate").CombinedOutput(); err != nil {
+		t.Fatalf("render.mjs: %v\n%s", err, b)
+	}
+	html, _ := os.ReadFile(out)
+	if !strings.Contains(string(html), want) {
+		t.Fatalf("render.mjs title: %s", regexp.MustCompile(`<title>.*</title>`).FindString(string(html)))
 	}
 }

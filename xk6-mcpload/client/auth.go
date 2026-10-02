@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +50,9 @@ type OAuthConfig struct {
 	// endpoint. 0 means DefaultFailureBackoff; a negative value disables the
 	// negative cache.
 	FailureBackoff time.Duration
+	// Timeout bounds one token fetch. 0 means the Options.Timeout of the
+	// session whose request started the fetch, or DefaultTokenTimeout.
+	Timeout time.Duration
 }
 
 // DefaultFailureBackoff is the negative-cache window for failed token
@@ -68,14 +72,15 @@ func (c OAuthConfig) failureBackoff() time.Duration {
 func (c OAuthConfig) key() string {
 	h := sha256.Sum256([]byte(strings.Join([]string{
 		c.TokenURL, c.ClientID, c.ClientSecret, c.Scope, c.Audience, c.AuthStyle,
-		c.failureBackoff().String(),
+		c.failureBackoff().String(), c.Timeout.String(),
 	}, "\x00")))
 	return hex.EncodeToString(h[:])
 }
 
 // TokenSource caches a client_credentials token and refreshes it shortly
-// before expiry. Concurrent callers share a single in-flight fetch
-// (single-flight), so many VUs do not stampede the token endpoint. A failed
+// before expiry (in the background, while the old token is still served).
+// Concurrent callers share a single in-flight fetch (single-flight), so many
+// VUs do not stampede the token endpoint. A failed
 // fetch is cached for OAuthConfig.FailureBackoff (negative cache), so a bad
 // credential or an unreachable IdP costs about one token request per window
 // instead of one per connect.
@@ -139,6 +144,14 @@ func (ts *TokenSource) Unauthorized(headerValue string) {
 }
 
 // Token returns a valid access token, fetching one if needed.
+//
+// The fetch itself runs in a background goroutine on a context detached from
+// the caller (bounded by the fetch timeout, see FetchTimeout), so a caller
+// whose context ends does not fail the fetch for everyone else sharing it.
+// Every caller, including the one that started the fetch, waits with its own
+// ctx. When the cached token is still valid but inside the refresh window,
+// the refresh is started in the background and the current token is returned
+// immediately (soft refresh never blocks).
 func (ts *TokenSource) Token(ctx context.Context, hc *http.Client, obs Observer) (string, error) {
 	if obs == nil {
 		obs = NopObserver{}
@@ -163,39 +176,51 @@ func (ts *TokenSource) Token(ctx context.Context, hc *http.Client, obs Observer)
 		ts.mu.Unlock()
 		return "", ferr
 	}
-	if c := ts.inflight; c != nil {
-		if valid { // soft refresh already running; keep using the current token
-			tok := ts.token
-			ts.mu.Unlock()
-			return tok, nil
-		}
-		ts.mu.Unlock()
-		select {
-		case <-c.done:
-			return c.token, c.err
-		case <-ctx.Done():
-			return "", &Error{Type: ErrAuth, Message: "waiting for token: " + ctx.Err().Error()}
-		}
+	c := ts.inflight
+	if c == nil {
+		c = &tokenCall{done: make(chan struct{})}
+		ts.inflight = c
+		go ts.runFetch(c, fetchTimeout(ctx, ts.cfg.Timeout), hc, obs)
 	}
-	c := &tokenCall{done: make(chan struct{})}
-	ts.inflight = c
-	oldToken := ts.token
+	if valid {
+		// Soft refresh (started now or already running): keep using the
+		// current token without waiting.
+		tok := ts.token
+		ts.mu.Unlock()
+		return tok, nil
+	}
 	ts.mu.Unlock()
+	select {
+	case <-c.done:
+		return c.token, c.err
+	case <-ctx.Done():
+		typ := ErrAuth
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			typ = ErrTimeout
+		}
+		return "", &Error{Type: typ, Message: "waiting for token: " + ctx.Err().Error()}
+	}
+}
 
+// runFetch performs one token fetch on a detached context and publishes the
+// outcome to the source and to everyone waiting on c.
+func (ts *TokenSource) runFetch(c *tokenCall, timeout time.Duration, hc *http.Client, obs Observer) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	tok, lifetime, err := ts.fetch(ctx, hc, obs)
+	cancel()
 
 	ts.mu.Lock()
 	ts.inflight = nil
 	if err != nil {
-		// Negative cache, unless the failure came from this caller's own
-		// context ending (an iteration being cut off is not an IdP failure).
-		if win := ts.cfg.failureBackoff(); win > 0 && ctx.Err() == nil {
+		// The fetch runs on its own context, so any failure (including its
+		// own timeout) is an IdP failure and is negatively cached.
+		if win := ts.cfg.failureBackoff(); win > 0 {
 			ts.failErr = cachedError(err)
 			ts.failUntil = ts.now().Add(win)
 		}
 	} else {
 		ts.failErr, ts.failUntil = nil, time.Time{}
-		now = ts.now()
+		now := ts.now()
 		ts.token = tok
 		ts.expiresAt = now.Add(lifetime)
 		skew := lifetime / 5
@@ -204,15 +229,32 @@ func (ts *TokenSource) Token(ctx context.Context, hc *http.Client, obs Observer)
 		}
 		ts.refreshAt = ts.expiresAt.Add(-skew)
 	}
-	ts.mu.Unlock()
-
 	c.token, c.err = tok, err
+	ts.mu.Unlock()
 	close(c.done)
-	if err != nil && valid {
-		// A soft refresh failed but the old token is still valid.
-		return oldToken, nil
+}
+
+type fetchTimeoutKey struct{}
+
+// WithFetchTimeout returns a context that tells a TokenSource how long a
+// token fetch started by this caller may take, when OAuthConfig.Timeout is
+// not set. Session uses it to apply Options.Timeout to token fetches.
+func WithFetchTimeout(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, fetchTimeoutKey{}, d)
+}
+
+// DefaultTokenTimeout bounds a token fetch when neither OAuthConfig.Timeout
+// nor the caller's Options.Timeout is set.
+const DefaultTokenTimeout = 30 * time.Second
+
+func fetchTimeout(ctx context.Context, cfg time.Duration) time.Duration {
+	if cfg > 0 {
+		return cfg
 	}
-	return tok, err
+	if d, ok := ctx.Value(fetchTimeoutKey{}).(time.Duration); ok && d > 0 {
+		return d
+	}
+	return DefaultTokenTimeout
 }
 
 func (ts *TokenSource) fetch(ctx context.Context, hc *http.Client, obs Observer) (string, time.Duration, error) {
@@ -237,6 +279,19 @@ func (ts *TokenSource) fetch(ctx context.Context, hc *http.Client, obs Observer)
 		obs.OnTokenFetch(stats)
 		return "", 0, &Error{Type: ErrAuth, HTTPStatus: status, Message: msg}
 	}
+	// A fetch that ran out of its own time budget is a timeout, not an
+	// authentication failure.
+	failTimeout := func(ctx context.Context, err error, status int, prefix string) (string, time.Duration, error) {
+		te := transportError(ctx, err)
+		if te.Type != ErrTimeout {
+			return fail(status, prefix+err.Error())
+		}
+		stats.Status = status
+		stats.ErrorType = ErrTimeout
+		stats.Duration = time.Since(start)
+		obs.OnTokenFetch(stats)
+		return "", 0, &Error{Type: ErrTimeout, HTTPStatus: status, Message: prefix + err.Error()}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.cfg.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fail(0, "building token request: "+err.Error())
@@ -248,12 +303,12 @@ func (ts *TokenSource) fetch(ctx context.Context, hc *http.Client, obs Observer)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return fail(0, "token request: "+err.Error())
+		return failTimeout(ctx, err, 0, "token request: ")
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return fail(resp.StatusCode, "reading token response: "+err.Error())
+		return failTimeout(ctx, err, resp.StatusCode, "reading token response: ")
 	}
 	if resp.StatusCode/100 != 2 {
 		return fail(resp.StatusCode, fmt.Sprintf("token endpoint returned %d: %s", resp.StatusCode, truncate(body, 200)))

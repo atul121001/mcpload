@@ -98,12 +98,23 @@ cd mcpload
 | Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
 | Linux | `mcpload_<version>_linux_amd64.tar.gz` |
 
-Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line (here for Linux, version 0.1.0):
+Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.0).
+
+Linux (Intel/AMD):
 
 ```bash
-curl -L https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_linux_amd64.tar.gz \
-  | tar -xz --strip-components=1 --wildcards "*/mcpload" "*/k6"
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_linux_amd64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.0_linux_amd64/mcpload' 'mcpload_0.1.0_linux_amd64/k6'
 ```
+
+Mac with Apple silicon:
+
+```bash
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_darwin_arm64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.0_darwin_arm64/mcpload' 'mcpload_0.1.0_darwin_arm64/k6'
+```
+
+For another platform, replace `linux_amd64` or `darwin_arm64` in all three places (for example `darwin_amd64` for an Intel Mac, `linux_arm64` for ARM Linux).
 
 > **Mac:** if macOS says the app "cannot be opened because the developer cannot be verified", run `xattr -d com.apple.quarantine mcpload k6` once in the folder.
 
@@ -172,15 +183,27 @@ When you're done: `docker compose -f demo-servers/docker-compose.yml down`
 --env 'TOOL_ARGS={"search":{"query":"invoices"},"get_document":{"id":"42"}}'   # their arguments
 ```
 
+If you name a tool in `TOOL_MIX` that your server doesn't list (a typo, say), mcpload prints a warning and records a failed check, so a misspelled tool shows up in the result instead of quietly going untested.
+
+> **Windows PowerShell 5.1** (the `powershell` that comes with Windows) strips the double quotes out of JSON before mcpload sees it. Escape each one with a backslash there: `--env 'TOOL_MIX={\"search\":5,\"get_document\":3}'`. PowerShell 7.3 or newer (`pwsh`) passes the quotes correctly, so use the plain form above, the same as on Mac or Linux.
+
 **3. Set your budgets.** Decide how fast "fast enough" is:
 
 ```bash
 --env P95_MS=800 --env P99_MS=2000 --env ERR_RATE=0.01
 ```
 
-That means: 95% of calls under 800 ms, 99% under 2 seconds, and fewer than 1% errors, **per tool**. One tool can get its own limits with `TOOL_BUDGETS`.
+That means: 95% of calls under 800 ms, 99% under 2 seconds, and fewer than 1% errors, **for every tool the test calls**. Each tool is judged on its own; one slow tool can't hide behind fast ones. Speed is measured over the calls that succeeded, and failed calls count toward the error rate.
 
-**4. Look for leaks with a long run.** A soak test keeps the load steady for a while, then stops and checks that the server recovers. For memory checks, mcpload needs a way to read your server's memory. You can use either of these:
+To give one tool different limits, use `TOOL_BUDGETS`. Tools you don't mention keep the defaults above:
+
+```bash
+--env 'TOOL_BUDGETS={"generate_report":{"p95":3000,"p99":6000}}'
+```
+
+**4. Look for leaks with a long run.** A soak test keeps the load steady for a while, then stops (the "cool-down") and checks that the server recovers. Leak checks only run on soak tests: a short test can't tell a leak from a server that's still warming up, so on a normal run they show as skipped. Plan on **at least 10 minutes** of steady load; shorter soaks only reliably catch fast leaks (around 2 MiB per minute or more).
+
+For memory checks, mcpload also needs a way to read your server's memory. You can use either of these:
 
 - your server's Prometheus metrics endpoint (`--sampler prometheus --prom-url .../metrics`), or
 - the Docker container it runs in (`--sampler docker --container my-mcp-server`).
@@ -192,9 +215,20 @@ That means: 95% of calls under 800 ms, 99% under 2 seconds, and fewer than 1% er
   --out soak.json --html soak.html
 ```
 
-Without a sampler, mcpload still reports speed and error trends, but it can't judge memory.
+The soak starts 2 new agent sessions per second by default. Change it with `--env RATE=...`; fractions work too, so `--env RATE=0.05` means one new session every 20 seconds, a gentle pace for a small staging server.
+
+Without a sampler, mcpload still reports speed and error trends, but it can't judge memory. If your Prometheus endpoint also reports heap size (as Node, Go and Python clients usually do), the memory check looks at the heap as well as total memory.
 
 Every option is listed in [scenarios/README.md](scenarios/README.md) and [cmd/mcpload/README.md](cmd/mcpload/README.md).
+
+## Getting trustworthy results
+
+A load test measures the server *and* the computer sending the load. A few habits keep the numbers honest:
+
+- **Run mcpload on a different machine from the server**, or at least on different CPU cores. If both fight over the same CPU, a healthy server can look slow.
+- **Start small.** Begin with a few agents and a short run, check that everything passes, then raise the load step by step. That way you learn where the server starts to struggle instead of just seeing a wall of errors.
+- **Hunt leaks with a long soak and a sampler.** Use at least 10 minutes of steady load (30–60 is better) with `--sampler docker` or `--sampler prometheus`. Without a sampler there's nothing to judge memory by.
+- **Watch the `generator` check.** It tells you when the load generator itself was the bottleneck: it couldn't send all the traffic you asked for, or it was using most of its CPU. If it warns or fails, the speed numbers may be partly the test machine's fault, not the server's. Give mcpload a bigger machine or lower the load, and run again.
 
 ---
 
@@ -210,13 +244,16 @@ The checks, in plain words:
 
 | Check | Fails when… |
 |---|---|
-| `memory_leak` | Memory keeps rising under steady load and doesn't come back down afterwards. |
-| `session_leak` | Open sessions pile up and aren't cleaned up. |
-| `fd_leak` | Open files or connections pile up. |
-| `latency_drift` | Calls get noticeably slower the longer the test runs (a warning). |
+| `memory_leak` | Memory keeps rising under steady load and doesn't come back down afterwards. Soak tests only. |
+| `session_leak` | Open sessions pile up and aren't cleaned up. Soak tests only. |
+| `fd_leak` | Open files or connections pile up. Soak tests only. |
+| `latency_drift` | A tool gets noticeably slower the longer the test runs (a warning). Each tool is checked separately. |
 | `error_drift` | Errors become more frequent over time (a warning). |
 | `session_not_found` | The server "forgets" an agent's session, which often means a load-balancer problem. |
 | `threshold` | A tool went over your time or error budget. |
+| `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself used over 85% CPU, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
+
+"Soak tests only" means the check is skipped on short runs without a cool-down, or with less than 2 minutes of steady load.
 
 ---
 
@@ -266,7 +303,7 @@ No. Everything runs on your machine or your CI runner. Reports stay local unless
 Remote MCP servers over streamable HTTP, in any language. It has been tested against servers built with the official TypeScript, Python and Go SDKs. Local stdio servers aren't supported.
 
 **How long should a soak test be?**
-30–60 minutes catches most slow leaks. A few minutes is enough to check that everything is wired up.
+30–60 minutes catches most slow leaks, and 10 minutes of steady load is a sensible minimum. A few minutes is enough to check that everything is wired up, but leak checks are skipped below 2 minutes of steady load, and a short soak only catches fast leaks.
 
 ---
 

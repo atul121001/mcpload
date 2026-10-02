@@ -12,9 +12,11 @@
 //
 //   ./k6 run -e MCP_URL=http://localhost:3002/mcp -e SOAK_MIN=30 scenarios/soak.js
 //   SOAK_MIN (30), WARMUP_MIN (10% of SOAK_MIN, min 1), COOLDOWN_MIN (5),
-//   RATE sessions/s (2), PRE_VUS (20), MAX_VUS (200)
+//   RATE sessions per TIME_UNIT (2), TIME_UNIT (1s), PRE_VUS (rate-based, 2..20), MAX_VUS (200)
+// RATE may be fractional: k6 needs an integer rate, so e.g. RATE=0.05 (per 1s) runs as 3 per 1m and
+// RATE=0.5 as 30 per 1m (lib/config.js#arrivalRate). The phase durations above do not depend on RATE.
 import { sleep } from 'k6';
-import { buildThresholds, envNum, secs } from './lib/config.js';
+import { arrivalRate, buildThresholds, env, envNum, secs } from './lib/config.js';
 import { agentSession, makeClient } from './lib/session.js';
 
 const client = makeClient();
@@ -23,8 +25,11 @@ const SOAK_MIN = envNum('SOAK_MIN', 30);
 const WARMUP_MIN = envNum('WARMUP_MIN', Math.max(1, SOAK_MIN * 0.1));
 const COOLDOWN_MIN = envNum('COOLDOWN_MIN', 5);
 const RATE = envNum('RATE', 2);
-const PRE_VUS = envNum('PRE_VUS', 20);
-const MAX_VUS = envNum('MAX_VUS', 200);
+const TIME_UNIT = env('TIME_UNIT', '1s');
+const AR = arrivalRate(RATE, TIME_UNIT); // { rate (integer), timeUnit, perSecond }
+// Sessions last a few seconds (1-5 rounds with think time): ~15 s worth of arrivals pre-allocated, 2..20.
+const PRE_VUS = Math.max(1, Math.floor(envNum('PRE_VUS', Math.min(20, Math.max(2, Math.ceil(AR.perSecond * 15))))));
+const MAX_VUS = Math.max(PRE_VUS, Math.floor(envNum('MAX_VUS', 200)));
 
 const W = Math.round(WARMUP_MIN * 60);
 const L = Math.round(SOAK_MIN * 60);
@@ -37,8 +42,8 @@ const scenarios = {
     executor: 'constant-arrival-rate',
     exec: 'session',
     startTime: secs(W),
-    rate: RATE,
-    timeUnit: '1s',
+    rate: AR.rate,
+    timeUnit: AR.timeUnit,
     duration: secs(L),
     preAllocatedVUs: PRE_VUS,
     maxVUs: MAX_VUS,
@@ -50,10 +55,10 @@ if (W > 0) {
     executor: 'ramping-arrival-rate',
     exec: 'session',
     startRate: 0,
-    timeUnit: '1s',
+    timeUnit: AR.timeUnit,
     preAllocatedVUs: PRE_VUS,
     maxVUs: MAX_VUS,
-    stages: [{ target: RATE, duration: secs(W) }],
+    stages: [{ target: AR.rate, duration: secs(W) }],
     gracefulStop: '30s',
   };
 }
@@ -77,7 +82,7 @@ export const options = {
 };
 
 export function setup() {
-  console.log(`soak phases (s): warm-up 0-${phases.warmupEndS}, load ${phases.warmupEndS}-${phases.loadEndS}, cool-down ${phases.loadEndS}-${phases.cooldownEndS}; rate ${RATE} sessions/s`);
+  console.log(`soak phases (s): warm-up 0-${phases.warmupEndS}, load ${phases.warmupEndS}-${phases.loadEndS}, cool-down ${phases.loadEndS}-${phases.cooldownEndS}; rate ${AR.rate} sessions per ${AR.timeUnit} (${AR.perSecond.toFixed(4)}/s)`);
   return phases;
 }
 

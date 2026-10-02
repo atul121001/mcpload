@@ -64,6 +64,35 @@ func IsStateless(version string) bool {
 	return version != ProtocolAuto && version >= ProtocolStateless
 }
 
+// ValidProtocolVersion reports whether v is a protocol revision identifier
+// (a YYYY-MM-DD date).
+func ValidProtocolVersion(v string) bool {
+	if len(v) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", v)
+	return err == nil
+}
+
+// ValidateProtocol checks a Protocol option value: "auto" (or empty, meaning
+// "auto") or a YYYY-MM-DD protocol revision.
+func ValidateProtocol(p string) error {
+	if p == "" || p == ProtocolAuto || ValidProtocolVersion(p) {
+		return nil
+	}
+	return fmt.Errorf("invalid protocol %q: want 'auto' or a protocol revision date like %q or %q",
+		p, ProtocolStateless, DefaultFallbackVersion)
+}
+
+// ValidateFallbackVersion checks a FallbackVersion option value: empty
+// (meaning DefaultFallbackVersion) or a YYYY-MM-DD protocol revision.
+func ValidateFallbackVersion(v string) error {
+	if v == "" || ValidProtocolVersion(v) {
+		return nil
+	}
+	return fmt.Errorf("invalid fallbackVersion %q: want a protocol revision date like %q", v, DefaultFallbackVersion)
+}
+
 // Error is returned by every client operation that fails. Type is one of the
 // Err* constants.
 type Error struct {

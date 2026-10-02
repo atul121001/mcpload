@@ -14,6 +14,7 @@ import (
 	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,8 @@ const maxErrorBody = 64 << 10
 
 // EncodeHeaderValue returns s unchanged when it is a safe ASCII header value,
 // or wraps it as =?base64?<std-base64>?= when it contains non-ASCII or control
-// characters or leading/trailing whitespace.
+// characters or leading/trailing whitespace, or when it already looks like an
+// encoded value (=?base64?...?=), so the server never mis-decodes a literal.
 func EncodeHeaderValue(s string) string {
 	if !needsBase64(s) {
 		return s
@@ -33,6 +35,9 @@ func EncodeHeaderValue(s string) string {
 func needsBase64(s string) bool {
 	if s == "" {
 		return false
+	}
+	if len(s) >= len("=?base64??=") && strings.EqualFold(s[:len("=?base64?")], "=?base64?") && strings.HasSuffix(s, "?=") {
+		return true
 	}
 	if s[0] == ' ' || s[0] == '\t' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t' {
 		return true
@@ -92,8 +97,12 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 		}
 	}()
 
-	var ttfb time.Time
-	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() { ttfb = time.Now() }}
+	// GotFirstResponseByte runs on the transport's goroutine, which can still
+	// be running when Do has already returned an error (timeout), so the
+	// time is published atomically: nanoseconds since base, 0 = not seen.
+	base := time.Now()
+	var ttfb atomic.Int64
+	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() { ttfb.Store(int64(time.Since(base)) + 1) }}
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, s.opts.URL, bytes.NewReader(body))
 	if err != nil {
 		res.err = &Error{Type: ErrHTTP, Message: "building request: " + err.Error()}
@@ -119,8 +128,10 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 	res.stats.Start = start
 	finish := func() {
 		res.stats.Duration = time.Since(start)
-		if !ttfb.IsZero() {
-			res.stats.TTFB = ttfb.Sub(start)
+		if v := ttfb.Load(); v != 0 {
+			if d := time.Duration(v-1) - start.Sub(base); d > 0 {
+				res.stats.TTFB = d
+			}
 		}
 		if res.err != nil {
 			res.stats.ErrorType = res.err.Type
@@ -225,11 +236,17 @@ func (s *Session) setCommonHeaders(req *http.Request, authHdr string) {
 	}
 }
 
+// authorization obtains the Authorization header value. Options.Timeout
+// bounds both how long this caller waits for a token and (unless the auth
+// source has its own timeout) how long a token fetch it starts may take.
 func (s *Session) authorization(ctx context.Context) (string, *Error) {
 	if s.opts.Auth == nil {
 		return "", nil
 	}
-	v, err := s.opts.Auth.Authorization(ctx, s.hc, s.obs(ctx))
+	obs := s.obs(ctx)
+	ctx, cancel := s.withTimeout(WithFetchTimeout(ctx, s.opts.Timeout))
+	defer cancel()
+	v, err := s.opts.Auth.Authorization(ctx, s.hc, obs)
 	if err != nil {
 		var e *Error
 		if errors.As(err, &e) {

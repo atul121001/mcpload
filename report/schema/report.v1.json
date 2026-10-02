@@ -49,7 +49,17 @@
           }
         },
         "k6Version": { "type": "string", "minLength": 1 },
-        "load": { "$ref": "#/$defs/load" }
+        "load": { "$ref": "#/$defs/load" },
+        "generator": {
+          "type": "object",
+          "description": "Resource usage of the load generator (the k6 process). Percentages are the share of the machine's total CPU capacity (all cores), 0..100; null when not measured. cpuAvgPct averages over the whole k6 lifetime (including an idle cool-down); cpuMaxPct is the busiest full sampling interval.",
+          "required": ["cores"],
+          "properties": {
+            "cores": { "type": "integer", "minimum": 1 },
+            "cpuAvgPct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+            "cpuMaxPct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
+          }
+        }
       }
     },
     "phases": {
@@ -83,12 +93,15 @@
             "header_mismatch": { "type": "integer", "minimum": 0 },
             "auth": { "type": "integer", "minimum": 0 }
           }
-        }
+        },
+        "iterations": { "type": "integer", "minimum": 0, "description": "Completed k6 iterations (k6 'iterations' counter)." },
+        "droppedIterations": { "type": "integer", "minimum": 0, "description": "Iterations k6 could not start on schedule (k6 'dropped_iterations' counter; arrival-rate executors)." },
+        "toolErrors": { "type": "integer", "minimum": 0, "description": "tools/call results with isError: true (mcp_errors{error_type:tool_iserror})." }
       }
     },
     "tools": {
       "type": "array",
-      "description": "Per-tool statistics over tools/call requests (mcp_req_duration{method:tools/call} grouped by the tool tag). Latencies in milliseconds.",
+      "description": "Per-tool statistics over tools/call requests (mcp_req_duration{method:tools/call} grouped by the tool tag). Latencies in milliseconds, computed over successful calls only; errors and errorRate count every failed call.",
       "items": {
         "type": "object",
         "required": ["name", "reqs", "errors", "errorRate", "p50", "p95", "p99", "max"],
@@ -131,7 +144,8 @@
           "properties": {
             "p95Ms": { "$ref": "#/$defs/series" },
             "errorRate": { "$ref": "#/$defs/series" },
-            "rps": { "$ref": "#/$defs/series" }
+            "rps": { "$ref": "#/$defs/series" },
+            "droppedIterations": { "$ref": "#/$defs/series", "description": "k6 dropped_iterations per bucket." }
           }
         },
         "server": {
@@ -143,6 +157,17 @@
             "heapBytes": { "$ref": "#/$defs/series" },
             "openFds": { "$ref": "#/$defs/series" },
             "activeSessions": { "$ref": "#/$defs/series" }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "description": "Per-tool client series keyed by tool name. Arrays are parallel to t.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["p95Ms"],
+            "properties": {
+              "p95Ms": { "$ref": "#/$defs/series", "description": "p95 of successful tools/call latency per bucket, ms." }
+            }
           }
         }
       }
@@ -179,7 +204,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

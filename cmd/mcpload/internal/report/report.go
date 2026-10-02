@@ -13,6 +13,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -35,7 +38,14 @@ const (
 	VerdictErrorDrift      = "error_drift"
 	VerdictSessionNotFound = "session_not_found"
 	VerdictThreshold       = "threshold"
+	VerdictGenerator       = "generator"
 )
+
+// VerdictIDs lists every verdict id the schema allows.
+var VerdictIDs = []string{
+	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
+	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
+}
 
 // Verdict statuses.
 const (
@@ -77,6 +87,17 @@ type Run struct {
 	Git       *Git    `json:"git,omitempty"`
 	K6Version string  `json:"k6Version"`
 	Load      Load    `json:"load"`
+	// Generator describes the load-generator (k6) host; nil when unknown.
+	Generator *Generator `json:"generator,omitempty"`
+}
+
+// Generator is load-generator resource usage. CPU percentages are the share of
+// the machine's total CPU capacity (all cores) used by the k6 process, 0..100;
+// nil when not measured.
+type Generator struct {
+	Cores     int      `json:"cores"`
+	CPUAvgPct *float64 `json:"cpuAvgPct"`
+	CPUMaxPct *float64 `json:"cpuMaxPct"`
 }
 
 // Target is the system under test.
@@ -115,9 +136,16 @@ type Summary struct {
 	Errors      int64            `json:"errors"`
 	ErrorRate   float64          `json:"errorRate"`
 	ByErrorType map[string]int64 `json:"byErrorType"`
+	// Iterations is the number of completed k6 iterations (optional).
+	Iterations *int64 `json:"iterations,omitempty"`
+	// DroppedIterations is k6's dropped_iterations count (optional).
+	DroppedIterations *int64 `json:"droppedIterations,omitempty"`
+	// ToolErrors is the count of error_type tool_iserror (optional).
+	ToolErrors *int64 `json:"toolErrors,omitempty"`
 }
 
-// ToolStats are per-tool tools/call statistics. Latencies in ms.
+// ToolStats are per-tool tools/call statistics. Latencies in ms and computed
+// over successful calls only; Errors/ErrorRate count all failed calls.
 type ToolStats struct {
 	Name      string  `json:"name"`
 	Reqs      int64   `json:"reqs"`
@@ -143,6 +171,13 @@ type Series struct {
 	T         []float64    `json:"t"`
 	Client    ClientSeries `json:"client"`
 	Server    ServerSeries `json:"server"`
+	// Tools maps tool name -> per-tool series (optional, omitted when empty).
+	Tools map[string]ToolSeries `json:"tools,omitempty"`
+}
+
+// ToolSeries are per-tool client series, parallel to Series.T.
+type ToolSeries struct {
+	P95Ms []*float64 `json:"p95Ms"`
 }
 
 // ClientSeries are k6-side series.
@@ -150,7 +185,12 @@ type ClientSeries struct {
 	P95Ms     []*float64 `json:"p95Ms"`
 	ErrorRate []*float64 `json:"errorRate"`
 	RPS       []*float64 `json:"rps"`
+	// DroppedIterations per interval (optional, omitted when empty).
+	DroppedIterations []*float64 `json:"droppedIterations,omitempty"`
 }
+
+// I64 returns a pointer to v.
+func I64(v int64) *int64 { return &v }
 
 // ServerSeries are sampler-side series. RSSBytes is [] when Sampler is "none".
 // The optional series are omitted from JSON when nil/empty.
@@ -220,10 +260,28 @@ func (r *Report) Normalize() {
 			*p = []*float64{}
 		}
 	}
-	for _, p := range []*[]*float64{&s.Client.P95Ms, &s.Client.ErrorRate, &s.Client.RPS, &s.Server.RSSBytes, &s.Server.HeapBytes, &s.Server.OpenFDs, &s.Server.ActiveSessions} {
+	all := []*[]*float64{&s.Client.P95Ms, &s.Client.ErrorRate, &s.Client.RPS, &s.Client.DroppedIterations, &s.Server.RSSBytes, &s.Server.HeapBytes, &s.Server.OpenFDs, &s.Server.ActiveSessions}
+	for name, ts := range s.Tools {
+		if ts.P95Ms == nil {
+			ts.P95Ms = []*float64{}
+		}
+		s.Tools[name] = ts
+		all = append(all, &ts.P95Ms)
+	}
+	if len(s.Tools) == 0 {
+		s.Tools = nil
+	}
+	for _, p := range all {
 		for i, v := range *p {
 			if v != nil && !finite(*v) {
 				(*p)[i] = nil
+			}
+		}
+	}
+	if g := r.Run.Generator; g != nil {
+		for _, p := range []**float64{&g.CPUAvgPct, &g.CPUMaxPct} {
+			if *p != nil && !finite(**p) {
+				*p = nil
 			}
 		}
 	}
@@ -242,39 +300,212 @@ func (r *Report) Normalize() {
 	}
 }
 
-// Check performs the semantic checks of report/validate.mjs (the ones JSON
-// Schema cannot express) plus a few cheap structural ones (schemaVersion,
-// timestamps, sampler/status enums, r2 range). It returns all problems joined, or nil.
+// reURI is the "uri" format of ajv-formats (full mode), which report/validate.mjs uses.
+var reURI = regexp.MustCompile(`(?i)^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)(?:\?(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$`)
+
+var (
+	// reDateTime is the "date-time" format of ajv-formats (RFC 3339 with a time zone).
+	reDateTime    = regexp.MustCompile(`(?i)^\d\d\d\d-[0-1]\d-[0-3]\dt(?:[0-2]\d:[0-5]\d:[0-5]\d|23:59:60)(?:\.\d+)?(?:z|[+-]\d\d(?::?\d\d)?)$`)
+	reErrorType   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	reGitSHA      = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	knownVerdicts = func() map[string]bool {
+		m := map[string]bool{}
+		for _, id := range VerdictIDs {
+			m[id] = true
+		}
+		return m
+	}()
+)
+
+// parseTime parses an RFC 3339 date-time as the JSON schema's "date-time"
+// format accepts it (case-insensitive T/Z, offsets with or without a colon).
+func parseTime(s string) (time.Time, error) {
+	if !reDateTime.MatchString(s) {
+		return time.Time{}, fmt.Errorf("%q is not an RFC 3339 date-time", s)
+	}
+	u := strings.ToUpper(s)
+	if n := len(u); n >= 5 && (u[n-5] == '+' || u[n-5] == '-') {
+		u = u[:n-2] + ":" + u[n-2:] // +0100 -> +01:00
+	} else if n >= 3 && (u[n-3] == '+' || u[n-3] == '-') {
+		u += ":00" // +01 -> +01:00
+	}
+	u = strings.Replace(u, ":60", ":59", 1) // leap second
+	return time.Parse(time.RFC3339Nano, u)
+}
+
+// Check validates r against report/schema/report.v1.json (required fields,
+// enums, patterns, formats, numeric ranges) and the semantic checks of
+// report/validate.mjs (parallel array lengths, phase order, byErrorType sum,
+// percentile order, ...). It returns all problems joined, or nil.
+//
+// Go cannot tell an absent string from an empty one, so required strings are
+// checked as non-empty (the schema gives them minLength 1; run.target.url must
+// match the "uri" format, which rejects ""). Required slices/maps must be
+// non-nil; ReadJSON leaves them nil when the property is absent or null.
 func (r *Report) Check() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+	nonEmpty := func(path, v string) {
+		if v == "" {
+			add("%s is required and must be non-empty", path)
+		}
+	}
+	nonNeg := func(path string, v float64) {
+		if !(v >= 0) || !finite(v) {
+			add("%s must be a finite number >= 0 (got %v)", path, v)
+		}
+	}
+	rate := func(path string, v float64) {
+		if !(v >= 0 && v <= 1) {
+			add("%s must be in [0,1] (got %v)", path, v)
+		}
+	}
 
 	if r.SchemaVersion != SchemaVersion {
 		add("schemaVersion must be %q (got %q)", SchemaVersion, r.SchemaVersion)
 	}
-	p := r.Phases
-	if !(p.WarmupEndS <= p.LoadEndS && p.LoadEndS <= p.CooldownEndS) {
-		add("phases must satisfy warmupEndS <= loadEndS <= cooldownEndS (got %v, %v, %v)", p.WarmupEndS, p.LoadEndS, p.CooldownEndS)
+	nonEmpty("tool.name", r.Tool.Name)
+	nonEmpty("tool.version", r.Tool.Version)
+
+	run := r.Run
+	nonEmpty("run.id", run.ID)
+	nonEmpty("run.scenario", run.Scenario)
+	nonEmpty("run.protocol", run.Protocol)
+	nonEmpty("run.k6Version", run.K6Version)
+	nonEmpty("run.load.executor", run.Load.Executor)
+	nonNeg("run.durationS", run.DurationS)
+	if !reURI.MatchString(run.Target.URL) {
+		add("run.target.url must be an absolute URI (got %q)", run.Target.URL)
 	}
-	if p.WarmupEndS < 0 {
-		add("phases.warmupEndS must be >= 0")
+	if run.Git != nil && !reGitSHA.MatchString(run.Git.SHA) {
+		add("run.git.sha must match ^[0-9a-f]{7,64}$ (got %q)", run.Git.SHA)
 	}
-	st, err1 := time.Parse(time.RFC3339, r.Run.StartedAt)
-	en, err2 := time.Parse(time.RFC3339, r.Run.EndedAt)
+	l := run.Load
+	if l.VUs != nil && *l.VUs < 0 {
+		add("run.load.vus must be >= 0")
+	}
+	if l.MaxVUs != nil && *l.MaxVUs < 0 {
+		add("run.load.maxVus must be >= 0")
+	}
+	if l.ArrivalRate != nil {
+		nonNeg("run.load.arrivalRate", *l.ArrivalRate)
+	}
+	if l.ArrivalTimeUnitS != nil && !(*l.ArrivalTimeUnitS > 0) {
+		add("run.load.arrivalTimeUnitS must be > 0")
+	}
+	if g := run.Generator; g != nil {
+		if g.Cores < 1 {
+			add("run.generator.cores must be >= 1 (got %d)", g.Cores)
+		}
+		if p := g.CPUAvgPct; p != nil && !(*p >= 0 && *p <= 100) {
+			add("run.generator.cpuAvgPct must be in [0,100] or null (got %v)", *p)
+		}
+		if p := g.CPUMaxPct; p != nil && !(*p >= 0 && *p <= 100) {
+			add("run.generator.cpuMaxPct must be in [0,100] or null (got %v)", *p)
+		}
+	}
+	st, err1 := parseTime(run.StartedAt)
+	en, err2 := parseTime(run.EndedAt)
 	if err1 != nil {
-		add("run.startedAt is not RFC 3339: %v", err1)
+		add("run.startedAt: %v", err1)
 	}
 	if err2 != nil {
-		add("run.endedAt is not RFC 3339: %v", err2)
+		add("run.endedAt: %v", err2)
 	}
 	if err1 == nil && err2 == nil && en.Before(st) {
 		add("run.endedAt is before run.startedAt")
 	}
+
+	p := r.Phases
+	nonNeg("phases.warmupEndS", p.WarmupEndS)
+	nonNeg("phases.loadEndS", p.LoadEndS)
+	nonNeg("phases.cooldownEndS", p.CooldownEndS)
+	if !(p.WarmupEndS <= p.LoadEndS && p.LoadEndS <= p.CooldownEndS) {
+		add("phases must satisfy warmupEndS <= loadEndS <= cooldownEndS (got %v, %v, %v)", p.WarmupEndS, p.LoadEndS, p.CooldownEndS)
+	}
+
+	sm := r.Summary
+	if sm.Reqs < 0 || sm.Errors < 0 {
+		add("summary.reqs and summary.errors must be >= 0")
+	}
+	if sm.Errors > sm.Reqs {
+		add("summary.errors > summary.reqs")
+	}
+	rate("summary.errorRate", sm.ErrorRate)
+	if sm.ByErrorType == nil {
+		add("summary.byErrorType is required")
+	}
+	var byType int64
+	for k, v := range sm.ByErrorType {
+		if !reErrorType.MatchString(k) {
+			add("summary.byErrorType key %q must match ^[a-z][a-z0-9_]*$", k)
+		}
+		if v < 0 {
+			add("summary.byErrorType[%s] must be >= 0", k)
+		}
+		byType += v
+	}
+	if byType != sm.Errors {
+		add("sum of summary.byErrorType (%d) != summary.errors (%d)", byType, sm.Errors)
+	}
+	if sm.Iterations != nil && *sm.Iterations < 0 {
+		add("summary.iterations must be >= 0")
+	}
+	if sm.DroppedIterations != nil && *sm.DroppedIterations < 0 {
+		add("summary.droppedIterations must be >= 0")
+	}
+	if sm.ToolErrors != nil && *sm.ToolErrors < 0 {
+		add("summary.toolErrors must be >= 0")
+	}
+
+	if r.Tools == nil {
+		add("tools is required")
+	}
+	names := map[string]bool{}
+	for _, t := range r.Tools {
+		nonEmpty("tools[].name", t.Name)
+		if names[t.Name] {
+			add("duplicate tool '%s'", t.Name)
+		}
+		names[t.Name] = true
+		if t.Reqs < 0 || t.Errors < 0 {
+			add("tools[%s].reqs and errors must be >= 0", t.Name)
+		}
+		if t.Errors > t.Reqs {
+			add("tools[%s].errors > reqs", t.Name)
+		}
+		rate(fmt.Sprintf("tools[%s].errorRate", t.Name), t.ErrorRate)
+		nonNeg(fmt.Sprintf("tools[%s].p50", t.Name), t.P50)
+		nonNeg(fmt.Sprintf("tools[%s].p95", t.Name), t.P95)
+		nonNeg(fmt.Sprintf("tools[%s].p99", t.Name), t.P99)
+		nonNeg(fmt.Sprintf("tools[%s].max", t.Name), t.Max)
+		if !(t.P50 <= t.P95 && t.P95 <= t.P99 && t.P99 <= t.Max) {
+			add("tools[%s] percentiles not monotonic (p50<=p95<=p99<=max)", t.Name)
+		}
+	}
+
+	if r.Thresholds == nil {
+		add("thresholds is required")
+	}
+	for i, t := range r.Thresholds {
+		nonEmpty(fmt.Sprintf("thresholds[%d].metric", i), t.Metric)
+		nonEmpty(fmt.Sprintf("thresholds[%d].expr", i), t.Expr)
+	}
+
 	s := r.Series
 	if !(s.IntervalS > 0) {
 		add("series.intervalS must be > 0")
 	}
+	if s.T == nil {
+		add("series.t is required")
+	}
 	n := len(s.T)
+	for i, ti := range s.T {
+		if !(ti >= 0) {
+			add("series.t[%d] must be >= 0", i)
+			break
+		}
+	}
 	for i := 1; i < n; i++ {
 		if !(s.T[i] > s.T[i-1]) {
 			add("series.t must be strictly increasing (index %d)", i)
@@ -292,54 +523,50 @@ func (r *Report) Check() error {
 	check("client.p95Ms", s.Client.P95Ms, false)
 	check("client.errorRate", s.Client.ErrorRate, false)
 	check("client.rps", s.Client.RPS, false)
+	// Optional series are omitted from JSON when empty, so an empty one counts as absent.
+	check("client.droppedIterations", s.Client.DroppedIterations, true)
 	switch s.Server.Sampler {
 	case SamplerDocker, SamplerPrometheus, SamplerNone:
 	default:
 		add("series.server.sampler must be docker|prometheus|none (got %q)", s.Server.Sampler)
 	}
 	noSampler := s.Server.Sampler == SamplerNone
+	if s.Server.RSSBytes == nil {
+		add("series.server.rssBytes is required")
+	}
 	check("server.rssBytes", s.Server.RSSBytes, noSampler)
-	// Optional series are omitted from JSON when empty, so an empty one counts as absent.
 	check("server.heapBytes", s.Server.HeapBytes, true)
 	check("server.openFds", s.Server.OpenFDs, true)
 	check("server.activeSessions", s.Server.ActiveSessions, true)
 	if !noSampler && len(s.Server.RSSBytes) == 0 {
 		add("series.server.rssBytes is empty but sampler is '%s'", s.Server.Sampler)
 	}
-	sm := r.Summary
-	if sm.Errors > sm.Reqs {
-		add("summary.errors > summary.reqs")
+	tools := make([]string, 0, len(s.Tools))
+	for name := range s.Tools {
+		tools = append(tools, name)
 	}
-	if sm.ErrorRate < 0 || sm.ErrorRate > 1 {
-		add("summary.errorRate out of [0,1]")
-	}
-	var byType int64
-	for _, v := range sm.ByErrorType {
-		byType += v
-	}
-	if byType != sm.Errors {
-		add("sum of summary.byErrorType (%d) != summary.errors (%d)", byType, sm.Errors)
-	}
-	names := map[string]bool{}
-	for _, t := range r.Tools {
-		if names[t.Name] {
-			add("duplicate tool '%s'", t.Name)
+	sort.Strings(tools)
+	for _, name := range tools {
+		if s.Tools[name].P95Ms == nil {
+			add("series.tools[%s].p95Ms is required", name)
+			continue
 		}
-		names[t.Name] = true
-		if t.Errors > t.Reqs {
-			add("tools[%s].errors > reqs", t.Name)
-		}
-		if !(t.P50 <= t.P95 && t.P95 <= t.P99 && t.P99 <= t.Max) {
-			add("tools[%s] percentiles not monotonic (p50<=p95<=p99<=max)", t.Name)
-		}
+		check(fmt.Sprintf("tools[%s].p95Ms", name), s.Tools[name].P95Ms, false)
+	}
+
+	if r.Verdicts == nil {
+		add("verdicts is required")
 	}
 	for i, v := range r.Verdicts {
+		if !knownVerdicts[v.ID] {
+			add("verdicts[%d].id invalid: %q", i, v.ID)
+		}
 		switch v.Status {
 		case StatusPass, StatusFail, StatusWarn, StatusSkipped:
 		default:
 			add("verdicts[%d].status invalid: %q", i, v.Status)
 		}
-		if v.R2 != nil && (*v.R2 < 0 || *v.R2 > 1) {
+		if v.R2 != nil && !(*v.R2 >= 0 && *v.R2 <= 1) {
 			add("verdicts[%d].r2 out of [0,1]", i)
 		}
 	}
@@ -351,6 +578,7 @@ func Marshal(r *Report) ([]byte, error) {
 	r.Normalize()
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r); err != nil {
 		return nil, err

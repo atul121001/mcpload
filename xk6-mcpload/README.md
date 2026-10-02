@@ -22,12 +22,14 @@ import mcp from 'k6/x/mcpload';
 // Construct in the init context (one Client per VU).
 const client = new mcp.Client({
   url: 'http://localhost:3001/mcp',
-  protocol: 'auto',          // 'auto' | '2026-07-28' | '2025-11-25' | '2025-06-18' | ...
+  protocol: 'auto',          // 'auto' or a revision date: '2026-07-28' | '2025-11-25' | '2025-06-18' | ...
+                             // anything else (e.g. 'latest') throws when the Client is constructed
   headers: { 'X-Tenant': 'load' },
   auth: { type: 'bearer', token: '...' },
   //  or { type: 'oauth', tokenUrl, clientId, clientSecret, scope?, audience?, authStyle?: 'basic'|'post',
-  //       failureBackoff?: '1s' }   // negative cache for failed token fetches; 0 disables
-  timeout: '30s',            // per HTTP exchange; string or milliseconds
+  //       failureBackoff?: '1s',  // negative cache for failed token fetches; 0 disables
+  //       timeout?: '10s' }       // per token fetch; default: the client's `timeout`
+  timeout: '30s',            // per HTTP exchange, and per token wait/fetch; string or milliseconds
   includePayloads: false,    // reserved; payloads are never attached to metric samples
   // advanced: fallbackVersion ('2025-11-25'), discover (true), rememberProtocol (true),
   //           clientInfo {name, version}, capabilities {}
@@ -53,29 +55,42 @@ export default function () {
 
 - **Stateful** (`2025-xx`): `initialize` → `Mcp-Session-Id` → `notifications/initialized`; later requests
   carry `Mcp-Session-Id` and `MCP-Protocol-Version`; `close()` sends DELETE (405 is accepted).
-  A 404 on a request that carried a session id is `session_not_found`.
+  A 404 on a request that carried a session id is `session_not_found`. If `initialize` succeeded but
+  `notifications/initialized` fails, the new session is DELETEd (best effort, recorded as a `DELETE` request)
+  before `connect()` throws, so failing handshakes do not leak server sessions.
 - **Stateless** (`2026-07-28`): no handshake; every request carries `params._meta`
   `io.modelcontextprotocol/{protocolVersion,clientInfo,clientCapabilities}` and the headers
-  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` (tools/call, resources/read, prompts/get; non-ASCII values as
-  `=?base64?…?=`). `connect()` calls `server/discover` unless `discover: false`. `ping()` sends
+  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` (tools/call, resources/read, prompts/get; values with
+  non-ASCII/control characters or leading/trailing whitespace, and plain values that themselves look like
+  `=?base64?…?=`, are sent as `=?base64?…?=`). `connect()` calls `server/discover` unless `discover: false`. `ping()` sends
   `server/discover` because the new protocol removed `ping`. JSON-RPC `-32020` is `header_mismatch`.
 - **auto**: `connect()` sends a stateless `server/discover`; on a non-modern error (e.g. HTTP 400 `-32000` from
   the TypeScript SDK (@modelcontextprotocol/sdk 1.31.0, Sep 2026), 404/405, or `-32601`) it falls back to `initialize` with `fallbackVersion`. Timeouts, 5xx, auth
-  errors, `-32020` and `-32021` do not fall back. A probe answered with a fallback-triggering error is recorded in
-  `mcp_reqs`/`mcp_req_duration` (with its real `status` tag) but not in `mcp_errors`.
+  errors, `-32020` and `-32021` do not fall back. A `-32022` (UnsupportedProtocolVersion) whose
+  `error.data.supported` lists a stateless version (`>= 2026-07-28`) is a modern server: `server/discover` is
+  retried once with the newest such version, and only if none is offered does it fall back to `initialize`. A probe
+  answered with a fallback-triggering (or retry-triggering) error is recorded in `mcp_reqs`/`mcp_req_duration`
+  (with its real `status` tag) but not in `mcp_errors`.
 - **rememberProtocol** (default `true`, only affects `auto`): the protocol resolved by the first *successful* auto
   connect is cached process-wide, keyed by `url` + `protocol` + `fallbackVersion`, and shared by every VU and
   Client in the k6 process. Later connects skip the `server/discover` probe: a stateless (`2026-07-28`) server
   gets no request at all on `connect()` (capabilities and server info come from the cache, and the
   `mcp_connect_duration` sample has no `method` tag), and a stateful server goes straight to `initialize`. Failed
   connects are never cached, so a VU whose first connect fails re-probes. If a cached stateful version is later
-  rejected as a protocol error, the entry is dropped and the next connect probes again. Concurrent first
+  rejected as a protocol error, the entry is dropped and the next connect probes again; likewise, when a
+  request on a session that reused a cached stateless resolution gets a "legacy server" answer (e.g. HTTP
+  400/404/405, `-32601` or `-32022`; not an ordinary JSON-RPC error with HTTP 200), the entry is dropped so the
+  next connect re-probes (that request still fails). Concurrent first
   connects (before anything is cached) each probe. `rememberProtocol: false` probes on every connect.
-- **OAuth** (client_credentials): one token cache per credential set shared by all VUs, refreshed in the last 20%
-  of its lifetime (max 60 s early) with a single in-flight fetch; a 401 from the MCP server drops the cached token
+- **OAuth** (client_credentials): one token cache per credential set shared by all VUs, with a single in-flight
+  fetch. The fetch runs detached from the VU that triggered it (an iteration being cut off does not fail other
+  VUs waiting for the same token) and is bounded by the oauth `timeout` (default: the client's `timeout`); each
+  caller waits at most the client's `timeout`, and a fetch or wait that runs out of time fails with error type
+  `timeout`. In the last 20% of a token's lifetime (max 60 s early) the refresh runs in the background and callers
+  keep using the still-valid token without waiting. A 401 from the MCP server drops the cached token
   (the next request fetches a new one). A failed token fetch (4xx/5xx, bad response or network error) is cached
   for `failureBackoff` (default `1s`; a duration string or milliseconds; `0` disables): every connect or request in
-  that window, from any VU, fails immediately with the cached `auth` error (its message says it was cached, and no
+  that window, from any VU, fails immediately with the cached `auth` (or `timeout`) error (its message says it was cached, and no
   `mcp_oauth_refresh_duration` sample is emitted), so a wrong secret or a down IdP costs about one token request
   per window instead of one per connect. While a still-valid token exists, a failed early refresh keeps using it
   and waits out the window before retrying. No request is ever retried.
@@ -83,6 +98,8 @@ export default function () {
 ## Metrics
 
 Tags: `method`, `tool`, `protocol`, `status`, `error_type` (empty tags are omitted) plus the VU's tags.
+A successful request has **no** `error_type` tag; a failed one carries it on all of its samples, including
+`mcp_req_duration`, so success-only latency can be selected by the tag's absence.
 
 | Metric | Type | Notes |
 |---|---|---|
@@ -94,7 +111,14 @@ Tags: `method`, `tool`, `protocol`, `status`, `error_type` (empty tags are omitt
 | `mcp_reqs` | Counter | |
 | `mcp_errors` | Counter | tagged with `error_type` |
 | `mcp_tool_error_rate` | Rate | per `tools/call`; any failure (including `isError`) counts |
-| `mcp_sessions_open` | Gauge | client-side open sessions across all VUs |
+| `mcp_sessions_open` | Gauge | process-wide open sessions (see below) |
+
+`mcp_sessions_open` is the number of sessions currently open in this k6 process — every VU, Client and scenario
+together: +1 on a successful `connect()`, −1 on the first `close()` (stateless sessions count too). Each change is
+pushed with the new total, in order, tagged only with the test-wide `options.tags` (no VU, scenario or group
+tags), so the gauge's last value is the current count. `close()` after the VU's context has ended still
+decrements the count; its own sample is dropped by k6, and the next push from any VU carries the correct value.
+Sessions a script never closes stay counted.
 
 ## Layout
 

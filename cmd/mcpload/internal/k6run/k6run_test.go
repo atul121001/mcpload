@@ -97,10 +97,11 @@ func TestSummaryToolsProtocol(t *testing.T) {
 		t.Fatalf("tools = %+v", tools)
 	}
 	fl, se := tools[0], tools[1]
-	if fl.Reqs != 1 || fl.Errors != 1 || fl.ErrorRate != 1 || fl.P50 != 5 {
+	// Latency percentiles cover successful calls only (no error_type tag).
+	if fl.Reqs != 1 || fl.Errors != 1 || fl.ErrorRate != 1 || fl.P50 != 0 || fl.Max != 0 {
 		t.Errorf("flaky = %+v", fl)
 	}
-	if se.Reqs != 4 || se.Errors != 1 || !near(se.ErrorRate, 0.25) || !near(se.P50, 25) || !near(se.P95, 38.5) || se.Max != 40 {
+	if se.Reqs != 4 || se.Errors != 1 || !near(se.ErrorRate, 0.25) || !near(se.P50, 20) || !near(se.P95, 29) || se.Max != 30 {
 		t.Errorf("search = %+v", se)
 	}
 	if !(se.P50 <= se.P95 && se.P95 <= se.P99 && se.P99 <= se.Max) {

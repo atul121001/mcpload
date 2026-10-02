@@ -117,7 +117,7 @@ func TestVerdictsSkipped(t *testing.T) {
 }
 
 // A small residue after cool-down (runtimes keep some memory) must not fail
-// memory_leak; a residue above limit * load minutes must.
+// memory_leak; a residue above clamp(limit * load minutes, 5 MiB, 10 MiB) must.
 func TestCooldownResidue(t *testing.T) {
 	const mib = 1024 * 1024
 	set := func(residueMiB float64) report.Verdict {
@@ -131,11 +131,11 @@ func TestCooldownResidue(t *testing.T) {
 		}
 		return byID(Verdicts(r, DefaultConfig()))["memory_leak"]
 	}
-	small := set(1.8) // load window is 32 min, so 32 MiB is allowed
+	small := set(1.8) // load window is 32 min; allowed is capped at 10 MiB
 	if small.Status != report.StatusPass || small.CooldownRecovered == nil || *small.CooldownRecovered {
 		t.Fatalf("small residue: status %s, recovered %v; want pass with cooldownRecovered=false (%s)", small.Status, small.CooldownRecovered, small.Message)
 	}
-	large := set(40)
+	large := set(12)
 	if large.Status != report.StatusFail {
 		t.Fatalf("large residue: status %s, want fail (%s)", large.Status, large.Message)
 	}
@@ -143,6 +143,7 @@ func TestCooldownResidue(t *testing.T) {
 
 func TestDriftWarn(t *testing.T) {
 	r := load(t, "healthy.json")
+	r.Series.Tools = nil // judge the client p95 fallback
 	for i, ti := range r.Series.T {
 		if v := r.Series.Client.P95Ms[i]; v != nil {
 			*v = 400 + 10*ti/60 // +10 ms/min; 32 min -> +320 ms = +80%

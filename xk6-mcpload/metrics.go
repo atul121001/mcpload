@@ -3,7 +3,7 @@ package mcpload
 import (
 	"context"
 	"strconv"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"go.k6.io/k6/v2/metrics"
@@ -25,10 +25,12 @@ type mcpMetrics struct {
 	Errors          *metrics.Metric
 	ToolErrorRate   *metrics.Metric
 	SessionsOpen    *metrics.Metric
+
+	root *metrics.TagSet // the registry root tag set (no tags)
 }
 
 func registerMetrics(r *metrics.Registry) (*mcpMetrics, error) {
-	m := &mcpMetrics{}
+	m := &mcpMetrics{root: r.RootTagSet()}
 	var err error
 	reg := func(dst **metrics.Metric, name string, typ metrics.MetricType, vt ...metrics.ValueType) {
 		if err != nil {
@@ -48,8 +50,17 @@ func registerMetrics(r *metrics.Registry) (*mcpMetrics, error) {
 	return m, err
 }
 
-// openSessions counts client-side open sessions across all VUs.
-var openSessions atomic.Int64
+// openSessions is the number of client-side open MCP sessions in this k6
+// process (all VUs and scenarios together). Every change is pushed as a
+// mcp_sessions_open sample while sessionsMu is held, so samples reach k6's
+// sample channel in the same order as the counter changes and the gauge's
+// last value is the current count. The counter itself is always updated, even
+// when the sample cannot be pushed because the VU's context has ended; the
+// next push from any VU then carries the correct value.
+var (
+	sessionsMu   sync.Mutex
+	openSessions int64
+)
 
 // emitter implements client.Observer and pushes k6 samples. It is created on
 // the JS thread (capturing the VU's current tags) and is safe to use from the
@@ -60,6 +71,10 @@ type emitter struct {
 	m       *mcpMetrics
 	tags    *metrics.TagSet
 	meta    map[string]string
+	// stableTags tags the process-wide mcp_sessions_open gauge: only the
+	// test-wide tags (options.tags), never per-VU, scenario or group tags,
+	// so all VUs push to one time series.
+	stableTags *metrics.TagSet
 }
 
 var _ client.Observer = (*emitter)(nil)
@@ -91,6 +106,10 @@ func statusTag(s int) string {
 	return strconv.Itoa(s)
 }
 
+// OnRequest emits the per-request samples. A successful request carries no
+// error_type tag at all (empty tags are omitted); a failed one keeps its
+// error_type tag on every sample, including mcp_req_duration, so success-only
+// percentiles can be computed by selecting samples without the tag.
 func (e *emitter) OnRequest(st client.RequestStats) {
 	tags := withTag(e.tags, "method", st.Method)
 	tags = withTag(tags, "tool", st.Tool)
@@ -134,12 +153,25 @@ func (e *emitter) OnTokenFetch(st client.TokenStats) {
 	e.push(tags, st.Start.Add(st.Duration), sample(e.m.OAuthDuration, metrics.D(st.Duration)))
 }
 
-func (e *emitter) OnSessionOpen() {
-	n := openSessions.Add(1)
-	e.push(e.tags, time.Now(), sample(e.m.SessionsOpen, float64(n)))
+func (e *emitter) OnSessionOpen()  { e.sessionsDelta(1) }
+func (e *emitter) OnSessionClose() { e.sessionsDelta(-1) }
+
+func (e *emitter) sessionsDelta(d int64) {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+	openSessions += d
+	tags := e.stableTags
+	if tags == nil {
+		tags = e.tags
+	}
+	s := sample(e.m.SessionsOpen, float64(openSessions))
+	s.Tags, s.Time = tags, time.Now()
+	metrics.PushIfNotDone(e.ctx, e.samples, s)
 }
 
-func (e *emitter) OnSessionClose() {
-	n := openSessions.Add(-1)
-	e.push(e.tags, time.Now(), sample(e.m.SessionsOpen, float64(n)))
+// currentOpenSessions returns the process-wide open session count.
+func currentOpenSessions() int64 {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+	return openSessions
 }

@@ -13,17 +13,19 @@ import (
 )
 
 // PromNames are the Prometheus metric names mapped to each Point field.
-// An empty name disables that field.
+// An empty name disables that field. A field may list comma-separated
+// alternatives; the first one present in a scrape is used.
 type PromNames struct {
 	RSS, Heap, FDs, Sessions string
 }
 
 // DefaultPromNames returns the metric names exposed by prom-client (Node) and
-// the demo servers.
+// the demo servers. Heap prefers prom-client's standard
+// nodejs_heap_size_used_bytes and falls back to nodejs_heap_used_bytes.
 func DefaultPromNames() PromNames {
 	return PromNames{
 		RSS:      "process_resident_memory_bytes",
-		Heap:     "nodejs_heap_used_bytes",
+		Heap:     "nodejs_heap_size_used_bytes,nodejs_heap_used_bytes",
 		FDs:      "process_open_fds",
 		Sessions: "mcp_active_sessions",
 	}
@@ -65,11 +67,13 @@ func (p *promSampler) Sample(ctx context.Context) (Point, error) {
 		return Point{}, fmt.Errorf("scrape %s: %w", p.url, err)
 	}
 	get := func(name string) *float64 {
-		if name == "" {
-			return nil
-		}
-		if v, ok := vals[name]; ok {
-			return fp(v)
+		for _, n := range strings.Split(name, ",") {
+			if n = strings.TrimSpace(n); n == "" {
+				continue
+			}
+			if v, ok := vals[n]; ok {
+				return fp(v)
+			}
 		}
 		return nil
 	}

@@ -84,7 +84,9 @@ inputs:
     default: ''
   extra-args:
     description: >-
-      Extra arguments appended to `mcpload run` (whitespace-split), e.g. --leak-slope-mb-per-min 2.
+      Extra arguments appended to `mcpload run`, split on spaces, tabs and newlines, so one or more
+      arguments per line works, e.g. --leak-slope-mb-per-min 2. Quotes are not interpreted, so a single
+      argument can't contain spaces (use env for values like that). Blank lines and lines starting with # are ignored.
       Don't put secrets in URLs or extra-args; they're printed in the log — use env.
     required: false
     default: ''
@@ -165,6 +167,8 @@ runs:
       run: |
         set -euo pipefail
         ROOT="$(cd "$GITHUB_ACTION_PATH/.." && pwd)"
+        # Windows: use a native path (D:/a/...) so it reaches .exe tools intact even with MSYS path conversion off.
+        if [ "$RUNNER_OS" = "Windows" ] && command -v cygpath >/dev/null 2>&1; then ROOT="$(cygpath -m "$ROOT")"; fi
         for d in xk6-mcpload cmd/mcpload scenarios; do
           [ -d "$ROOT/$d" ] || { echo "::error::mcpload action: $ROOT/$d not found (the action must be used from the full mcpload repository)"; exit 2; }
         done
@@ -259,12 +263,17 @@ runs:
         IN_LABEL: ${{ inputs.label }}
         IN_EXTRA: ${{ inputs.extra-args }}
         IN_OUT_DIR: ${{ inputs.output-dir }}
+        # Windows runners: stop Git Bash (MSYS) from rewriting /-prefixed arguments such as URL paths into C:/ paths.
+        MSYS_NO_PATHCONV: '1'
+        MSYS2_ARG_CONV_EXCL: '*'
         GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         GIT_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
       run: |
         set -uo pipefail
         mkdir -p "$IN_OUT_DIR"
         OUT="$(cd "$IN_OUT_DIR" && pwd)"
+        # MSYS path conversion is off for this step, so hand mcpload a native Windows path (D:/a/...).
+        if [ "$RUNNER_OS" = "Windows" ] && command -v cygpath >/dev/null 2>&1; then OUT="$(cygpath -m "$OUT")"; fi
         REPORT="$OUT/report.json"; HTML="$OUT/report.html"
         rm -f "$REPORT" "$HTML"
         {
@@ -311,10 +320,16 @@ runs:
             *) echo "::error::env line is not K=V: ${line%%=*}"; echo "exit-code=2" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
         done <<< "$IN_ENV"
-        if [ -n "$IN_EXTRA" ]; then
-          read -r -a extra <<< "$IN_EXTRA"
-          add "${extra[@]}"
-        fi
+        # extra-args: whitespace-separated, across any number of lines.
+        extra=()
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="${line%$'\r'}"
+          read -r -a words <<< "$line"
+          [ "${#words[@]}" -eq 0 ] && continue
+          case "${words[0]}" in \#*) continue ;; esac
+          extra+=("${words[@]}")
+        done <<< "$IN_EXTRA"
+        if [ "${#extra[@]}" -gt 0 ]; then add "${extra[@]}"; fi
 
         echo "mcpload ${shown[*]}"
         "$BIN/mcpload$EXE" "${args[@]}"

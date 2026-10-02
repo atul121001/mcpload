@@ -42,6 +42,7 @@ const label = report.run?.target?.label || report.run?.target?.url || 'report';
 const title = `mcpload · ${label} · ${report.run?.scenario ?? ''}`.replace(/[<>&]/g, '');
 const html = template
   .replace(re, (_, open, close) => `${open}${json}${close}`)
-  .replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`);
+  // Function replacer: a '$' in the label must not be read as a pattern ($&, $', $1, ...).
+  .replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`);
 writeFileSync(output, html);
 console.log(`wrote ${output} (${(html.length / 1024).toFixed(1)} KiB)`);

@@ -381,11 +381,17 @@ func TestOAuthSingleFlightAndRefresh(t *testing.T) {
 	if fetches.Load() != 1 {
 		t.Fatal("refetched fresh token")
 	}
-	// Inside the refresh window (last 20% of lifetime): refresh.
+	// Inside the refresh window (last 20% of lifetime): the refresh runs in
+	// the background and the still-valid token is returned at once.
 	now.Store(now.Load().(time.Time).Add(1700 * time.Millisecond))
+	old := last.Load().(string)
+	if tok, _ := src.Token(context.Background(), http.DefaultClient, obs); tok != old {
+		t.Fatalf("soft refresh should return the current token, got %q", tok)
+	}
+	waitIdle(t, src)
 	tok, _ := src.Token(context.Background(), http.DefaultClient, obs)
-	if fetches.Load() != 2 || tok != last.Load().(string) {
-		t.Fatalf("expected refresh, fetches=%d", fetches.Load())
+	if fetches.Load() != 2 || tok != last.Load().(string) || tok == old {
+		t.Fatalf("expected refresh, fetches=%d tok=%q", fetches.Load(), tok)
 	}
 	// A 401 invalidates the token.
 	src.Unauthorized("Bearer " + tok)

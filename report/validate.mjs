@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Validate one or more mcpload report.json files against report/schema/report.v1.json,
-// plus semantic checks JSON Schema cannot express (parallel array lengths, phase order).
+// plus semantic checks JSON Schema cannot express (parallel array lengths, phase order, sums).
+// cmd/mcpload/internal/report.(*Report).Check implements the same rules in Go (`mcpload validate`).
 //
 // Usage: node report/validate.mjs <report.json> [more.json ...]
 // Exit code: 0 all valid, 1 any invalid, 2 usage error.
@@ -35,6 +36,8 @@ export function semanticErrors(r) {
     if (arr.length !== n) errs.push(`series.${path} has length ${arr.length}, expected ${n} (length of series.t)`);
   };
   for (const k of ['p95Ms', 'errorRate', 'rps']) check(`client.${k}`, s.client[k]);
+  check('client.droppedIterations', s.client.droppedIterations, true);
+  for (const [name, ts] of Object.entries(s.tools || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) check(`tools[${name}].p95Ms`, ts.p95Ms);
   const noSampler = s.server.sampler === 'none';
   for (const k of ['rssBytes', 'heapBytes', 'openFds', 'activeSessions']) check(`server.${k}`, s.server[k], noSampler);
   if (!noSampler && s.server.rssBytes.length === 0) errs.push(`series.server.rssBytes is empty but sampler is '${s.server.sampler}'`);

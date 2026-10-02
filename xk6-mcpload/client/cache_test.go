@@ -161,6 +161,7 @@ func TestOAuthSoftRefreshFailureBacksOff(t *testing.T) {
 		if err != nil || got != tok {
 			t.Fatalf("soft refresh failure should keep old token: %q %v", got, err)
 		}
+		waitIdle(t, src)
 	}
 	if badReqs.Load() != 1 {
 		t.Fatalf("soft refresh retried %d times inside window", badReqs.Load())

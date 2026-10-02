@@ -18,6 +18,7 @@
   --border: rgba(11,11,11,0.10);
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
   --phase-warm: rgba(137,135,129,0.10);
   --phase-cool: rgba(42,120,214,0.07);
   --good: #0ca30c;  --good-ink: #006300;
@@ -34,6 +35,7 @@
     --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
     --series-1: #3987e5; --series-2: #d95926;
+    --series-3: #199e70; --series-4: #c98500; --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --phase-warm: rgba(195,194,183,0.08); --phase-cool: rgba(57,135,229,0.10);
     --good-ink: #0ca30c; --warn-ink: #fab219; --bad-ink: #e66767;
     --bad-wash: rgba(230,103,103,0.14); --good-wash: rgba(12,163,12,0.14); --warn-wash: rgba(250,178,25,0.12);
@@ -44,6 +46,7 @@
   --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
   --series-1: #3987e5; --series-2: #d95926;
+  --series-3: #199e70; --series-4: #c98500; --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   --phase-warm: rgba(195,194,183,0.08); --phase-cool: rgba(57,135,229,0.10);
   --good-ink: #0ca30c; --warn-ink: #fab219; --bad-ink: #e66767;
   --bad-wash: rgba(230,103,103,0.14); --good-wash: rgba(12,163,12,0.14); --warn-wash: rgba(250,178,25,0.12);
@@ -176,13 +179,25 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   var overall = (failedT.length || failedV.length) ? 'fail' : (warnV.length ? 'warn' : 'pass');
   document.title = (overall === 'fail' ? 'FAIL' : 'PASS') + ' · ' + (run.target.label || run.target.url) + ' · mcpload';
 
-  // ---------- threshold lookup: tool -> {p95:bool, p99:bool, rate:bool} (true = breached) ----------
+  // ---------- threshold helpers ----------
+  // k6 metric name without the tag selector, e.g. "mcp_req_duration{tool:x}" -> "mcp_req_duration".
+  function metricBase(m) { return String(m).split('{')[0]; }
+  // Rate metrics (observed value is a 0..1 fraction). A Counter's "rate" is per second, a Trend's values are ms.
+  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || /_rate$|_failed$/.test(b); }
+  function isDurationMetric(m) { return /duration|ttfb|_ms$/.test(metricBase(m)); }
+
+  // ---------- threshold lookup: tool -> {p95:bool, p99:bool, errorRate:bool} (true = breached) ----------
+  // Only thresholds on the metrics the per-tool table shows: mcp_req_duration (latency columns)
+  // and mcp_tool_error_rate (error-rate column).
   var breach = {};
   thresholds.forEach(function (t) {
     var m = /\{(?:[^}]*,)?tool:([^,}]+)/.exec(t.metric); if (!m) return;
+    var base = metricBase(t.metric), key = null;
+    if (base === 'mcp_req_duration') key = /p\(95\)/.test(t.expr) ? 'p95' : /p\(99\)/.test(t.expr) ? 'p99' : /p\(50\)|med/.test(t.expr) ? 'p50' : /max/.test(t.expr) ? 'max' : null;
+    else if (base === 'mcp_tool_error_rate' && /rate/.test(t.expr)) key = 'errorRate';
+    if (!key) return;
     var tool = m[1], b = breach[tool] || (breach[tool] = {});
-    var key = /p\(95\)/.test(t.expr) ? 'p95' : /p\(99\)/.test(t.expr) ? 'p99' : /p\(50\)|med/.test(t.expr) ? 'p50' : /max/.test(t.expr) ? 'max' : /rate/.test(t.expr) ? 'errorRate' : null;
-    if (key) { b[key] = (b[key] || false) || !t.passed; b[key + '_expr'] = t.expr; }
+    b[key] = (b[key] || false) || !t.passed; b[key + '_expr'] = t.expr;
   });
 
   // ---------- header ----------
@@ -204,6 +219,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     ['Sampler', esc(S.server.sampler)],
     ['k6 / tool', esc(run.k6Version) + ' · ' + esc(R.tool.name) + ' ' + esc(R.tool.version)],
   ];
+  if (run.generator) meta.push(['Load generator', esc(genText(run.generator))]);
   if (run.git) meta.push(['Git', '<span class="mono">' + esc(run.git.sha.slice(0, 12)) + '</span>' + (run.git.ref ? ' <span class="muted">' + esc(run.git.ref.replace(/^refs\/heads\//, '')) + '</span>' : '')]);
   meta.push(['Payloads', R.payloadsIncluded ? 'included' : 'not included']);
   h.push('<section class="card" style="margin-top:16px"><dl class="meta">' + meta.map(function (m) { return '<div><dt>' + m[0] + '</dt><dd>' + m[1] + '</dd></div>'; }).join('') + '</dl></section>');
@@ -216,6 +232,8 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     stat(num(sum.errors), 'errors' + (errTypes ? ' <span class="muted">(' + errTypes + ')</span>' : '')) +
     stat(pct(sum.errorRate, 3), 'error rate') +
     stat(num(thresholds.length - failedT.length) + ' / ' + num(thresholds.length), 'thresholds passed') +
+    (sum.iterations != null ? stat(num(sum.iterations), 'iterations' + (sum.droppedIterations != null ? ' <span class="muted">(' + num(sum.droppedIterations) + ' dropped' + (sum.iterations + sum.droppedIterations > 0 ? ', ' + pct(sum.droppedIterations / (sum.iterations + sum.droppedIterations), 2) : '') + ')</span>' : '')) : '') +
+    (sum.toolErrors != null ? stat(num(sum.toolErrors), 'tool errors <span class="muted">(isError results)</span>') : '') +
     '</section>');
 
   // ---------- verdicts ----------
@@ -249,7 +267,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     h.push('<tr><td class="mono">' + esc(t.name) + '</td><td>' + num(t.reqs) + '</td><td>' + num(t.errors) + '</td>' +
       cell('errorRate', pct(t.errorRate)) + cell('p50', ms(t.p50)) + cell('p95', ms(t.p95)) + cell('p99', ms(t.p99)) + cell('max', ms(t.max)) + '</tr>');
   });
-  h.push('</tbody></table><div class="muted small" style="margin-top:8px">Highlighted cells breached a k6 threshold. Latencies are <code>mcp_req_duration</code> for <code>tools/call</code>.</div></section>');
+  h.push('</tbody></table><div class="muted small" style="margin-top:8px">Highlighted cells breached a k6 threshold. Latencies are <code>mcp_req_duration</code> for successful <code>tools/call</code> requests; errors are counted separately.</div></section>');
 
   // ---------- charts ----------
   var hasRss = S.server.rssBytes && S.server.rssBytes.length === S.t.length && S.server.sampler !== 'none';
@@ -261,13 +279,15 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   if (S.server.openFds && S.server.openFds.length === S.t.length) extra.push('c-fds');
   if (extra.length) h.push('<div class="charts two" style="margin-top:12px">' + extra.map(function (id) { return '<section class="card chart" id="' + id + '"></section>'; }).join('') + '</div>');
   h.push('<h2>Client latency and errors</h2><div class="charts two"><section class="card chart" id="c-p95"></section><section class="card chart" id="c-err"></section></div>');
+  var toolSeries = S.tools ? Object.keys(S.tools).filter(function (n) { return S.tools[n] && S.tools[n].p95Ms && S.tools[n].p95Ms.length === S.t.length; }) : [];
+  if (toolSeries.length) h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-tools"></section></div>');
   h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-rps"></section></div>');
 
   // ---------- thresholds table ----------
   if (thresholds.length) {
     h.push('<h2>Thresholds</h2><section class="card tablewrap"><table><thead><tr><th>Metric</th><th>Expression</th><th>Observed</th><th>Result</th></tr></thead><tbody>');
     thresholds.slice().sort(function (a, b) { return (a.passed - b.passed); }).forEach(function (t) {
-      var obs = t.observed == null ? '–' : /duration|ttfb/.test(t.metric) ? ms(t.observed) : /rate/.test(t.expr) ? pct(t.observed, 3) : num(t.observed, 2);
+      var obs = t.observed == null ? '–' : isDurationMetric(t.metric) ? ms(t.observed) : isRateMetric(t.metric) ? pct(t.observed, 3) : /^\s*rate/.test(t.expr) ? num(t.observed, 2) + '/s' : num(t.observed, 2);
       h.push('<tr><td class="mono">' + esc(t.metric) + '</td><td class="mono">' + esc(t.expr) + '</td><td' + (t.passed ? '' : ' class="breach"') + '>' + obs + '</td>' +
         '<td><span class="badge ' + (t.passed ? 'pass' : 'fail') + '"><span aria-hidden="true">' + (t.passed ? ICON.pass : ICON.fail) + '</span>' + (t.passed ? 'pass' : 'fail') + '</span></td></tr>');
     });
@@ -280,6 +300,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   app.innerHTML = h.join('');
 
   function stat(v, l) { return '<div class="card stat"><div class="v">' + v + '</div><div class="l">' + l + '</div></div>'; }
+  function genText(g) {
+    var parts = [num(g.cores) + ' core' + (g.cores === 1 ? '' : 's')];
+    if (g.cpuAvgPct != null) parts.push('k6 CPU avg ' + num(g.cpuAvgPct, 0) + '%' + (g.cpuMaxPct != null ? ', max ' + num(g.cpuMaxPct, 0) + '%' : ''));
+    return parts.join(' · ');
+  }
   function loadText(l) {
     if (!l) return '–';
     var parts = [l.executor];
@@ -409,6 +434,17 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   if (extra.indexOf('c-fds') >= 0) lineChart('c-fds', { title: 'Open file descriptors', series: [{ name: 'fds', values: S.server.openFds, color: C1 }], zero: true, yFmt: function (v) { return num(v, 0); }, tipFmt: function (v) { return num(v, 0); }, height: 200 });
   lineChart('c-p95', { title: 'Client p95 latency (all requests)', series: [{ name: 'p95', values: S.client.p95Ms, color: C1 }], zero: true, yFmt: ms, tipFmt: ms, height: 220 });
   lineChart('c-err', { title: 'Client error rate', series: [{ name: 'error rate', values: S.client.errorRate, color: C1 }], zero: true, yFmt: function (v) { return pct(v, 2); }, tipFmt: function (v) { return pct(v, 3); }, height: 220 });
+  if (toolSeries.length) {
+    // Fixed categorical order by request count (the per-tool table order); color follows the tool.
+    var reqsOf = {}; (R.tools || []).forEach(function (t) { reqsOf[t.name] = t.reqs; });
+    toolSeries.sort(function (a, b) { return (reqsOf[b] || 0) - (reqsOf[a] || 0) || (a < b ? -1 : 1); });
+    var shown = toolSeries.slice(0, 8);
+    var ld = verdicts.filter(function (v) { return v.id === 'latency_drift'; })[0];
+    var sub = (ld && ld.status === 'warn' ? '<span class="badge warn">' + ICON.warn + ' drift</span> ' + esc(ld.message) : 'p95 of successful calls per bucket') +
+      (toolSeries.length > shown.length ? ' · showing the ' + shown.length + ' busiest of ' + toolSeries.length + ' tools' : '');
+    lineChart('c-tools', { title: 'Per-tool p95 latency', subtitle: sub, series: shown.map(function (n, i) { return { name: n, values: S.tools[n].p95Ms, color: 'var(--series-' + (i + 1) + ')' }; }),
+      zero: true, yFmt: ms, tipFmt: ms, height: 260 });
+  }
   var lastW = window.innerWidth, rt;
   window.addEventListener('resize', function () {
     if (window.innerWidth === lastW) return; lastW = window.innerWidth;

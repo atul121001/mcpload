@@ -10,16 +10,23 @@
 //   MCP_HEADERS    extra headers as JSON, e.g. {"X-Tenant":"load"}
 //   MCP_TIMEOUT    per-request timeout                   (default 30s)
 //   INCLUDE_PAYLOADS  1 to keep tool args/results        (default off)
-//   TOOL_MIX       JSON weights, e.g. {"search":5,"fast":3,"slow":1}
-//   TOOL_ARGS      JSON per-tool args, e.g. {"search":{"query":"invoices"}}
+//   TOOL_MIX       JSON weights, e.g. {"search":5,"fast":3,"slow":1}. Unset: the demo mix if the server lists all
+//                  five demo tools (fast, slow, big, flaky, search), otherwise uniform weight over every listed tool.
+//   TOOL_ARGS      JSON per-tool args, e.g. {"search":{"query":"invoices"}}. Other tools get placeholder args
+//                  derived from their inputSchema (or the demo args on a demo server).
 //   THINK_MS       mean think time between rounds (exponential distribution, capped at 5x)  (default 500)
 //   PARALLEL       tools/call fired concurrently per round (default 3)
 //   ROUNDS         rounds per session: "3" or a range "1-5" (default 1-5)
-//   P95_MS, P99_MS, ERR_RATE     default per-tool budgets (800, 2000, 0.01)
-//   TOOL_BUDGETS   per-tool overrides as JSON, e.g. {"slow":{"p95":1500,"p99":2500},"flaky":{"errRate":0.2}}
+//   P95_MS, P99_MS, ERR_RATE     default per-tool budgets (800, 2000, 0.01); also the catch-all budget
+//                  (tag budget:default) applied to every called tool that has no threshold of its own
+//   TOOL_BUDGETS   per-tool overrides as JSON, e.g. {"slow":{"p95":1500,"p99":2500}}; merged over the built-in
+//                  {"flaky":{"errRate":0.2}} (which only covers `flaky` on a demo server)
 //   CONNECT_P95_MS budget for mcp_connect_duration p95 (default 1500)
-//   CHECKS_MIN     minimum pass rate over all k6 checks (connect ok, tools/list, no transport error, ...) (default 0.99)
-//   CONNECT_BACKOFF_MS  sleep after a failed connect() in agentSession so a dead target is not hot-looped (default 1000)
+//   CHECKS_MIN     minimum pass rate over all k6 checks (connect ok, tools/list, tool mix matched, no transport
+//                  error, ...) (default 0.99)
+//   CONNECT_BACKOFF_MS  sleep after a failed connect() (or a TOOL_MIX that matches no listed tool) so a dead or
+//                  misconfigured target is not hot-looped (default 1000)
+import { thresholdToolNames } from './tools.js';
 
 function env(name, def) {
   const v = __ENV[name];
@@ -44,6 +51,13 @@ function envJSON(name, def) {
   }
 }
 
+function envObject(name) {
+  const v = envJSON(name, undefined);
+  if (v === undefined) return undefined;
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error(`${name} must be a JSON object`);
+  return v;
+}
+
 function parseRange(s) {
   const m = /^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(String(s));
   if (!m) throw new Error(`ROUNDS must be N or MIN-MAX, got '${s}'`);
@@ -53,17 +67,8 @@ function parseRange(s) {
   return { min, max };
 }
 
-// Defaults match the demo servers (demo-servers/ts-server): fast, slow (300 ms), flaky (10% isError), big, search.
-const DEFAULT_TOOL_MIX = { search: 5, fast: 3, slow: 1, big: 1, flaky: 1 };
-// flaky fails 10% by design; 0.2 keeps a ~100-call run from tripping on sampling noise (0.15 is ~1.7 sd away).
+// flaky (demo servers) fails 10% by design; 0.2 keeps a ~100-call run from tripping on sampling noise.
 const DEFAULT_TOOL_BUDGETS = { flaky: { errRate: 0.2 } };
-const DEFAULT_TOOL_ARGS = {
-  search: { query: 'invoices', limit: 5 },
-  slow: {},
-  big: {},
-  flaky: {},
-  fast: {},
-};
 
 function buildAuth() {
   const tokenUrl = env('OAUTH_TOKEN_URL', undefined);
@@ -80,6 +85,8 @@ function buildAuth() {
   return undefined;
 }
 
+const userBudgets = envObject('TOOL_BUDGETS') || {};
+
 export const config = {
   url: env('MCP_URL', 'http://localhost:3001/mcp'),
   protocol: env('MCP_PROTOCOL', 'auto'),
@@ -88,9 +95,10 @@ export const config = {
   timeout: env('MCP_TIMEOUT', '30s'),
   includePayloads: ['1', 'true', 'yes'].indexOf(String(env('INCLUDE_PAYLOADS', '')).toLowerCase()) >= 0,
 
-  toolMix: envJSON('TOOL_MIX', DEFAULT_TOOL_MIX),
-  toolMixExplicit: env('TOOL_MIX', undefined) !== undefined,
-  toolArgs: Object.assign({}, DEFAULT_TOOL_ARGS, envJSON('TOOL_ARGS', {})),
+  // Explicit TOOL_MIX, or null: demo mix on a demo server, else uniform over listed tools (lib/tools.js).
+  toolMix: envObject('TOOL_MIX') || null,
+  // Explicit TOOL_ARGS only; lib/tools.js adds the demo args on a demo server.
+  toolArgs: envObject('TOOL_ARGS') || {},
   thinkMs: envNum('THINK_MS', 500),
   parallel: Math.max(1, Math.floor(envNum('PARALLEL', 3))),
   rounds: parseRange(env('ROUNDS', '1-5')),
@@ -103,11 +111,17 @@ export const config = {
     checksMin: envNum('CHECKS_MIN', 0.99),
   },
   connectBackoffMs: envNum('CONNECT_BACKOFF_MS', 1000),
-  toolBudgets: envJSON('TOOL_BUDGETS', DEFAULT_TOOL_BUDGETS),
+  // Explicit TOOL_BUDGETS: a tool named here always has (and is covered by) its own threshold.
+  userBudgets,
+  toolBudgets: Object.assign({}, DEFAULT_TOOL_BUDGETS, userBudgets),
 };
+config.toolMixExplicit = config.toolMix !== null;
 
-for (const [name, w] of Object.entries(config.toolMix)) {
+for (const [name, w] of Object.entries(config.toolMix || {})) {
   if (typeof w !== 'number' || !(w >= 0)) throw new Error(`TOOL_MIX weight for '${name}' must be a non-negative number`);
+}
+if (config.toolMix && !Object.values(config.toolMix).some((w) => w > 0)) {
+  throw new Error('TOOL_MIX needs at least one tool with weight > 0');
 }
 
 /** Options object for new mcp.Client(...). `overrides` are shallow-merged on top. */
@@ -132,21 +146,29 @@ export function toolBudget(name) {
 }
 
 /**
- * k6 thresholds: per tool in TOOL_MIX, p95/p99 on mcp_req_duration and rate on mcp_tool_error_rate,
- * plus a connect-time budget and a minimum pass rate over all checks. The checks threshold is what fails a
- * run whose sessions never get going (every connect() fails: 401, refused, ...): the per-tool thresholds have
- * no samples then, and k6 passes a threshold without samples. `extra` is merged on top (same key replaces).
+ * k6 thresholds:
+ *   - per tool: p95/p99 on mcp_req_duration{tool:<name>} and rate on mcp_tool_error_rate{tool:<name>} for the
+ *     explicit TOOL_MIX names (or the demo tool names when TOOL_MIX is unset) and every TOOL_BUDGETS name;
+ *   - catch-all: the same P95_MS/P99_MS/ERR_RATE budgets on calls tagged budget:default. lib/session.js tags
+ *     every call to a tool that is not covered by its own threshold (e.g. a real server's tool names), so no
+ *     called tool is ever unbudgeted;
+ *   - a connect-time budget and a minimum pass rate over all checks. The checks threshold is what fails a run
+ *     whose sessions never get going (every connect() fails: 401, refused, ...; or TOOL_MIX matches no listed
+ *     tool): the tool thresholds have no samples then, and k6 passes a threshold without samples.
+ * `extra` is merged on top (same key replaces).
  */
 export function buildThresholds(extra) {
+  const b = config.budgets;
   const t = {
-    mcp_connect_duration: [`p(95)<${config.budgets.connectP95}`],
-    checks: [`rate>=${config.budgets.checksMin}`],
+    mcp_connect_duration: [`p(95)<${b.connectP95}`],
+    checks: [`rate>=${b.checksMin}`],
+    'mcp_req_duration{budget:default}': [`p(95)<${b.p95}`, `p(99)<${b.p99}`],
+    'mcp_tool_error_rate{budget:default}': [`rate<${b.errRate}`],
   };
-  for (const name of Object.keys(config.toolMix)) {
-    if (!(config.toolMix[name] > 0)) continue;
-    const b = toolBudget(name);
-    t[`mcp_req_duration{tool:${name}}`] = [`p(95)<${b.p95}`, `p(99)<${b.p99}`];
-    t[`mcp_tool_error_rate{tool:${name}}`] = [`rate<${b.errRate}`];
+  for (const name of thresholdToolNames(config)) {
+    const tb = toolBudget(name);
+    t[`mcp_req_duration{tool:${name}}`] = [`p(95)<${tb.p95}`, `p(99)<${tb.p99}`];
+    t[`mcp_tool_error_rate{tool:${name}}`] = [`rate<${tb.errRate}`];
   }
   return Object.assign(t, extra || {});
 }
@@ -166,6 +188,34 @@ export function thinkSeconds() {
 /** Duration string like "90s" from seconds (k6 accepts s/m/h units). */
 export function secs(n) {
   return `${Math.max(0, Math.round(n))}s`;
+}
+
+const UNIT_SECONDS = { ms: 0.001, s: 1, m: 60, h: 3600 };
+
+/** Seconds in a k6-style duration like "1s", "1m", "500ms", "1h". */
+export function durationSeconds(d) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h)\s*$/.exec(String(d));
+  if (!m) throw new Error(`expected a duration like 1s, 1m or 1h, got '${d}'`);
+  return Number(m[1]) * UNIT_SECONDS[m[2]];
+}
+
+/**
+ * Arrival-rate executors need an integer `rate` per `timeUnit`. Turn `rate` per `timeUnit` (both may be
+ * fractional, e.g. RATE=0.05 per 1s) into the smallest of 1s / 1m / 1h for which the rate is an integer
+ * (0.05/s -> 3 per 1m). Rates finer than 1/h are rounded per hour (minimum 1).
+ * Returns { rate, timeUnit, perSecond }.
+ */
+export function arrivalRate(rate, timeUnit) {
+  if (!(rate > 0)) throw new Error(`RATE must be > 0, got '${rate}'`);
+  const perSecond = rate / durationSeconds(timeUnit || '1s');
+  if (Number.isInteger(rate) && /^\s*1\s*(s|m|h)\s*$/.test(String(timeUnit || '1s'))) {
+    return { rate, timeUnit: String(timeUnit || '1s').trim(), perSecond };
+  }
+  for (const [unit, sec] of [['1s', 1], ['1m', 60], ['1h', 3600]]) {
+    const r = perSecond * sec;
+    if (Math.abs(r - Math.round(r)) < 1e-9 && Math.round(r) >= 1) return { rate: Math.round(r), timeUnit: unit, perSecond };
+  }
+  return { rate: Math.max(1, Math.round(perSecond * 3600)), timeUnit: '1h', perSecond };
 }
 
 export { env, envNum, envJSON };

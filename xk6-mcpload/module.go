@@ -152,6 +152,12 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 			return fmt.Errorf("unknown option %q", k)
 		}
 	}
+	if err := client.ValidateProtocol(o.Protocol); err != nil {
+		return err
+	}
+	if err := client.ValidateFallbackVersion(o.FallbackVersion); err != nil {
+		return err
+	}
 	if o.URL == "" {
 		return errors.New("url is required")
 	}
@@ -212,6 +218,16 @@ func parseAuth(v any) (client.Auth, error) {
 			}
 			cfg.FailureBackoff = d
 		}
+		if to, ok := m["timeout"]; ok && to != nil {
+			d, err := parseDuration(to)
+			if err != nil {
+				return nil, fmt.Errorf("timeout: %w", err)
+			}
+			if d < 0 {
+				return nil, errors.New("timeout must not be negative")
+			}
+			cfg.Timeout = d // 0: use the client's timeout option
+		}
 		if cfg.TokenURL == "" || cfg.ClientID == "" {
 			return nil, errors.New("oauth auth needs tokenUrl and clientId")
 		}
@@ -228,11 +244,12 @@ func (mi *ModuleInstance) emitter() *emitter {
 	state := mi.vu.State()
 	tm := state.Tags.GetCurrentValues()
 	return &emitter{
-		ctx:     mi.vu.Context(),
-		samples: state.Samples,
-		m:       mi.metrics,
-		tags:    tm.Tags,
-		meta:    tm.Metadata,
+		ctx:        mi.vu.Context(),
+		samples:    state.Samples,
+		m:          mi.metrics,
+		tags:       tm.Tags,
+		meta:       tm.Metadata,
+		stableTags: mi.metrics.root.WithTagsFromMap(state.Options.RunTags),
 	}
 }
 

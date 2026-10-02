@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/analysis"
@@ -200,6 +201,24 @@ func (o *runOpts) k6Env() ([]string, map[string]string) {
 	return out, m
 }
 
+// scriptEnv is the __ENV the k6 script sees: `k6 run` passes the OS
+// environment (--include-system-env-vars defaults to true) and the -e values
+// override it. soakPhases must read the same values or report.phases drift
+// from what k6 actually ran.
+func scriptEnv(osEnv []string, explicit map[string]string) map[string]string {
+	m := make(map[string]string, len(osEnv)+len(explicit))
+	for _, kv := range osEnv {
+		// Windows has per-drive entries like "=C:=C:\dir"; skip empty keys.
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			m[k] = v
+		}
+	}
+	for k, v := range explicit {
+		m[k] = v
+	}
+	return m
+}
+
 // soakPhases mirrors scenarios/soak.js: SOAK_MIN (30), WARMUP_MIN (10% of
 // SOAK_MIN, min 1), COOLDOWN_MIN (5); each rounded to whole seconds.
 func soakPhases(env map[string]string) (report.Phases, error) {
@@ -264,7 +283,8 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	env, envMap := o.k6Env()
+	env, explicitEnv := o.k6Env()
+	envMap := scriptEnv(os.Environ(), explicitEnv)
 
 	opts, err := k6run.Inspect(ctx, bin, o.scenario, env)
 	if err != nil {
@@ -324,28 +344,58 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		}
 	}()
 
-	// k6 receives Ctrl-C itself (same console) and stops gracefully; mcpload
-	// keeps running so it can still write the report.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	// k6 runs in its own process group; mcpload forwards SIGINT/SIGTERM
+	// (Ctrl-C) once so k6 stops gracefully, kills it after a grace period or a
+	// second signal, and still writes the report from the data so far.
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	go func() {
-		for range sig {
-			logf("interrupt: waiting for k6 to stop, then writing the report")
-		}
-	}()
 
+	var cpuMon *sampler.CPUMonitor
 	logf("k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
-	code, err := k6run.Run(k6run.RunConfig{
+	res, err := k6run.Run(k6run.RunConfig{
 		Bin: bin, Script: o.scenario, Env: env,
 		NDJSONPath: ndjson, SummaryPath: summaryPath,
 		Stdout: stdout, Stderr: stderr,
+		OnStart: func(pid int) {
+			cpuMon = sampler.NewCPUMonitor(pid, o.interval)
+			cpuMon.Start()
+		},
+		Signals: sig,
+		OnSignal: func(s os.Signal, forced bool) {
+			switch {
+			case s == nil:
+				logf("k6 did not stop within %s; killing it", k6run.DefaultGrace)
+			case forced:
+				logf("second %v: killing k6", s)
+			default:
+				logf("%v: stopping k6 (up to %s; repeat to kill), then writing the report", s, k6run.DefaultGrace)
+			}
+		},
 	})
 	end := time.Now()
 	stopSampler()
 	wg.Wait()
+	var gen *report.Generator
+	if cpuMon != nil {
+		cs := cpuMon.Stop(res.Started, res.CPU, res.Ended)
+		gen = &report.Generator{Cores: cs.Cores}
+		if cs.Avg != nil {
+			gen.CPUAvgPct = report.F(round3(*cs.Avg))
+		}
+		if cs.Max != nil {
+			gen.CPUMaxPct = report.F(round3(*cs.Max))
+		}
+		if cs.Avg == nil && cs.Errors > 0 {
+			logf("warning: could not sample k6 CPU usage")
+		}
+	}
 	if err != nil {
 		return 0, err
+	}
+	code := res.ExitCode
+	if res.Interrupted {
+		logf("k6 was interrupted (exit code %d); writing the report from the data collected so far", code)
 	}
 	k6Failed := code != k6run.ExitOK && code != k6run.ExitThresholdsFailed
 	if k6Failed {
@@ -383,10 +433,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		end = agg.Last()
 	}
 	durationS := end.Sub(origin).Seconds()
-	n := int(math.Ceil(durationS / o.interval.Seconds()))
-	if n < 1 {
-		n = 1
-	}
+	// A trailing bucket covering < 50% of the interval is dropped from the
+	// series (its rps would show a false drop and skew the fits).
+	n, trimmed := k6run.KeepBuckets(durationS, o.interval)
 
 	phases := report.Phases{WarmupEndS: 0, LoadEndS: round3(durationS), CooldownEndS: round3(durationS)}
 	if soak {
@@ -414,6 +463,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			Target:    report.Target{URL: o.url, Label: o.label},
 			K6Version: k6Version,
 			Load:      toLoad(opts.LoadShape()),
+			Generator: gen,
 		},
 		Phases:           phases,
 		PayloadsIncluded: o.includePayloads,
@@ -423,7 +473,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	}
 
 	s := agg.Summary()
-	r.Summary = report.Summary{Reqs: s.Reqs, Errors: s.Errors, ErrorRate: s.ErrorRate, ByErrorType: s.ByErrorType}
+	r.Summary = report.Summary{Reqs: s.Reqs, Errors: s.Errors, ErrorRate: s.ErrorRate, ByErrorType: s.ByErrorType,
+		Iterations: report.I64(s.Iterations), DroppedIterations: report.I64(s.DroppedIterations), ToolErrors: report.I64(s.ToolErrors)}
+	if s.DroppedIterations > 0 {
+		logf("warning: k6 dropped %d iterations (%d ran): the requested load was not reached", s.DroppedIterations, s.Iterations)
+	}
 	for _, t := range agg.Tools() {
 		r.Tools = append(r.Tools, report.ToolStats{Name: t.Name, Reqs: t.Reqs, Errors: t.Errors, ErrorRate: t.ErrorRate,
 			P50: round3(t.P50), P95: round3(t.P95), P99: round3(t.P99), Max: round3(t.Max)})
@@ -436,15 +490,22 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		r.Thresholds = append(r.Thresholds, report.Threshold{Metric: th.Metric, Expr: th.Expr, Passed: th.Passed, Observed: obs})
 	}
 
-	cs := agg.Client(n)
+	cs := agg.Series(n, !trimmed)
 	r.Series = report.Series{
 		IntervalS: o.interval.Seconds(),
 		T:         k6run.Times(n, o.interval),
-		Client:    report.ClientSeries{P95Ms: roundSeries(cs.P95Ms, 3), ErrorRate: roundSeries(cs.ErrorRate, 6), RPS: roundSeries(cs.RPS, 3)},
-		Server:    report.ServerSeries{Sampler: smp.Kind(), RSSBytes: []*float64{}},
+		Client: report.ClientSeries{P95Ms: roundSeries(cs.P95Ms, 3), ErrorRate: roundSeries(cs.ErrorRate, 6), RPS: roundSeries(cs.RPS, 3),
+			DroppedIterations: cs.DroppedIterations},
+		Server: report.ServerSeries{Sampler: smp.Kind(), RSSBytes: []*float64{}},
+	}
+	if len(cs.Tools) > 0 {
+		r.Series.Tools = make(map[string]report.ToolSeries, len(cs.Tools))
+		for name, p95 := range cs.Tools {
+			r.Series.Tools[name] = report.ToolSeries{P95Ms: roundSeries(p95, 3)}
+		}
 	}
 	if smp.Kind() != "none" {
-		ss := k6run.AlignServer(points, origin, o.interval, n)
+		ss := k6run.AlignServerN(points, origin, o.interval, n, !trimmed)
 		r.Series.Server.RSSBytes = ss.RSSBytes
 		if smp.Kind() == "prometheus" {
 			fill := func(v []*float64) []*float64 {
@@ -472,7 +533,8 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	r.Verdicts = analysis.Verdicts(r, cfg)
 	r.Verdicts = append(r.Verdicts,
 		analysis.SessionNotFoundVerdict(float64(s.ByErrorType["session_not_found"]), float64(s.Reqs)),
-		analysis.ThresholdVerdict(r.Thresholds))
+		analysis.ThresholdVerdict(r.Thresholds),
+		analysis.GeneratorVerdict(r))
 
 	r.Normalize()
 	checkErr := r.Check()
@@ -496,7 +558,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if !report.Passed(r) {
 		exit = ExitFail
 	}
-	if o.uploadURL != "" {
+	if o.uploadURL != "" && checkErr != nil {
+		logf("error: not uploading: the report failed the semantic checks above (it was still written to %s)", o.out)
+	} else if o.uploadURL != "" {
 		body, err := report.Marshal(r)
 		if err == nil {
 			err = doUpload(o.uploadURL, o.key, body, stdout, stderr)

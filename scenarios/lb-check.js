@@ -16,7 +16,7 @@
 //   VUS (10), DURATION (1m), STEPS sequential calls per session (8), LB_MIN_OK (0.99)
 import { check, sleep } from 'k6';
 import { config, buildThresholds, env, envNum } from './lib/config.js';
-import { makeClient, toolTable, pick } from './lib/session.js';
+import { makeClient, toolTable, pick, checkToolTable, callTools } from './lib/session.js';
 
 const client = makeClient();
 const STEPS = envNum('STEPS', 8);
@@ -95,11 +95,12 @@ export default function () {
       return;
     }
     const tt = toolTable(listed);
-    if (tt.table.length === 0) return;
+    // A TOOL_MIX that matches nothing fails the 'tool mix matched' check and backs off (no hot loop).
+    if (!checkToolTable(tt, warn)) return;
     // Sequential, not parallel: each call is its own trip through the LB.
     for (let i = 0; i < STEPS; i++) {
       const e = pick(tt);
-      const res = s.callTool(e.name, e.args);
+      const res = callTools(s, [e])[0]; // tagged budget=default when the tool has no threshold of its own
       const errType = res.error ? res.error.type : '';
       if (!record(errType)) {
         warn(`step ${i} ${e.name}: ${errType}: ${res.error.message} (session ${s.sessionId || 'none'}, protocol ${s.protocol})`);

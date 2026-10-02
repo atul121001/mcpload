@@ -61,3 +61,22 @@ func TestUsageErrors(t *testing.T) {
 		t.Errorf("validate missing: %d", c)
 	}
 }
+
+func TestScriptEnvMergesOSEnv(t *testing.T) {
+	o := &runOpts{url: "http://u/mcp", protocol: "auto", vus: 3, set: map[string]bool{"vus": true},
+		env: multiFlag{"RATE=5"}}
+	_, explicit := o.k6Env()
+	osEnv := []string{"SOAK_MIN=2", "WARMUP_MIN=0", "RATE=50", "VUS=9", `=C:=C:\x`, "PATH=/bin"}
+	m := scriptEnv(osEnv, explicit)
+	// OS values reach the script unless --env or a flag overrides them.
+	if m["SOAK_MIN"] != "2" || m["WARMUP_MIN"] != "0" || m["RATE"] != "5" || m["VUS"] != "3" || m["MCP_URL"] != "http://u/mcp" {
+		t.Errorf("env = %v", m)
+	}
+	if _, ok := m[""]; ok {
+		t.Error("empty key kept")
+	}
+	p, err := soakPhases(m)
+	if err != nil || p.WarmupEndS != 0 || p.LoadEndS != 120 || p.CooldownEndS != 420 {
+		t.Errorf("phases from OS env = %+v %v", p, err)
+	}
+}
