@@ -56,7 +56,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          (cd dist && sha256sum * > checksums.txt)
+          (cd dist && sha256sum -- * > checksums.txt)
           ls -l dist
 
       - name: Smoke-test the Linux build
