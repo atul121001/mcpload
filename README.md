@@ -98,20 +98,20 @@ cd mcpload
 | Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
 | Linux | `mcpload_<version>_linux_amd64.tar.gz` |
 
-Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.0).
+Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.1.1).
 
 Linux (Intel/AMD):
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_linux_amd64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.0_linux_amd64/mcpload' 'mcpload_0.1.0_linux_amd64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.1/mcpload_0.1.1_linux_amd64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.1_linux_amd64/mcpload' 'mcpload_0.1.1_linux_amd64/k6'
 ```
 
 Mac with Apple silicon:
 
 ```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.0/mcpload_0.1.0_darwin_arm64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.1.0_darwin_arm64/mcpload' 'mcpload_0.1.0_darwin_arm64/k6'
+curl -fL https://github.com/atul121001/mcpload/releases/download/v0.1.1/mcpload_0.1.1_darwin_arm64.tar.gz \
+  | tar -xz --strip-components=1 'mcpload_0.1.1_darwin_arm64/mcpload' 'mcpload_0.1.1_darwin_arm64/k6'
 ```
 
 For another platform, replace `linux_amd64` or `darwin_arm64` in all three places (for example `darwin_amd64` for an Intel Mac, `linux_arm64` for ARM Linux).
