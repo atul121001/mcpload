@@ -13,3 +13,6 @@ report*.json
 
 # local-only folder, not part of this repository
 web/
+
+# Claude Code agent worktrees
+.claude/worktrees/
