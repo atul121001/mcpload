@@ -89,7 +89,8 @@ function leakVerdict(t, ys, ph, id, signal, scale, limit, what, unit) {
   const f = analyze(t, ys, ph, true);
   const slopeD = f.slope / scale;
   const trending = slopeD > limit && f.r2 >= CFG.minR2;
-  const notRecovered = f.recovered === false;
+  const allowed = limit * f.loadMinutes;
+  const notRecovered = f.recovered === false && f.retained / scale > allowed;
   const num = (x) => (unit === 'MiB' ? `${x.toFixed(2)} ${unit}` : x.toFixed(2));
   const lim = fmtG(limit) + (unit ? ' ' + unit : '');
   const stats = `${num(slopeD)}/min, R²=${r2s(f.r2)}`;
@@ -99,6 +100,7 @@ function leakVerdict(t, ys, ph, id, signal, scale, limit, what, unit) {
   else if (trending && f.recovered !== null) message = `${what} grew ${num(slopeD)}/min (R²=${r2s(f.r2)}) under constant load, above the ${lim}/min limit; it returned near baseline in cool-down, but the slope alone fails the check.`;
   else if (trending) message = `${what} grew ${num(slopeD)}/min (R²=${r2s(f.r2)}) under constant load, above the ${lim}/min limit; no cool-down samples to judge recovery.`;
   else if (notRecovered) message = `${what} did not recover in cool-down (${notBack}), although it did not grow linearly under load (${stats}).`;
+  else if (f.recovered === false) message = `${what} flat under constant load (${stats}; limit ${lim}/min); ${notBack} after cool-down, within the ${num(allowed)} allowed for the load window.`;
   else if (f.recovered !== null) message = `${what} flat under constant load (${stats}; limit ${lim}/min) and returned near baseline (${num(f.baseline / scale)}) in cool-down.`;
   else message = `${what} flat under constant load (${stats}; limit ${lim}/min); no cool-down samples to judge recovery.`;
   const v = { id, status: trending || notRecovered ? 'fail' : 'pass', signal, slopePerMin: round(f.slope, 4), r2: round(f.r2, 4), baseline: round(f.baseline, 4) };

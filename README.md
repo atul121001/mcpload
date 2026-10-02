@@ -32,24 +32,47 @@ Problems like these usually don't show up in a quick manual test. They show up a
 
 Every run ends with a clear verdict in the terminal, an exit code your CI understands, and a report you can open in any browser (`report.html`) or keep as data (`report.json`).
 
-Here is what a failing run says about a server with a memory leak (from the [synthetic example report](report/examples/leaky.json)):
+The images below are from real 6-minute runs against two of the bundled demo servers: one healthy, and one with a deliberate memory leak.
+
+**A server with a memory leak.** Under steady load, memory climbs in a straight line. When the load stops (the blue "cool-down" area on the right), it stays up. mcpload marks this as a fail.
+
+![Memory chart of the leaking demo server: memory rises from about 120 MiB to 370 MiB under steady load and stays there after the load stops. Marked FAIL.](docs/images/leaky-memory.png)
+
+**A healthy server.** Memory settles after warm-up and stays flat. Marked as a pass.
+
+![Memory chart of the healthy demo server: memory stays around 92 MiB under steady load. Marked PASS.](docs/images/healthy-memory.png)
+
+The terminal tells the same story in words:
 
 ```text
-  FAIL     memory_leak        RSS grew 3.09 MiB/min (R²=0.96) under constant load, above the 1 MiB/min limit,
-                              and did not recover in cool-down.
-  FAIL     session_leak       Active sessions grew 3.01/min (R²=1.00) under constant load, above the 0.5/min
+  FAIL     memory_leak        RSS grew 64.14 MiB/min (R²=1.00) under constant load, above the 1 MiB/min limit,
+                              and did not recover in cool-down (187.85 MiB above the post-warm-up baseline).
+  FAIL     session_leak       Active sessions grew 60.00/min (R²=1.00) under constant load, above the 0.5/min
                               limit, and did not recover in cool-down.
   PASS     fd_leak            Open file descriptors flat under constant load.
   PASS     latency_drift      Client p95 stable.
   PASS     error_drift        Error rate did not trend upward over the load window.
   PASS     session_not_found  No 404 session-not-found responses.
-  FAIL     threshold          1 of 16 thresholds failed: mcp_req_duration{tool:search} p(99)<2000 (observed 2310).
+  PASS     threshold          All 17 thresholds passed.
 mcpload result: FAIL
 ```
 
 (Long lines are wrapped and some messages shortened here.)
 
-In plain words: memory and open sessions kept growing while the load stayed the same, they didn't drop after the load stopped, and the `search` tool was too slow for 1% of calls.
+In plain words: memory and open sessions kept growing while the load stayed the same, and they didn't drop after the load stopped. Note that every speed budget passed. A leak like this doesn't show up in a short test; it shows up in production, hours later.
+
+<details>
+<summary><b>See more of the report</b></summary>
+
+The top of the report: overall result, run details, and a card for every check.
+
+![Top of the HTML report for the leaking server: FAIL, with memory leak and session leak checks failed and the other checks passed.](docs/images/leaky-summary.png)
+
+Speed and errors for each tool, from the healthy run. Any cell over its budget is highlighted.
+
+![Per-tool table: requests, errors, error rate, p50, p95, p99 and max latency for the tools search, fast, big, flaky and slow.](docs/images/healthy-tools.png)
+
+</details>
 
 ---
 

@@ -116,6 +116,31 @@ func TestVerdictsSkipped(t *testing.T) {
 	}
 }
 
+// A small residue after cool-down (runtimes keep some memory) must not fail
+// memory_leak; a residue above limit * load minutes must.
+func TestCooldownResidue(t *testing.T) {
+	const mib = 1024 * 1024
+	set := func(residueMiB float64) report.Verdict {
+		r := load(t, "healthy.json")
+		for i, ti := range r.Series.T {
+			v := 100.0 * mib
+			if ti >= r.Phases.LoadEndS {
+				v += residueMiB * mib
+			}
+			r.Series.Server.RSSBytes[i] = report.F(v)
+		}
+		return byID(Verdicts(r, DefaultConfig()))["memory_leak"]
+	}
+	small := set(1.8) // load window is 32 min, so 32 MiB is allowed
+	if small.Status != report.StatusPass || small.CooldownRecovered == nil || *small.CooldownRecovered {
+		t.Fatalf("small residue: status %s, recovered %v; want pass with cooldownRecovered=false (%s)", small.Status, small.CooldownRecovered, small.Message)
+	}
+	large := set(40)
+	if large.Status != report.StatusFail {
+		t.Fatalf("large residue: status %s, want fail (%s)", large.Status, large.Message)
+	}
+}
+
 func TestDriftWarn(t *testing.T) {
 	r := load(t, "healthy.json")
 	for i, ti := range r.Series.T {

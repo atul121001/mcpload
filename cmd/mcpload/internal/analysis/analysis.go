@@ -16,7 +16,9 @@
 //     least (1 - CooldownRecoveryFrac) = 80% of the growth, with a noise floor
 //     so a flat signal is never judged "not recovered" because of jitter.
 //   - Leak verdicts (memory_leak, session_leak, fd_leak): fail when
-//     (slope > limit AND R² >= MinR2) OR cool-down did not recover; else pass.
+//     (slope > limit AND R² >= MinR2) OR (cool-down did not recover AND the
+//     retained amount exceeds limit * load-window minutes); else pass. A small
+//     residue after cool-down is normal and doesn't fail the check.
 //   - Drift verdicts (latency_drift, error_drift): warn when the rise over the
 //     load window (slope * load minutes) exceeds LatencyDriftFrac of baseline
 //     (latency) or ErrorDriftPts absolute (error rate) AND R² >= DriftMinR2.
@@ -239,7 +241,11 @@ func leak(r *report.Report, cfg Config, id, signal string, ys []*float64, missin
 		CooldownRecovered: f.recovered,
 		Status:            report.StatusPass,
 	}
-	notRecovered := f.recovered != nil && !*f.recovered
+	// Retaining a little after cool-down is normal (runtimes rarely hand memory
+	// back to the OS right away). It only counts against the server when the
+	// retained amount exceeds what the slope limit allows over the load window.
+	allowed := limit * f.loadMinutes
+	notRecovered := f.recovered != nil && !*f.recovered && f.retained/scale > allowed
 	if trending || notRecovered {
 		v.Status = report.StatusFail
 	}
@@ -264,6 +270,8 @@ func leak(r *report.Report, cfg Config, id, signal string, ys []*float64, missin
 		v.Message = fmt.Sprintf("%s grew %s/min (R²=%.2f) under constant load, above the %s/min limit; no cool-down samples to judge recovery.", what, num(slopeD), f.r2, lim)
 	case notRecovered:
 		v.Message = fmt.Sprintf("%s did not recover in cool-down (%s), although it did not grow linearly under load (%s).", what, notBack, stats)
+	case f.recovered != nil && !*f.recovered:
+		v.Message = fmt.Sprintf("%s flat under constant load (%s; limit %s/min); %s after cool-down, within the %s allowed for the load window.", what, stats, lim, notBack, num(allowed))
 	case f.recovered != nil:
 		v.Message = fmt.Sprintf("%s flat under constant load (%s; limit %s/min) and returned near baseline (%s) in cool-down.", what, stats, lim, num(f.baseline/scale))
 	default:
