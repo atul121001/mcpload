@@ -539,6 +539,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		analysis.SessionNotFoundVerdict(float64(s.ByErrorType["session_not_found"]), float64(s.Reqs)),
 		analysis.ThresholdVerdict(r.Thresholds),
 		analysis.GeneratorVerdict(r))
+	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
+		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
+	}
 
 	r.Normalize()
 	checkErr := r.Check()
@@ -621,4 +624,13 @@ func roundSeries(s []*float64, d int) []*float64 {
 		}
 	}
 	return s
+}
+
+// phaseP95 converts one k6 scenario's per-tool latency for the tool_isolation verdict.
+func phaseP95(m map[string]k6run.PhaseTool) map[string]analysis.PhaseP95 {
+	out := make(map[string]analysis.PhaseP95, len(m))
+	for n, t := range m {
+		out[n] = analysis.PhaseP95{Calls: t.Calls, P95: t.P95}
+	}
+	return out
 }

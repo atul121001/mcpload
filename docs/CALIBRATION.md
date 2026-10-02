@@ -29,6 +29,9 @@ for the demo servers, not as benchmarks; expect different absolute values on oth
 | 4b | 3007 ts-oauth | agent-session with no auth at all | **fail** | was exit 0 (bug), now **fail** on `checks` | 99 |
 | 5 | 3001 ts-healthy | soak smoke (`SOAK_MIN=0.75 WARMUP_MIN=0.25 COOLDOWN_MIN=0.25 RATE=2`) | runs end to end | 3 phases ran, all thresholds held | 0 |
 | 6 | 3003 py-healthy | agent-session with `TOOL_BUDGETS={"slow":{"p95":100},...}` | **fail** on slow p95 | **fail**: `mcp_req_duration{tool:slow}` p95 = 484 ms | 99 |
+| 7 | 3008 ts-pooled | isolation (20 VUs, 1 m per phase), via `mcpload run` (2026-10-03) | **fail**: tool_isolation | **fail**: all 4 tools wait behind `slow`, e.g. `fast` p95 38 ms solo → 936 ms mixed (×24.6) | 1 |
+| 7 | 3001 ts-healthy | isolation (same) | pass | pass: largest change `big` p95 48.5 → 47.4 ms (×0.98) | 0 |
+| 7 | 3001 ts-healthy | isolation with `SLOW_TOOLS=nope` (10 s per phase) | **fail**: misconfiguration | **fail**: `checks{check:slow tools in mix}` = 0; `tool_isolation` skipped | 1 |
 
 ## Key metrics per run
 
@@ -125,6 +128,10 @@ credentials, not real ones. For the error breakdown, add `--out json=points.json
 # 6
 ./k6.exe run -e MCP_URL=http://localhost:3003/mcp -e DURATION=30s -e VUS=5 \
   -e TOOL_BUDGETS='{"flaky":{"errRate":0.3},"slow":{"p95":100}}' scenarios/agent-session.js                      # exit 99
+# 7 (mcpload exit 1 = FAIL, 0 = PASS)
+./mcpload run --url http://localhost:3008/mcp --scenario isolation --duration 1m                                # FAIL tool_isolation
+./mcpload run --url http://localhost:3001/mcp --scenario isolation --duration 1m                                # PASS
+./mcpload run --url http://localhost:3001/mcp --scenario isolation --duration 10s --env SLOW_TOOLS=nope          # FAIL checks
 ```
 
 ## Recommended default budgets for the demo servers

@@ -98,3 +98,12 @@ services:
       REQUIRE_AUTH_URL: "http://mock-oauth:3000/introspect"
     depends_on: [mock-oauth]
     ports: ["127.0.0.1:3007:3000"]
+
+  # 7. same image, POOL_SIZE=2: every tool call holds one of 2 shared slots, so fast tools queue
+  #    behind `slow` -> expected: tool_isolation fails (scenario isolation); ts-healthy passes it
+  ts-pooled:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      POOL_SIZE: "2"
+    ports: ["127.0.0.1:3008:3000"]

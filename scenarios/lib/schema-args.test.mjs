@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { argsFromSchema } from './schema-args.js';
-import { planTools, thresholdToolNames, pick, DEMO_TOOLS } from './tools.js';
+import { planTools, thresholdToolNames, pick, withoutTools, DEMO_TOOLS } from './tools.js';
 
 // config.js reads k6's __ENV at import time.
 globalThis.__ENV = {};
@@ -186,4 +186,15 @@ test('arrivalRate: fractional RATE becomes an integer rate per larger time unit'
   assert.equal(durationSeconds('500ms'), 0.5);
   assert.throws(() => arrivalRate(0, '1s'));
   assert.throws(() => durationSeconds('soon'));
+});
+
+test('withoutTools drops tools and keeps the other weights', () => {
+  const listed = ['a', 'b', 'c'].map((name) => ({ name, inputSchema: { type: 'object' } }));
+  const tt = planTools(listed, { toolMix: { a: 3, b: 1, c: 2 }, toolArgs: {} });
+  const w = withoutTools(tt, ['b']);
+  assert.deepEqual(w.table.map((e) => [e.name, e.cum]), [['a', 3], ['c', 5]]);
+  assert.equal(w.total, 5);
+  assert.equal(tt.total, 6); // input untouched
+  assert.equal(pick(w, 0.7).name, 'c');
+  assert.equal(withoutTools(tt, ['a', 'b', 'c']).table.length, 0);
 });

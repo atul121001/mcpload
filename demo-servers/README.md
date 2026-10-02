@@ -30,6 +30,7 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | 3004 | `lb-stateful` | nginx round-robin over 2 × `ts-healthy` (`lb-stateful-a`, `lb-stateful-b`), **no** sticky sessions | 2025-11-25 (stateful) | **`session_not_found` flagged** (~50% of in-session requests get HTTP 404 / `-32001 Session not found`) |
 | 3005 | `stateless-2026` | nginx round-robin over 2 × Go server, `github.com/modelcontextprotocol/go-sdk` v1.8.0, `StreamableHTTPOptions{Stateless: true}` | 2026-07-28 (stateless, `server/discover`, `Mcp-Method`/`Mcp-Name`) and legacy | **pass** (requests spread 50/50, no errors) |
 | 3006 | `mock-oauth` | dependency-free Node token server: `POST /token` (client_credentials, form-encoded, Basic or body creds `mcpload:secret`), `POST /introspect` (RFC 7662). Tokens are opaque and expire after **30 s** | OAuth 2.0 | n/a (auth server) |
+| 3008 | `ts-pooled` | same image, `POOL_SIZE=2`: every tool call must hold one of 2 process-wide slots (like one small DB connection pool shared by all tools), so `fast` and `search` queue behind `slow` | 2025-11-25 (stateful) | **`tool_isolation` flagged** with `--scenario isolation` (ts-healthy passes it) |
 | 3007 | `ts-oauth` | `ts-healthy` with `REQUIRE_AUTH_URL=http://mock-oauth:3000/introspect`: every `/mcp` request must carry a Bearer token that introspects as active, otherwise **401** | 2025-11-25 (stateful) | **refresh storm measured** (clients must refresh every 30 s) |
 
 Side endpoints:

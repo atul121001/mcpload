@@ -102,6 +102,8 @@ Start-Process report.html
 |---|---|
 | `--url http://localhost:3004/mcp --scenario scenarios/lb-check.js` | **fail**: `session_not_found` (LB without sticky sessions) |
 | `--url http://localhost:3005/mcp --scenario scenarios/lb-check.js --protocol 2026-07-28` | pass: stateless 2026-07-28 behind the same LB |
+| `--url http://localhost:3008/mcp --scenario isolation` | **fail**: `tool_isolation` (every tool shares 2 slots, so fast tools wait behind `slow`) |
+| `--url http://localhost:3001/mcp --scenario isolation` | pass: same tools, no shared pool |
 | `--url http://localhost:3002/mcp --scenario scenarios/soak.js --sampler prometheus --prom-url http://localhost:3002/metrics --soak-min 30` | **fail**: `memory_leak` and `session_leak` (about 40 minutes with warm-up and cool-down) |
 | `--url http://localhost:3007/mcp --scenario scenarios/oauth-refresh.js --env OAUTH_TOKEN_URL=http://localhost:3006/token --env OAUTH_CLIENT_ID=mcpload --env OAUTH_CLIENT_SECRET=secret` | OAuth refresh storm measured (`mcp_oauth_refresh_duration`). `mcpload` / `secret` are the demo mock-oauth credentials. |
 

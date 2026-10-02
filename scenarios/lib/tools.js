@@ -88,6 +88,21 @@ export function planTools(listed, cfg) {
   return { table, total, demo, unknown, listedNames };
 }
 
+/** A planTools() result without the named tools (weights of the rest unchanged, `cum` recomputed). */
+export function withoutTools(tt, names) {
+  const table = [];
+  let total = 0;
+  let prev = 0;
+  for (const e of tt.table) {
+    const w = e.cum - prev;
+    prev = e.cum;
+    if (names.indexOf(e.name) >= 0) continue;
+    total += w;
+    table.push(Object.assign({}, e, { cum: total }));
+  }
+  return Object.assign({}, tt, { table, total });
+}
+
 /** Weighted random pick from a planTools() result. `rnd` in [0,1) (default Math.random()). */
 export function pick(tt, rnd) {
   const r = (rnd === undefined ? Math.random() : rnd) * tt.total;

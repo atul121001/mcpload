@@ -14,6 +14,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | `burst.js` | Two phases. `init_flood` runs bare connect/close at 100/s to test the initialize storm. `agents` then ramps VUs from 0 to 200 in 10s. | about 1.5 min |
 | `soak.js` | Agent sessions at a constant arrival rate (`RATE` per `TIME_UNIT`; fractional rates work). A warm-up ramp comes first and a zero-load cool-down comes last. | 3m warm-up + 30m load + 5m cool-down |
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
+| `isolation.js` | Do fast tools wait behind slow ones? Runs agent sessions twice at the same concurrency: `solo` (the mix without `SLOW_TOOLS`), then `mixed` (the full mix). mcpload compares each tool's p95 between the two (verdict `tool_isolation`). | 20 VUs, 1m per phase |
 | `oauth-refresh.js` | 50 VUs on short-lived client-credentials tokens. Measures `mcp_oauth_refresh_duration` and counts auth errors. | 3m |
 
 ## Demo targets (`demo-servers/`, `docker compose up -d --build`)
@@ -25,6 +26,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | 3003 | py-healthy (stateless) | `./k6 run -e MCP_URL=http://localhost:3003/mcp scenarios/burst.js` |
 | 3004 | lb-stateful (2 replicas, no sticky sessions) | `./k6 run -e MCP_URL=http://localhost:3004/mcp scenarios/lb-check.js` (expected to fail) |
 | 3005 | stateless-2026 (2 replicas) | `./k6 run -e MCP_URL=http://localhost:3005/mcp -e MCP_PROTOCOL=2026-07-28 scenarios/lb-check.js` (expected to pass) |
+| 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes) |
 | 3006 / 3007 | mock-oauth / ts-oauth | `./k6 run -e MCP_URL=http://localhost:3007/mcp -e OAUTH_TOKEN_URL=http://localhost:3006/token -e OAUTH_CLIENT_ID=mcpload -e OAUTH_CLIENT_SECRET=secret scenarios/oauth-refresh.js` |
 
 Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`.
@@ -97,6 +99,7 @@ The `checks` threshold is what fails a run where no session ever starts (every `
 Each scenario adds its own thresholds on top:
 
 - `lb-check` adds `mcp_errors{error_type:session_not_found}: count<1`, `mcp_errors{error_type:header_mismatch}: count<1` and `checks{check:lb request ok}: rate>=LB_MIN_OK`. The last one requires every request to succeed whichever replica serves it, which is the meaningful check for stateless servers since they have no session to lose.
+- `isolation` adds `checks{check:slow tools in mix}: rate>0.999`, so a `SLOW_TOOLS` name that isn't in the tool mix fails the run instead of comparing two identical phases. `SLOW_TOOLS` (comma-separated, default `slow`) names your slow tools; `DURATION` is per phase.
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
 
 If any threshold fails, k6 exits with code 99, which gates CI.

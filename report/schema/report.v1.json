@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "isolation", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -204,7 +204,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

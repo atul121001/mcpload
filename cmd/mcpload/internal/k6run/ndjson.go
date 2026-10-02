@@ -139,8 +139,11 @@ type Aggregator struct {
 	protoAny    map[string]int
 	metricTypes map[string]string
 	tracked     []*series
-	first, last time.Time
-	points      int
+	// scenarioTools holds successful tools/call durations per k6 scenario
+	// (the 'scenario' system tag) and tool, for phase comparisons.
+	scenarioTools map[string]map[string][]float64
+	first, last   time.Time
+	points        int
 }
 
 // NewAggregator creates an aggregator whose buckets start at origin. Every
@@ -154,6 +157,8 @@ func NewAggregator(origin time.Time, interval time.Duration, track []string) *Ag
 		protoOK:     map[string]int{},
 		protoAny:    map[string]int{},
 		metricTypes: map[string]string{},
+
+		scenarioTools: map[string]map[string][]float64{},
 	}
 	seen := map[string]bool{}
 	for _, k := range track {
@@ -238,6 +243,14 @@ func (a *Aggregator) add(l *line) error {
 					b.tools = map[string][]float64{}
 				}
 				b.tools[name] = append(b.tools[name], v)
+				if sc := tags["scenario"]; sc != "" {
+					m := a.scenarioTools[sc]
+					if m == nil {
+						m = map[string][]float64{}
+						a.scenarioTools[sc] = m
+					}
+					m[name] = append(m[name], v)
+				}
 			}
 		}
 	case MetricIterations:
@@ -338,6 +351,29 @@ func (a *Aggregator) Tools() []ToolStats {
 			ts.Max = t.durations[len(t.durations)-1]
 		}
 		out = append(out, ts)
+	}
+	return out
+}
+
+// PhaseTool is the latency of one tool's successful calls within one k6
+// scenario; latencies in ms.
+type PhaseTool struct {
+	Calls    int
+	P50, P95 float64
+}
+
+// ScenarioTools returns per-tool latency of successful tools/call within the
+// k6 scenario of that name (nil when the scenario produced no tool calls).
+func (a *Aggregator) ScenarioTools(scenario string) map[string]PhaseTool {
+	m := a.scenarioTools[scenario]
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]PhaseTool, len(m))
+	for name, d := range m {
+		s := append([]float64(nil), d...)
+		sort.Float64s(s)
+		out[name] = PhaseTool{Calls: len(s), P50: Percentile(s, 0.50), P95: Percentile(s, 0.95)}
 	}
 	return out
 }

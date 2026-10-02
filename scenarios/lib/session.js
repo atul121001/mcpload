@@ -92,7 +92,8 @@ export function callTools(s, batch) {
 /**
  * Run one agent session.
  * opts: { rounds?: number, parallel?: number, think?: boolean (default true), listTools?: boolean (default true),
- *         onSession?: (s) => void  called after connect (e.g. to add pings) }
+ *         onSession?: (s) => void  called after connect (e.g. to add pings),
+ *         tableFilter?: (tt) => tt  adjusts the session's tool table before any call (e.g. drop tools) }
  * Returns { ok, protocol, sessionId, calls, toolErrors }.
  */
 export function agentSession(client, opts) {
@@ -120,7 +121,8 @@ export function agentSession(client, opts) {
     const listOk = check(listed, { 'tools/list returned tools': (l) => Array.isArray(l) && l.length > 0 });
     if (!listOk) return out;
 
-    const tt = toolTable(listed);
+    let tt = toolTable(listed);
+    if (o.tableFilter) tt = o.tableFilter(tt);
     if (!checkToolTable(tt)) return out;
     if (o.onSession) o.onSession(s);
 

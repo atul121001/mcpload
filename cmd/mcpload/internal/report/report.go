@@ -39,12 +39,14 @@ const (
 	VerdictSessionNotFound = "session_not_found"
 	VerdictThreshold       = "threshold"
 	VerdictGenerator       = "generator"
+	VerdictToolIsolation   = "tool_isolation"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
 var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
+	VerdictToolIsolation,
 }
 
 // Verdict statuses.

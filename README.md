@@ -386,6 +386,7 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | `burst.js` | A sudden rush of new agents, including a flood of session starts. |
 | `soak.js` | Steady traffic for a long time, then a quiet period, to find leaks. |
 | `lb-check.js` | Session handling behind a load balancer. |
+| `isolation.js` | Whether fast tools wait behind slow ones (a shared connection pool, worker pool or blocked event loop). Name your slow tools with `--env SLOW_TOOLS=...`. |
 | `oauth-refresh.js` | Many agents sharing short-lived login tokens. |
 
 Settings for each: [scenarios/README.md](scenarios/README.md).

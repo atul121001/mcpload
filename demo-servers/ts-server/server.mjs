@@ -5,6 +5,8 @@
 //   ts-leaky     LEAK=1               ~1MB retained per session forever, sessions never removed
 //   ts-oauth     REQUIRE_AUTH_URL=... every /mcp request must carry a Bearer token that the
 //                                     given RFC 7662 introspection endpoint reports as active
+//   ts-pooled    POOL_SIZE=N          every tool call holds one of N shared slots (like one small DB
+//                                     connection pool for all tools): fast tools queue behind slow ones
 //
 // Other env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), LEAK_BYTES (1048576),
 //            SESSION_IDLE_MS (300000; 0 disables idle reaping), SERVER_NAME.
@@ -22,8 +24,9 @@ const REQUIRE_AUTH_URL = process.env.REQUIRE_AUTH_URL || '';
 const FLAKY_RATE = Number(process.env.FLAKY_RATE ?? 0.1);
 const BIG_BYTES = Number(process.env.BIG_BYTES ?? 200_000);
 const LEAK_BYTES = Number(process.env.LEAK_BYTES ?? 1024 * 1024);
+const POOL_SIZE = Number(process.env.POOL_SIZE ?? 0); // 0: no shared pool
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
-const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : 'ts-healthy');
+const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
 
 const BIG_TEXT = makeBigText(BIG_BYTES);
@@ -36,9 +39,26 @@ function makeBigText(n) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 
+// POOL_SIZE > 0: one process-wide FIFO pool of slots that every tool call must hold while it runs.
+const pool = { free: POOL_SIZE, waiting: [] };
+async function pooled(fn) {
+  if (POOL_SIZE <= 0) return fn();
+  if (pool.free > 0) pool.free--;
+  else await new Promise((resolve) => pool.waiting.push(resolve));
+  try {
+    return await fn();
+  } finally {
+    const next = pool.waiting.shift();
+    if (next) next();
+    else pool.free++;
+  }
+}
+
 // ---- MCP server factory (one McpServer per session, as in the SDK examples) ----
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: '0.1.0' });
+  const register = server.registerTool.bind(server);
+  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => handler(...a)));
 
   server.registerTool('fast', { description: 'Returns immediately.', inputSchema: {} }, async () => text('ok'));
 
