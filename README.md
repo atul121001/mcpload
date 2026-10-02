@@ -258,7 +258,7 @@ The checks, in plain words:
 | `error_drift` | Errors become more frequent over time (a warning). |
 | `session_not_found` | The server "forgets" an agent's session, which often means a load-balancer problem. |
 | `threshold` | A tool went over your time or error budget. |
-| `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself used over 85% CPU, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
+| `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
 
 "Soak tests only" means the check is skipped on short runs without a cool-down, or with less than 2 minutes of steady load.
 

@@ -81,7 +81,7 @@ Windows (PowerShell):
 
 Exit code `0` means pass, `1` means a verdict or budget failed, `2` means an error (bad flags, k6 could not start, target unreachable).
 
-Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when k6 dropped more than 1% of the planned iterations (fails above 10%), or when k6 used more than 85% CPU, in which case the measured latency may include k6's own overhead. If it fires, lower the load or move k6 to another machine before trusting the numbers. The full list of verdicts is in the README under [Reading the result](../README.md#reading-the-result).
+Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when k6 dropped more than 1% of the planned iterations (fails above 10%), or when k6 went over 90% CPU at its busiest, in which case the measured latency may include k6's own overhead. If it fires, lower the load or move k6 to another machine before trusting the numbers. The full list of verdicts is in the README under [Reading the result](../README.md#reading-the-result).
 
 ## 4. Open the report
 
