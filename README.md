@@ -75,7 +75,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 | | **mcpload** | [JMeter MCP plugin](https://github.com/Blazemeter/jmeter-mcp-plugin) (BlazeMeter) | [xk6-mcp](https://github.com/dgzlopes/xk6-mcp) (k6) | [mcp-bench](https://pkg.go.dev/github.com/tmc/mcp/exp/cmd-experimental/mcp-bench) |
 |---|---|---|---|---|
-| **Status** | Early release (v0.3) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
+| **Status** | Early release (v0.4) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
 | **How you use it** | One command with ready-made scenarios | JMeter GUI test plan (Java 17+) | Write a k6 script | CLI |
 | **MCP sessions** | One per simulated agent, each with its own session ID | **One shared client for the whole test run**; every thread uses the same session | One per client your script creates | Concurrent clients |
 | **Several tool calls at once inside one session** | ✅ `callParallel` | ❌ synchronous client, one call per thread | ❌ `callTool` returns before the next call | Not in docs |
@@ -381,7 +381,7 @@ docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload \
   run --url https://staging.example.com/mcp --vus 5 --duration 2m --html report.html
 ```
 
-Every `mcpload` command and flag works the same way; scenarios can be named (`--scenario soak`) or read from the mounted folder (`--scenario ./my-test.js`). Pin a version with `ghcr.io/atul121001/mcpload:<version>` (for example `:0.3.0`) in CI.
+Every `mcpload` command and flag works the same way; scenarios can be named (`--scenario soak`) or read from the mounted folder (`--scenario ./my-test.js`). Pin a version with `ghcr.io/atul121001/mcpload:<version>` (for example `:0.4.0`) in CI.
 
 To test a server on your own machine, such as the demo servers:
 
@@ -528,7 +528,7 @@ jobs:
           comment-on-pr: 'true'
 ```
 
-`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.3.0` instead. All inputs and outputs are documented in [action/action.yml](action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
+`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.4.0` instead. All inputs and outputs are documented in [action/action.yml](action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](.github/workflows/example-pr-gate.yml) and [nightly soak](.github/workflows/example-nightly-soak.yml).
 
 ### Compare with main
 
