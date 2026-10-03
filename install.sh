@@ -168,8 +168,9 @@ main() {
 
 	# Remove older versions installed by this script.
 	for old in "$root"/v*; do
-		[ -d "$old" ] && [ "$old" != "$dest" ] && [ -f "$old/mcpload" ] || continue
-		rm -rf "$old"
+		if [ -d "$old" ] && [ "$old" != "$dest" ] && [ -f "$old/mcpload" ]; then
+			rm -rf "$old"
+		fi
 	done
 
 	say "  installed to $dest"

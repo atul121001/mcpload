@@ -137,7 +137,10 @@ Performance regression detected vs baseline 4a1b2c3 (main):
 	// action/summary.mjs renders report.comparison for the PR comment; its test
 	// (action/summary.test.mjs) renders this comparison and must match wantMd.
 	_, fixture := run("--format", "json")
+	// run() turns the temp dir into DIR where it appears verbatim (Linux, macOS); on
+	// Windows the JSON escapes its backslashes, so replace that form too.
 	fixture = strings.ReplaceAll(fixture, strings.ReplaceAll(base, `\`, `\\`), "base.json")
+	fixture = strings.ReplaceAll(fixture, `"DIR/base.json"`, `"base.json"`)
 	fixtures := filepath.Join("..", "..", "..", "..", "action", "testdata")
 	if os.Getenv("UPDATE_FIXTURES") != "" {
 		os.WriteFile(filepath.Join(fixtures, "comparison.json"), []byte(fixture), 0o644)
@@ -155,7 +158,7 @@ Performance regression detected vs baseline 4a1b2c3 (main):
 	if err := json.Unmarshal([]byte(js), &c); err != nil {
 		t.Fatalf("json: %v\n%s", err, js)
 	}
-	if code != ExitPass || c.Regressed || c.Rules.MaxP95Increase != 0.4 || len(c.Tools) != 6 || c.Baseline.Source != base {
+	if code != ExitPass || c.Regressed || c.Rules.MaxP95Increase != 0.4 || len(c.Tools) != 6 || (c.Baseline.Source != base && c.Baseline.Source != "DIR/"+filepath.Base(base)) {
 		t.Errorf("json with --max-p95-increase 40%%: exit %d %+v", code, c)
 	}
 }
