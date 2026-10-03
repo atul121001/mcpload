@@ -340,8 +340,9 @@ runs:
         if [ "${#extra[@]}" -gt 0 ]; then add "${extra[@]}"; fi
 
         echo "mcpload ${shown[*]}"
-        "$BIN/mcpload$EXE" "${args[@]}"
-        code=$?
+        # Actions runs `shell: bash` as `bash -e`, so capture the exit code instead of letting a FAIL (1) end the step.
+        code=0
+        "$BIN/mcpload$EXE" "${args[@]}" || code=$?
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         echo "mcpload exited with $code"
         exit 0
