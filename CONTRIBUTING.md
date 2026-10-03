@@ -34,6 +34,8 @@ CI (`.github/workflows/ci.yml`) runs all of these on every pull request.
 
 ## Reporting security issues
 
-Please don't open a public issue for a vulnerability. Report it through GitHub private vulnerability reporting instead: open the repository's Security tab and choose "Report a vulnerability". We will respond as soon as we can.
+Please don't open a public issue for a vulnerability. Report it through GitHub private vulnerability reporting instead: open the repository's Security tab and choose "Report a vulnerability". See [SECURITY.md](SECURITY.md) for what to include, what to expect and what is in scope.
 
 The demo servers in `demo-servers/` are intentionally vulnerable test targets bound to 127.0.0.1; issues in them that only matter if they are exposed to a network are expected.
+
+If your change touches credentials, what a report contains, what mcpload sends over the network, or what it runs (the engine, scenarios, `docker`), update [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) in the same pull request.
