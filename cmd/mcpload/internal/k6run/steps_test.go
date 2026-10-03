@@ -67,6 +67,10 @@ func TestStepsSplitByStepTag(t *testing.T) {
 	if fmt.Sprint(s10.ByErrorType) != "map[timeout:1]" || fmt.Sprint(slow.ByErrorType) != "map[timeout:1]" || len(s5.ByErrorType) != 0 || s10.Tools[0].ByErrorType != nil {
 		t.Errorf("byErrorType: step %v, slow %v, step 5 %v, fast %v", s10.ByErrorType, slow.ByErrorType, s5.ByErrorType, s10.Tools[0].ByErrorType)
 	}
+	// Overall call latency: successful tools/call of every tool (the failed `slow` call is left out).
+	if s10.CallP95 == nil || *s10.CallP95 != 40 || *s10.CallP99 != 40 || s5.CallP95 == nil || *s5.CallP95 < 4.8 || *s5.CallP95 > 5 {
+		t.Errorf("call p95: step 5 %v, step 10 %v", s5.CallP95, s10.CallP95)
+	}
 	if NewAggregator(origin, time.Second, nil).Steps() != nil {
 		t.Error("no step tags should give nil")
 	}

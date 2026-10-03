@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +60,10 @@ type runOpts struct {
 
 	wl     *workload.Workload // loaded from --workload
 	wlFile string             // its normalized JSON (WORKLOAD_FILE), written by execute
+	// Set by the capacity subcommand: refinement steps and the knobs the
+	// step table suggests.
+	refine int
+	hints  stepHints
 }
 
 const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]"
@@ -773,7 +778,24 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		}
 		capCfg.Planned = opts.StepLevels(stepLoadK6Scenario)
 		capCfg.StoppedEarly = stoppedEarly
-		cp, v := analysis.CapacityVerdict(buildSteps(steps, origin, cpuWindows), capCfg)
+		first := buildSteps(steps, origin, cpuWindows)
+		cp, v := analysis.CapacityVerdict(first, capCfg)
+		if levels := refineLevels(cp, o.refine); len(levels) > 0 && !res.Interrupted {
+			extra, err := refinePass(o, bin, env, levels, origin, sig, stdout, stderr, logf)
+			switch {
+			case err != nil:
+				logf("warning: refinement run failed (%v); reporting the first pass only", err)
+			case len(extra) == 0:
+				logf("warning: the refinement run produced no step data; reporting the first pass only")
+			default:
+				planned := append(append([]int(nil), capCfg.Planned...), levels...)
+				slices.Sort(planned)
+				capCfg.Planned = slices.Compact(planned)
+				cp, v = analysis.CapacityVerdict(mergeSteps(first, extra), capCfg)
+			}
+		} else if o.refine > 0 && cp.BreakingVUs != nil {
+			logf("refine: nothing to refine (no gap between a passing and a conclusive breaking step)")
+		}
 		if len(steps) > 0 {
 			r.Capacity = cp
 		}
@@ -810,7 +832,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		logf("wrote %s", o.html)
 	}
 
-	printSteps(stderr, r.Capacity)
+	hints := o.hints
+	if hints == (stepHints{}) {
+		hints = runStepHints
+	}
+	printSteps(stderr, r.Capacity, hints)
 	if r.Comparison != nil {
 		fmt.Fprintln(stderr)
 		writeCompareText(stderr, r.Comparison, r)

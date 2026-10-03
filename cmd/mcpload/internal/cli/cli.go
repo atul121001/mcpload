@@ -1,5 +1,5 @@
-// Package cli implements the mcpload command line: run, render, validate,
-// upload, demo, compare and version. It uses the stdlib flag package with one FlagSet per
+// Package cli implements the mcpload command line: run, capacity, render,
+// validate, upload, demo, compare and version. It uses the stdlib flag package with one FlagSet per
 // subcommand.
 package cli
 
@@ -35,6 +35,7 @@ const usageText = `mcpload - load and soak testing for remote MCP servers
 
 Usage:
   mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
+  mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--refine 2] [flags]
   mcpload render <report.json> <out.html>
   mcpload validate <report.json>
   mcpload upload --url <upload server base url> --key <api key> <report.json>
@@ -56,6 +57,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "run":
 		return runCmd(rest, stdout, stderr)
+	case "capacity":
+		return capacityCmd(rest, stdout, stderr)
 	case "render":
 		return renderCmd(rest, stdout, stderr)
 	case "validate":

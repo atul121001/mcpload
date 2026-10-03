@@ -43,7 +43,7 @@ Problems like these usually don't show up in a quick manual test. They show up a
 | The question you have | What mcpload does |
 |---|---|
 | **Can my server handle many agents at once?** | Simulates many agents opening sessions, listing tools and calling tools in parallel, then measures speed and errors for **each tool separately**. |
-| **How many agents can it take before it breaks?** | Raises the number of agents step by step and tells you the last level where every tool stayed within budget, and which tool broke first. |
+| **How many agents can it take before it breaks?** | `mcpload capacity --from 10 --to 1000` raises the number of agents step by step, tells you the last level where every tool stayed within budget and which tool broke first, and estimates the capacity in between (e.g. "~250 agents"). |
 | **Do real multi-step tasks stay fast?** | Runs agents through a plan where each step's calls are built from the previous step's results, and times every step and the whole task. |
 | **Does a realistic business workload hold up?** | Runs a mix of business flows from a YAML file (say 60% "look up orders", 30% "check subscription", 10% "open a ticket") with test data, and checks each flow's end-to-end time and completion rate against its own budget. |
 | **Does one slow tool hold up the others?** | Compares each tool's speed alone and mixed with your slow tools, to catch a shared pool or a blocked event loop. |
@@ -83,7 +83,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **Weighted mix of business flows** | ✅ `--workload`: flows with weights, CSV test data and per-flow budgets in one YAML file | Throughput controllers and CSV data sets you wire up by hand | Possible in your script, by hand | ❌ |
 | **Latency per tool** | ✅ p50/p95/p99 and error rate for every tool | ✅ one sampler per tool | ❌ metrics are tagged by `method` only, so every `tools/call` is mixed together | Not in docs |
 | **Budget per tool, with PASS/FAIL** | ✅ `P95_MS`, `TOOL_BUDGETS` | With assertions you configure | ❌ no per-tool tag to set a threshold on | ❌ exports results, no pass/fail |
-| **"How many agents can it take?"** | ✅ `step-load`: "Held budgets up to 10 agents; at 20 agents `slow` p95 1.06 s > 800 ms" | Ramp threads and read the graphs yourself | Ramp VUs and read the graphs yourself | Stress mode that scales up |
+| **"How many agents can it take?"** | ✅ `mcpload capacity`: a step table with tail latency and error classes, "breaks budget: `slow` p95 1.26 s > 800 ms" at 20 agents, "Estimated sustainable capacity: ~13 agents" | Ramp threads and read the graphs yourself | Ramp VUs and read the graphs yourself | Stress mode that scales up |
 | **Does one slow tool block the others?** | ✅ `isolation` scenario and verdict | ❌ | ❌ | ❌ |
 | **Leak detection** | ✅ memory, sessions and open files; slope over steady load plus a cool-down check; Docker or Prometheus | ❌ | ❌ | Watches memory, goroutines and GC of the server process |
 | **Load balancer "session not found"** | ✅ dedicated scenario and verdict | ❌ one shared session can't reproduce it | ❌ | ❌ |
@@ -122,7 +122,7 @@ These tools work well alongside mcpload.
 | When | Run | How long |
 |---|---|---|
 | On every pull request | `agent-session` (the default) in CI, with per-tool budgets, compared with `main` (`baseline-branch: main`) | 1–2 min |
-| Before a release | `step-load` to find how many agents you can take, then `soak` with a sampler to catch leaks | 10–60 min |
+| Before a release | `mcpload capacity` to find how many agents you can take, then `soak` with a sampler to catch leaks | 10–60 min |
 | You know how agents really use your tools | `--workload` with your flows and their weights, budgeted per flow | 2–10 min |
 | You run more than one replica | `lb-check`, then `version-skew` with two builds behind the load balancer | 2–5 min |
 | You changed timeouts, restarts or deploys | `reconnect-storm` with `--chaos-restart`, plus `--calls-url` to count lost and duplicated calls | 2–5 min |
@@ -344,6 +344,32 @@ The soak starts 2 new agent sessions per second by default. Change it with `--en
 
 Without a sampler, mcpload still reports speed and error trends, but it can't judge memory. If your Prometheus endpoint also reports heap size (as Node, Go and Python clients usually do), the memory check looks at the heap as well as total memory.
 
+### Find your capacity
+
+Instead of running `--vus 10`, then 50, then 100 by hand, let mcpload step through them in one run:
+
+```bash
+./mcpload capacity --url https://staging.example.com/mcp --env MCP_TOKEN=your-token \
+  --from 10 --to 1000 --step-duration 1m --refine 2 --html capacity.html
+```
+
+It runs 10, 20, 40, ... agents up to `--to` (`--factor` changes the ratio, `--steps 10,25,50` sets them yourself), holds each level for `--step-duration`, judges every step against your budgets, and stops early once the server has clearly fallen over. A real run against the demo server with a small connection pool, with a 1 s client timeout (`--from 5 --to 40 --step-duration 15s --env MCP_TIMEOUT=1s`):
+
+```text
+mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
+  Agents     p95     p99  Errors             req/s  Slowest tool p95
+       5  306 ms  413 ms  0.31%               42.2  slow 529 ms
+      10  513 ms  643 ms  0.41%               78.7  slow 673 ms
+      20  849 ms  941 ms  1.38% timeout 8    108.3  slow 966 ms       <- breaks budget: `slow` error rate 6.93% > 1%, all `timeout` (+5 more)
+      40  984 ms  997 ms  7.06% timeout 153  148.8  flaky 989 ms      over budget: `slow` error rate 68.39% > 1%, all `timeout` (+8 more)
+max sustainable concurrency: 10 agents (budgets broke at 20)
+Estimated sustainable capacity: ~11 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` error rate to its 1% budget (the lowest of 6 breached metrics); an estimate, not a measured step)
+```
+
+The Errors column shows the error rate and the most frequent error classes. Tool errors from a tool failing within its own error budget (here the demo `flaky` tool) are counted in the rate but not named.
+
+The estimate follows each breached metric in a straight line from the last step that held to the first that broke, and takes the earliest crossing of its budget. `--refine 2` then measures two more steps inside that gap (in a second k6 run) to narrow it. Add `--target 200` to fail the run when the server can't hold 200 agents. Details in [cmd/mcpload/README.md](cmd/mcpload/README.md#capacity).
+
 Every option is listed in [scenarios/README.md](scenarios/README.md) and [cmd/mcpload/README.md](cmd/mcpload/README.md).
 
 ### Run with Docker
@@ -464,7 +490,7 @@ The checks, in plain words:
 | `threshold` | A tool went over your time or error budget. |
 | `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or mcpload's load generator itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
 | `version_skew` | Version-skew runs only: requests that reached a replica on a different build. A warning when they all fail fast with a typed error clients can handle (e.g. `Unsupported protocol version`), a fail when any of them hangs until the client timeout. |
-| `capacity` | Step-load runs only: how many agents at once the server held within your time and error budgets, and what broke at the next step, e.g. "Held budgets up to 50 agents; at 100 agents `slow` p95 1.9 s > 800 ms". Fails if your `--min-agents` target isn't met (or, without a target, if even the first step breaks). Says "inconclusive" instead of blaming the server when the test machine was maxed out. |
+| `capacity` | `mcpload capacity` and step-load runs only: how many agents at once the server held within your time and error budgets, and what broke at the next step, e.g. "Held budgets up to 50 agents; at 100 agents `slow` p95 1.9 s > 800 ms". Fails if your `--target` (`--min-agents` with `run`) isn't met (or, without a target, if even the first step breaks). Says "inconclusive" instead of blaming the server when the test machine was maxed out. |
 | `session_survival` | Long-lived runs only: fails when sessions die before their planned end, e.g. "18 of 50 sessions died after a median 5m02s with session_not_found"; warns when calls late in a session are much slower than early ones. |
 | `recovery` | Runs with `--chaos-restart`: how long the server took to serve normally again after mcpload restarted its container, e.g. "20 agents reconnected within 2.0 s; errors returned to under 1% 2.0 s after the restart (budget 30 s)". Fails over `RECOVERY_BUDGET`. |
 | `call_integrity` | Runs whose calls carry call ids, with `--calls-url`: fails when the server ran a call twice (a client retry or a racy duplicate check), warns when calls failed on the client but ran on the server. |

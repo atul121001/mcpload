@@ -87,10 +87,20 @@ export function semanticErrors(r) {
     for (let i = 1; i < pv.length; i++) {
       if (!(pv[i] > pv[i - 1])) { errs.push('capacity.plannedVus must be increasing integers >= 1'); break; }
     }
+    if (c.estimatedVus != null) {
+      if (c.maxSustainableVus == null || c.breakingVus == null || c.estimatedVus < c.maxSustainableVus || c.estimatedVus > c.breakingVus) {
+        errs.push('capacity.estimatedVus must lie between maxSustainableVus and breakingVus');
+      }
+    }
+    const stepVus = new Set(c.steps.map((st) => st.vus));
+    for (const k of ['degradation', 'failure']) {
+      if (c[k] && !stepVus.has(c[k].vus)) errs.push(`capacity.${k}.vus must be the vus of a step`);
+    }
     c.steps.forEach((st, i) => {
       const path = `capacity.steps[${i}]`;
       if (i > 0 && !(st.vus > c.steps[i - 1].vus)) errs.push(`capacity.steps must be sorted by strictly increasing vus (index ${i})`);
       if (st.endS < st.startS) errs.push(`${path}.endS is before startS`);
+      if (st.p95Ms != null && st.p99Ms != null && st.p95Ms > st.p99Ms) errs.push(`${path} percentiles not monotonic (p95Ms<=p99Ms)`);
       if (st.errors > st.reqs) errs.push(`${path}: errors must be in [0, reqs]`);
       for (const t of st.tools) {
         if (t.errors > t.reqs) errs.push(`${path}.tools[${t.name}]: errors must be in [0, reqs]`);

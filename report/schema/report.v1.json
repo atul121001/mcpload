@@ -248,6 +248,10 @@
         "breakingVus": { "type": ["integer", "null"], "minimum": 1, "description": "First step that crossed a budget; null when none did." },
         "inconclusive": { "type": "boolean", "description": "The load generator was saturated at the breaking step, so the breach may be k6's own overhead." },
         "stoppedEarly": { "type": "boolean", "description": "The scenario stopped the run once a step broke badly (ABORT_ERR_RATE)." },
+        "estimatedVus": { "type": "integer", "minimum": 1, "description": "Estimated sustainable concurrency, interpolated between maxSustainableVus (held) and breakingVus (broke) on the breached metrics (2 significant figures). Absent when there is no such bracket: nothing broke, the first step broke, or the result is inconclusive." },
+        "estimateBasis": { "type": "string", "description": "How estimatedVus was estimated, or why there is no estimate." },
+        "degradation": { "$ref": "#/$defs/stepMark", "description": "First step after the first that held its budgets but clearly got worse: p95 of tools/call at least 2x the first step's, or a tool's error rate (or failed session starts) at least half its budget and twice the first step's." },
+        "failure": { "$ref": "#/$defs/stepMark", "description": "First step where the server fell over: error rate >= ABORT_ERR_RATE (0.5 when unset or 0) or no tools/call completed; else the last step when the run stopped early." },
         "budgets": {
           "type": "object",
           "description": "Budgets each step was judged against.",
@@ -493,6 +497,15 @@
         "arrivalTimeUnitS": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
+    "stepMark": {
+      "type": "object",
+      "description": "One step of a step-load run and why it is marked.",
+      "required": ["vus", "reason"],
+      "properties": {
+        "vus": { "type": "integer", "minimum": 1, "description": "The vus of a capacity.steps entry." },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
     "step": {
       "type": "object",
       "required": ["vus", "startS", "endS", "reqs", "errors", "errorRate", "rps", "connectP95Ms", "connectErrorRate", "generatorSaturated", "passed", "breaches", "tools"],
@@ -504,6 +517,8 @@
         "errors": { "type": "integer", "minimum": 0 },
         "errorRate": { "$ref": "#/$defs/rate" },
         "rps": { "type": "number", "minimum": 0 },
+        "p95Ms": { "type": "number", "minimum": 0, "description": "p95 of the successful tools/call of all tools in the step (absent without one, and in reports written before it existed)." },
+        "p99Ms": { "type": "number", "minimum": 0, "description": "p99 of the same calls." },
         "connectP95Ms": { "type": ["number", "null"], "minimum": 0, "description": "p95 of successful session starts; null without one." },
         "connectErrorRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Share of failed session starts; null without any." },
         "generatorCpuMaxPct": { "type": "number", "minimum": 0, "maximum": 100, "description": "Busiest k6 CPU sampling interval within the step, % of the machine." },
@@ -512,6 +527,7 @@
         "breached": { "type": "array", "items": { "enum": ["connectP95Ms", "connectErrorRate", "toolCalls"] }, "description": "Step-level fields over budget." },
         "breaches": { "type": "array", "items": { "type": "string" }, "description": "Every breach in words, worst first." },
         "byErrorType": { "$ref": "#/$defs/counts", "description": "The step's errors (mcp_errors) by error_type, like summary.byErrorType (omitted without errors)." },
+        "refinement": { "type": "boolean", "description": "A step added after the first pass, in a second k6 run, to narrow the breaking point (mcpload capacity --refine); its times count from the first run's start." },
         "tools": {
           "type": "array",
           "items": {

@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -157,6 +158,123 @@ func TestSkipDriftForSteps(t *testing.T) {
 	vs := SkipDriftForSteps([]report.Verdict{{ID: report.VerdictLatencyDrift, Status: report.StatusWarn, Signal: "tools.p95Ms"}, {ID: report.VerdictThreshold, Status: report.StatusPass}})
 	if vs[0].Status != report.StatusSkipped || vs[0].Signal != "tools.p95Ms" || vs[1].Status != report.StatusPass {
 		t.Errorf("verdicts = %+v", vs)
+	}
+}
+
+func TestCapacityEstimate(t *testing.T) {
+	few := step(10, 20, map[string][4]float64{"fast": {300, 0, 5, 9}, "slow": {5, 0, 900, 950}}) // slow: too few calls to judge
+	saturated := slowAt(20, 1900)
+	saturated.GeneratorCPUMaxPct = report.F(97)
+	noSlow := step(10, 20, map[string][4]float64{"fast": {300, 0, 5, 9}})
+	cases := []struct {
+		name  string
+		steps []report.Step
+		est   int // 0 = nil
+		basis string
+	}{
+		// slow p95 320 -> 1900 crosses 800 ms at 13.04; slow p99 400 -> 2280 crosses 2 s at 18.5: the lower wins.
+		{"interpolates the first breached metric", []report.Step{healthy(5), healthy(10), slowAt(20, 1900)}, 13,
+			"between 10 (held) and 20 (broke); linear interpolation of `slow` p95 to its 800 ms budget (the lowest of 2 breached metrics)"},
+		// 200 + (800-500)/(1400-500)*200 = 266.7, 2 significant figures.
+		{"rounds to 2 significant figures", []report.Step{slowAt(200, 500), slowAt(400, 1400)}, 270,
+			"between 200 (held) and 400 (broke); linear interpolation of `slow` p95 to its 800 ms budget"},
+		// fast errors 0% -> 5% cross 1% at 120.
+		{"error rate", []report.Step{healthy(100), step(200, 20, map[string][4]float64{"fast": {300, 15, 5, 9}})}, 120,
+			"between 100 (held) and 200 (broke); linear interpolation of `fast` error rate to its 1% budget"},
+		{"already over budget at the held step", []report.Step{few, slowAt(20, 1000)}, 10,
+			"linear interpolation of `slow` p95, already at its 800 ms budget at 10 (too few calls there to count as a breach)"},
+		{"breached metric not measured at the held step", []report.Step{noSlow, slowAt(20, 1900)}, 10,
+			"between 10 (held) and 20 (broke); no breached metric was measured at both steps, so this is the last step that held"},
+		{"never reaches the breaking step", []report.Step{slowAt(10, 790), slowAt(11, 801)}, 10, "between 10 (held) and 11 (broke)"},
+		{"nothing broke", []report.Step{healthy(10), healthy(20)}, 0, "nothing broke up to 20 agents (the highest step tested)"},
+		{"first step broke", []report.Step{slowAt(10, 900), slowAt(20, 2000)}, 0, "the first step (10 agents) already broke budgets"},
+		{"inconclusive", []report.Step{healthy(10), saturated}, 0, "inconclusive: the load generator was saturated at 20 agents"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cp, _ := CapacityVerdict(c.steps, capCfg())
+			if got := ip(cp.EstimatedVUs); got != c.est {
+				t.Errorf("estimate %d, want %d (%s)", got, c.est, cp.EstimateBasis)
+			}
+			if !strings.Contains(cp.EstimateBasis, c.basis) {
+				t.Errorf("basis %q lacks %q", cp.EstimateBasis, c.basis)
+			}
+		})
+	}
+}
+
+func TestRoundSig2(t *testing.T) {
+	for x, want := range map[float64]int{1: 1, 7.4: 7, 9.6: 10, 14.6: 15, 99.4: 99, 137: 140, 254: 250, 1349: 1300, 26667: 27000} {
+		if got := RoundSig2(x); got != want {
+			t.Errorf("RoundSig2(%v) = %d, want %d", x, got, want)
+		}
+	}
+}
+
+func TestCapacityDegradation(t *testing.T) {
+	withP95 := func(st report.Step, p95 float64) report.Step {
+		st.P95Ms, st.P99Ms = report.F(p95), report.F(p95*1.5)
+		return st
+	}
+	cases := []struct {
+		name  string
+		steps []report.Step
+		want  string // "" = no mark
+	}{
+		{"p95 doubles while budgets hold", []report.Step{withP95(healthy(10), 200), withP95(healthy(20), 300), withP95(healthy(40), 460), slowAt(80, 1900)},
+			"40: p95 460 ms, 2.3x the first step's 200 ms"},
+		{"falls back to the slowest tool without p95Ms", []report.Step{slowAt(10, 300), slowAt(20, 650), slowAt(40, 900)},
+			"20: p95 650 ms, 2.2x the first step's 300 ms"},
+		{"error rate reaches half its budget", []report.Step{healthy(10), step(20, 0, map[string][4]float64{"fast": {500, 3, 5, 9}})},
+			"20: `fast` error rate 0.6%, over half its 1% budget"},
+		{"a flaky tool at its usual rate is not a degradation", []report.Step{healthy(10), step(20, 0, map[string][4]float64{"fast": {300, 0, 5, 9}, "flaky": {100, 11, 40, 80}})}, ""},
+		{"the breaking step is not a degradation", []report.Step{withP95(healthy(10), 200), withP95(slowAt(20, 1900), 1900)}, ""},
+		{"the first step is the baseline", []report.Step{withP95(healthy(10), 700)}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cp, _ := CapacityVerdict(c.steps, capCfg())
+			got := ""
+			if d := cp.Degradation; d != nil {
+				got = fmt.Sprintf("%d: %s", d.VUs, d.Reason)
+			}
+			if got != c.want {
+				t.Errorf("degradation %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestCapacityFailure(t *testing.T) {
+	down := step(40, 20, map[string][4]float64{"fast": {300, 180, 5, 9}})
+	down.ErrorRate, down.ByErrorType = 0.6, map[string]int64{"timeout": 180}
+	cases := []struct {
+		name    string
+		steps   []report.Step
+		stopped bool
+		abort   float64
+		want    string
+	}{
+		{"error rate reaches ABORT_ERR_RATE", []report.Step{healthy(10), slowAt(20, 1900), down}, false, 0, "40: error rate 60% >= 50%, all `timeout`"},
+		{"and the run stopped there", []report.Step{healthy(10), down}, true, 0, "40: error rate 60% >= 50%, all `timeout`; the run stopped here (ABORT_ERR_RATE)"},
+		{"a lower ABORT_ERR_RATE", []report.Step{healthy(10), down}, false, 0.3, "40: error rate 60% >= 30%, all `timeout`"},
+		{"stopped early below the rate", []report.Step{healthy(10), slowAt(20, 1900)}, true, 0, "20: the run stopped here: a VU saw more than 50% of its calls fail (ABORT_ERR_RATE)"},
+		{"no tool calls", []report.Step{healthy(10), {VUs: 20, Reqs: 40, Errors: 4, ErrorRate: 0.1}}, false, 0, "20: no tools/call completed"},
+		{"breach without failure", []report.Step{healthy(10), slowAt(20, 1900)}, false, 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := capCfg()
+			cfg.StoppedEarly, cfg.AbortErrRate = c.stopped, c.abort
+			cp, _ := CapacityVerdict(c.steps, cfg)
+			got := ""
+			if f := cp.Failure; f != nil {
+				got = fmt.Sprintf("%d: %s", f.VUs, f.Reason)
+			}
+			if got != c.want {
+				t.Errorf("failure %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 

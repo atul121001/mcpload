@@ -712,7 +712,8 @@ func (a *Aggregator) addStep(st, metric string, t time.Time, v float64, tags map
 
 // StepStats aggregates the requests of one load step (step-load scenario).
 // Tools follow Tools(); ConnectP95 is the p95 (ms) of successful connects
-// (nil without one).
+// (nil without one); CallP95/CallP99 cover the successful tools/call of all
+// tools together (nil without one).
 type StepStats struct {
 	VUs                     int
 	First, Last             time.Time
@@ -720,6 +721,7 @@ type StepStats struct {
 	Tools                   []ToolStats
 	Connects, ConnectErrors int64
 	ConnectP95              *float64
+	CallP95, CallP99        *float64
 	// ByErrorType splits Errors by error_type (empty without errors).
 	ByErrorType map[string]int64
 }
@@ -738,6 +740,14 @@ func (a *Aggregator) Steps() []StepStats {
 			ByErrorType: errorTypes(s.byErrorType)}
 		if st.Errors > st.Reqs {
 			st.Errors = st.Reqs
+		}
+		var calls []float64
+		for _, t := range s.tools {
+			calls = append(calls, t.durations...)
+		}
+		if len(calls) > 0 {
+			sort.Float64s(calls)
+			st.CallP95, st.CallP99 = ptr(Percentile(calls, 0.95)), ptr(Percentile(calls, 0.99))
 		}
 		if len(s.connect) > 0 {
 			c := append([]float64(nil), s.connect...)
