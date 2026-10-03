@@ -1,6 +1,6 @@
 # Quick start
 
-From a fresh clone to an HTML report in about five minutes (most of it is the first Docker and Go build).
+From a fresh clone to an HTML report in about five minutes (most of it is the first Docker build).
 
 > **No clone needed to just try it.** With a release of mcpload installed, `mcpload demo up` starts the demo servers from published images and `mcpload demo down` stops them; see [Try it in 5 minutes](../README.md#try-it-in-5-minutes). There is also a Docker image, `ghcr.io/atul121001/mcpload` ([Run with Docker](../README.md#run-with-docker)). This guide builds everything from source.
 
@@ -9,11 +9,9 @@ From a fresh clone to an HTML report in about five minutes (most of it is the fi
 | Tool | Version | Install |
 |---|---|---|
 | Docker (with Compose v2) | any recent | Docker Desktop on Windows/macOS, Docker Engine on Linux |
-| Go | 1.26 or later | <https://go.dev/dl/> (Windows: `winget install GoLang.Go`) |
-| xk6 | latest | `go install go.k6.io/xk6@latest` (Windows: `winget install GrafanaLabs.xk6` also works) |
+| mcpload | latest release | one command, see [step 2](#2-install-mcpload) |
+| Go | 1.26 or later (optional) | only to build mcpload from source: <https://go.dev/dl/> (Windows: `winget install GoLang.Go`) |
 | Node.js | 22 (optional) | only for `report/` tooling |
-
-Make sure `$(go env GOPATH)/bin` (Windows: `%USERPROFILE%\go\bin`) is on your `PATH`, so `xk6` is found.
 
 > Windows: keep the repo outside cloud-synced folders such as OneDrive. Sync interferes with Go build caches and `node_modules`.
 
@@ -39,27 +37,73 @@ docker compose ps
 cd ..
 ```
 
-If you don't need to change the demo servers, `mcpload demo up` (once mcpload is built, step 2) starts the same servers from the published images without building them, waits until they answer, and lists what each one demonstrates. Both ways use the project name `mcpload-demo`, so the container names (`mcpload-demo-ts-healthy-1`, ...) are the same; run one or the other.
+If you don't need to change the demo servers, `mcpload demo up` (once mcpload is installed, step 2) starts the same servers from the published images without building them, waits until they answer, and lists what each one demonstrates. Both ways use the project name `mcpload-demo`, so the container names (`mcpload-demo-ts-healthy-1`, ...) are the same; run one or the other.
 
-## 2. Build k6 (with xk6-mcpload) and the mcpload CLI
+## 2. Install mcpload
+
+mcpload is a single program. The install command downloads the build for your computer, verifies its SHA-256 checksum, and puts `mcpload` on your `PATH` (no admin rights needed; run it again to upgrade).
 
 Linux / macOS:
 
 ```bash
-go install go.k6.io/xk6@latest
-xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output ./k6
-(cd cmd/mcpload && go build -o ../../mcpload .)
-./k6 version && ./mcpload version
+curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | sh
+mcpload version
 ```
 
 Windows (PowerShell):
 
 ```powershell
-go install go.k6.io/xk6@latest
-xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output .\k6.exe
-Push-Location cmd\mcpload; go build -o ..\..\mcpload.exe .; Pop-Location
-.\k6.exe version; .\mcpload.exe version
+irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex
+mcpload version
 ```
+
+Other terminals that were already open on Windows only see `mcpload` after you restart them. With Homebrew, `brew install atul121001/tap/mcpload` works once the tap is published.
+
+`mcpload version` also shows the engine and the scenarios folder mcpload will use, so you can check an install from any folder.
+
+<details>
+<summary>Settings for the install scripts</summary>
+
+| Variable | Meaning |
+|---|---|
+| `MCPLOAD_VERSION` | release to install, e.g. `v0.3.0` (default: latest) |
+| `MCPLOAD_INSTALL_DIR` | where releases are unpacked (default: `~/.mcpload`, Windows: `%LOCALAPPDATA%\mcpload`) |
+| `MCPLOAD_BIN_DIR` | Linux/macOS: where the `mcpload` link goes (default: `~/.local/bin`, or `/usr/local/bin` if it is writable and `~/.local/bin` is not on `PATH`) |
+| `MCPLOAD_NO_PATH=1` | unpack only; don't touch `PATH` |
+
+For example: `curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | MCPLOAD_VERSION=v0.3.0 sh`.
+
+</details>
+
+<details>
+<summary>Build from source instead</summary>
+
+You need Go 1.26+ and xk6 (`go install go.k6.io/xk6@latest`; make sure `$(go env GOPATH)/bin` is on your `PATH`). mcpload's load engine is k6 with the [`xk6-mcpload`](../xk6-mcpload/README.md) extension, embedded into the binary with the `embedengine` build tag:
+
+Linux / macOS:
+
+```bash
+mkdir -p cmd/mcpload/internal/engine/bin
+xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output cmd/mcpload/internal/engine/bin/engine
+cp -r scenarios cmd/mcpload/internal/engine/bin/scenarios
+(cd cmd/mcpload && go build -tags embedengine -o ../../mcpload .)
+./mcpload version
+```
+
+Windows (PowerShell):
+
+```powershell
+New-Item -ItemType Directory -Force cmd\mcpload\internal\engine\bin | Out-Null
+xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output cmd\mcpload\internal\engine\bin\engine.exe
+Move-Item -Force cmd\mcpload\internal\engine\bin\engine.exe cmd\mcpload\internal\engine\bin\engine
+Copy-Item -Recurse -Force scenarios cmd\mcpload\internal\engine\bin\scenarios
+Push-Location cmd\mcpload; go build -tags embedengine -o ..\..\mcpload.exe .; Pop-Location
+.\mcpload.exe version
+```
+
+Use `./mcpload` (Windows: `.\mcpload.exe`) in place of `mcpload` below. A plain `go build` without the tag also works for development; it then looks for a `k6` built with xk6-mcpload in the current folder, next to mcpload, or on `PATH` (or pass `--engine <path>`).
+
+</details>
 
 ## 3. Run a scenario
 
@@ -68,8 +112,8 @@ A one-minute agent-session test against the healthy TypeScript server, sampling 
 Linux / macOS:
 
 ```bash
-./mcpload run --scenario scenarios/agent-session.js --url http://localhost:3001/mcp \
-  --k6 ./k6 --sampler docker --container mcpload-demo-ts-healthy-1 \
+mcpload run --url http://localhost:3001/mcp \
+  --sampler docker --container mcpload-demo-ts-healthy-1 \
   --vus 10 --duration 1m --out report.json --html report.html
 echo "exit code: $?"
 ```
@@ -77,15 +121,17 @@ echo "exit code: $?"
 Windows (PowerShell):
 
 ```powershell
-.\mcpload.exe run --scenario scenarios\agent-session.js --url http://localhost:3001/mcp `
-  --k6 .\k6.exe --sampler docker --container mcpload-demo-ts-healthy-1 `
+mcpload run --url http://localhost:3001/mcp `
+  --sampler docker --container mcpload-demo-ts-healthy-1 `
   --vus 10 --duration 1m --out report.json --html report.html
 "exit code: $LASTEXITCODE"
 ```
 
-Exit code `0` means pass, `1` means a verdict or budget failed, `2` means an error (bad flags, k6 could not start, target unreachable).
+With no `--scenario`, mcpload runs the built-in `agent-session` scenario. Name another built-in one with `--scenario soak` (or `lb-check`, `isolation`, ...), or pass a path to your own script. A `scenarios/` folder in the current directory (such as the repo's) takes precedence over the built-in copies.
 
-Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when k6 dropped more than 1% of the planned iterations (fails above 10%), or when k6 went over 90% CPU at its busiest, in which case the measured latency may include k6's own overhead. If it fires, lower the load or move k6 to another machine before trusting the numbers. The full list of verdicts is in the README under [Reading the result](../README.md#reading-the-result).
+Exit code `0` means pass, `1` means a verdict or budget failed, `2` means an error (bad flags, the test could not start, target unreachable).
+
+Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when it dropped more than 1% of the planned iterations (fails above 10%), or when the load generator went over 90% CPU at its busiest, in which case the measured latency may include its own overhead. If it fires, lower the load or run mcpload on another machine before trusting the numbers. The full list of verdicts is in the README under [Reading the result](../README.md#reading-the-result).
 
 ## 4. Open the report
 
@@ -133,7 +179,7 @@ JSON values need care on Windows. Windows PowerShell 5.1 drops the double quotes
 
 ```powershell
 # Windows PowerShell 5.1
-.\mcpload.exe run --url http://localhost:3001/mcp --scenario scenarios\agent-session.js --env 'TOOL_MIX={\"search\":5}'
+mcpload run --url http://localhost:3001/mcp --scenario agent-session --env 'TOOL_MIX={\"search\":5}'
 ```
 
 PowerShell 7.3 or newer (`pwsh`) passes arguments as written, so use the same form as bash there: `--env 'TOOL_MIX={"search":5}'`. The backslash form would break JSON under PowerShell 7.3+.
@@ -142,7 +188,7 @@ The full list is in [scenarios/README.md](../scenarios/README.md).
 
 ## Getting trustworthy results
 
-- Run k6 on a different machine from the server, or at least on separate CPU cores. Contention on a shared host skews latency.
+- Run mcpload on a different machine from the server, or at least on separate CPU cores. Contention on a shared host skews latency.
 - Start with a few VUs and a short run, then raise the load step by step.
 - Use soaks of 10 minutes or more, with `--sampler docker` or `--sampler prometheus`, when hunting leaks.
 - Watch the `generator` verdict. A warning or fail there means part of what you measured is the load generator, not the server.
@@ -153,12 +199,12 @@ If you collect reports in a service of your own, `mcpload upload` POSTs a `repor
 
 ```bash
 export MCPLOAD_KEY=<api key>
-./mcpload upload --url https://<your-endpoint> report.json
+mcpload upload --url https://<your-endpoint> report.json
 ```
 
 ```powershell
 $env:MCPLOAD_KEY = "<api key>"
-.\mcpload.exe upload --url https://<your-endpoint> report.json
+mcpload upload --url https://<your-endpoint> report.json
 ```
 
 ## In CI
@@ -172,4 +218,4 @@ Use the GitHub Action (see [Run it on every pull request](../README.md#run-it-on
 docker compose -f demo-servers/docker-compose.yml down -v
 ```
 
-If you started them with `mcpload demo up`, use `./mcpload demo down`.
+If you started them with `mcpload demo up`, use `mcpload demo down`.

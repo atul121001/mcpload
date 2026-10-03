@@ -34,6 +34,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          # mcpload is a single binary: the engine (k6 + xk6-mcpload) and the
+          # scenarios are embedded with -tags embedengine (see
+          # cmd/mcpload/internal/engine). The archive also carries scenarios/
+          # so users can read and copy them.
+          payload=cmd/mcpload/internal/engine/bin
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             os="${target%/*}"; arch="${target#*/}"
             ext=""; [ "$os" = windows ] && ext=".exe"
@@ -41,12 +46,17 @@ jobs:
             out="build/$name"
             mkdir -p "$out"
             echo "::group::$name"
+            rm -rf "$payload"
+            mkdir -p "$payload"
             GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
               xk6 build "$MCPLOAD_K6_VERSION" \
                 --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload \
-                --output "$out/k6$ext"
+                --output "$payload/engine$ext"
+            [ -z "$ext" ] || mv "$payload/engine$ext" "$payload/engine"
+            cp -r scenarios "$payload/scenarios"
+            rm -f "$payload/scenarios/package.json"
             (cd cmd/mcpload && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w -X main.version=$TAG" -o "../../$out/mcpload$ext" .)
+              go build -tags embedengine -trimpath -ldflags "-s -w -X main.version=$TAG" -o "../../$out/mcpload$ext" .)
             cp -r scenarios "$out/"
             rm -f "$out/scenarios/package.json"
             cp LICENSE README.md "$out/"
@@ -64,8 +74,14 @@ jobs:
         run: |
           set -euo pipefail
           dir="build/mcpload_${GITHUB_REF_NAME#v}_linux_amd64"
-          "$dir/mcpload" version
-          "$dir/k6" version | grep -q 'k6/x/mcpload'
+          test ! -e "$dir/k6"
+          # The binary alone (no scenarios/ next to it) must be self-sufficient.
+          mkdir -p "$RUNNER_TEMP/solo"
+          cp "$dir/mcpload" "$RUNNER_TEMP/solo/"
+          cd "$RUNNER_TEMP"
+          MCPLOAD_CACHE_DIR="$RUNNER_TEMP/cache" ./solo/mcpload version | tee version.txt
+          grep -q 'engine: .*with xk6-mcpload (embedded)' version.txt
+          grep -q 'scenarios: built in' version.txt
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,7 +107,25 @@ jobs:
         run: |
           set -euo pipefail
           cat > notes.md <<EOF
-          Ready-to-run downloads. Each archive contains \`mcpload\`, a \`k6\` build with MCP support, and the \`scenarios/\` folder. No Go toolchain needed.
+          ## Install
+
+          macOS / Linux:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sh
+          \`\`\`
+
+          Windows (PowerShell):
+
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex
+          \`\`\`
+
+          Then, from any folder: \`mcpload run --url <your MCP URL>\`. See the README for the full walkthrough.
+
+          ## Manual download
+
+          Each archive contains the single \`mcpload\` program (nothing else to install) plus the \`scenarios/\` folder for reference.
 
           | Your computer | Download |
           |---|---|
@@ -100,11 +134,11 @@ jobs:
           | Mac with Intel | \`mcpload_${TAG#v}_darwin_amd64.tar.gz\` |
           | Linux | \`mcpload_${TAG#v}_linux_amd64.tar.gz\` (or \`linux_arm64\`) |
 
-          Unpack it, open a terminal in the folder, and run \`./mcpload run --url <your MCP URL> --scenario scenarios/agent-session.js\`. See the README for the full walkthrough.
+          Unpack it and run \`./mcpload run --url <your MCP URL>\` in the folder, or move \`mcpload\` anywhere on your PATH.
 
-          On macOS, if you see "cannot be opened because the developer cannot be verified", run \`xattr -d com.apple.quarantine mcpload k6\` in the folder once.
+          On macOS, if you see "cannot be opened because the developer cannot be verified", run \`xattr -d com.apple.quarantine mcpload\` in the folder once (the install script does this for you).
 
-          Verify downloads with \`checksums.txt\` (SHA-256).
+          Verify downloads with \`checksums.txt\` (SHA-256); the install scripts do this automatically.
           EOF
           sed -i 's/^          //' notes.md
           gh release create "$TAG" dist/* --repo "$REPO" --title "mcpload $TAG" --notes-file notes.md
@@ -173,3 +207,58 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.licenses=Apache-2.0
+
+  # Updates Formula/mcpload.rb in the atul121001/homebrew-tap repo so that
+  # `brew install atul121001/tap/mcpload` gets this release. Needs a
+  # HOMEBREW_TAP_TOKEN secret (see packaging/homebrew/README.md); without it
+  # the job only prints a notice.
+  homebrew:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPO: atul121001/homebrew-tap
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check for the tap token
+        id: token
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew formula update (see packaging/homebrew/README.md)."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.ok == 'true'
+
+      - uses: actions/download-artifact@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-node@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Render and push the formula
+        if: steps.token.outputs.ok == 'true'
+        run: |
+          set -euo pipefail
+          node packaging/homebrew/render.mjs "$TAG" dist/checksums.txt "$RUNNER_TEMP/mcpload.rb"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          cp "$RUNNER_TEMP/mcpload.rb" "$RUNNER_TEMP/tap/Formula/mcpload.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/mcpload.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date"
+            exit 0
+          fi
+          git commit -m "mcpload ${TAG}"
+          git push origin HEAD

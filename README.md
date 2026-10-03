@@ -12,8 +12,10 @@ mcpload is a free, open-source reliability test harness for MCP servers, built a
 One command is all it takes:
 
 ```bash
-./mcpload run --url https://your-server.example.com/mcp
+mcpload run --url https://your-server.example.com/mcp
 ```
+
+Install it with `curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | sh` (Mac, Linux) or `irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex` (Windows PowerShell). See [Try it in 5 minutes](#try-it-in-5-minutes).
 
 > **Status:** early release. Commands and options may change before 1.0.
 
@@ -181,47 +183,56 @@ mcpload comes with small demo MCP servers, some healthy and some deliberately br
 
 **1. Start Docker.** Open Docker Desktop (Windows, Mac) or make sure the Docker service is running (Linux). `docker compose version` should print a version.
 
-**2. Download mcpload into that folder.** Each download contains two programs: `mcpload` (the command you use) and `k6` (the load generator, with MCP support built in).
+**2. Install mcpload.** One command downloads the right build for your computer, checks its SHA-256 checksum, and puts `mcpload` on your PATH. No admin rights needed.
+
+Mac or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex
+```
+
+Homebrew (Mac or Linux), available once the tap is published:
+
+```bash
+brew install atul121001/tap/mcpload
+```
+
+Check it with `mcpload version`. mcpload is a single program with nothing else to install, and you can run it from any folder. Run the install command again to upgrade. On Windows, open a new terminal after installing so it picks up the new PATH.
+
+<details>
+<summary><b>Prefer to download by hand?</b></summary>
 
 | Your computer | Download from [Releases](https://github.com/atul121001/mcpload/releases/latest) |
 |---|---|
 | Windows | `mcpload_<version>_windows_amd64.zip` |
 | Mac with Apple silicon (M1 or newer) | `mcpload_<version>_darwin_arm64.tar.gz` |
 | Mac with Intel | `mcpload_<version>_darwin_amd64.tar.gz` |
-| Linux | `mcpload_<version>_linux_amd64.tar.gz` |
+| Linux | `mcpload_<version>_linux_amd64.tar.gz` (or `linux_arm64`) |
 
-Unpack it and move `mcpload` and `k6` into the `mcpload` folder you cloned. On Mac or Linux you can do it in one line from that folder (here for version 0.3.0).
+Unpack it anywhere and keep the unpacked folder together. Run `./mcpload` (Windows: `.\mcpload.exe`) from that folder, or add the folder to your PATH. Check the download against `checksums.txt` from the same release (SHA-256).
 
-Linux (Intel/AMD):
+> **Mac:** if macOS says the app "cannot be opened because the developer cannot be verified", run `xattr -dr com.apple.quarantine .` once in the unpacked folder. The install script does this for you.
 
-```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.3.0/mcpload_0.3.0_linux_amd64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.3.0_linux_amd64/mcpload' 'mcpload_0.3.0_linux_amd64/k6'
-```
-
-Mac with Apple silicon:
-
-```bash
-curl -fL https://github.com/atul121001/mcpload/releases/download/v0.3.0/mcpload_0.3.0_darwin_arm64.tar.gz \
-  | tar -xz --strip-components=1 'mcpload_0.3.0_darwin_arm64/mcpload' 'mcpload_0.3.0_darwin_arm64/k6'
-```
-
-For another platform, replace `linux_amd64` or `darwin_arm64` in all three places (for example `darwin_amd64` for an Intel Mac, `linux_arm64` for ARM Linux).
-
-> **Mac:** if macOS says the app "cannot be opened because the developer cannot be verified", run `xattr -d com.apple.quarantine mcpload k6` once in the folder.
+</details>
 
 **3. Start the demo servers.** They run only on your own machine (127.0.0.1).
 
 ```bash
-./mcpload demo up
+mcpload demo up
 ```
 
-The first time, this downloads the demo server images (a minute or two). It then starts 11 servers on `localhost:3001` to `3011`, waits until they answer, and lists each URL with what it demonstrates: a healthy server that passes, one that leaks memory, a load balancer that loses sessions, and so on. `./mcpload demo status` shows them again.
+The first time, this downloads the demo server images (a minute or two). It then starts 11 servers on `localhost:3001` to `3011`, waits until they answer, and lists each URL with what it demonstrates: a healthy server that passes, one that leaks memory, a load balancer that loses sessions, and so on. `mcpload demo status` shows them again.
 
 **4. Test a healthy server.** One minute of agent traffic:
 
 ```bash
-./mcpload run --url http://localhost:3001/mcp --duration 1m --html report.html
+mcpload run --url http://localhost:3001/mcp --duration 1m --html report.html
 ```
 
 With no `--scenario`, mcpload runs the standard agent-session test.
@@ -231,22 +242,24 @@ You should see a **PASS**. Open `report.html` in your browser to see per-tool ti
 **5. Now test a broken one.** This server sits behind a load balancer that forgets which agent belongs to which server:
 
 ```bash
-./mcpload run --url http://localhost:3004/mcp --scenario lb-check --html lb.html
+mcpload run --url http://localhost:3004/mcp --scenario lb-check --html lb.html
 ```
 
 You should see a **FAIL** with `session_not_found`. That's the tool catching a real class of bug.
 
-> **On Windows,** use `.\mcpload.exe` in place of `./mcpload`. [docs/QUICKSTART.md](docs/QUICKSTART.md) has PowerShell versions of everything.
+> **On Windows,** the same commands work in PowerShell once mcpload is installed. [docs/QUICKSTART.md](docs/QUICKSTART.md) has PowerShell versions of everything.
 
 <details>
 <summary><b>Prefer to build from source?</b></summary>
 
-You need [Go 1.26+](https://go.dev/dl/). From the repo folder:
+You need [Go 1.26+](https://go.dev/dl/). From the repo folder, this builds the same single `mcpload` program as a release (mcpload's load engine is k6 with the MCP extension in [`xk6-mcpload/`](xk6-mcpload/README.md), built into the binary):
 
 ```bash
 go install go.k6.io/xk6@latest
-xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output ./k6
-(cd cmd/mcpload && go build -o ../../mcpload .)
+mkdir -p cmd/mcpload/internal/engine/bin
+xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --output cmd/mcpload/internal/engine/bin/engine
+cp -r scenarios cmd/mcpload/internal/engine/bin/scenarios
+(cd cmd/mcpload && go build -tags embedengine -o ../../mcpload .)
 ```
 
 </details>
@@ -266,7 +279,7 @@ They use the same ports and container names as `mcpload demo up`, so run one or 
 
 </details>
 
-When you're done: `./mcpload demo down`
+When you're done: `mcpload demo down`
 
 ---
 
@@ -277,7 +290,7 @@ When you're done: `./mcpload demo down`
 **1. Point it at your server.** Use your server's MCP URL. If it needs a login token, pass it with `--env`:
 
 ```bash
-./mcpload run --url https://staging.example.com/mcp \
+mcpload run --url https://staging.example.com/mcp \
   --env MCP_TOKEN=your-token \
   --vus 5 --duration 2m --html report.html
 ```
@@ -317,7 +330,7 @@ For memory checks, mcpload also needs a way to read your server's memory. You ca
 - the Docker container it runs in (`--sampler docker --container my-mcp-server`).
 
 ```bash
-./mcpload run --url https://staging.example.com/mcp --scenario soak \
+mcpload run --url https://staging.example.com/mcp --scenario soak \
   --env MCP_TOKEN=your-token --soak-min 30 \
   --sampler prometheus --prom-url https://staging.example.com/metrics \
   --out soak.json --html soak.html
@@ -375,7 +388,7 @@ A load test measures the server *and* the computer sending the load. A few habit
 |---|---|
 | **PASS**, exit code `0` | Every check and every budget passed. |
 | **FAIL**, exit code `1` | At least one check or budget failed. The report says which, and why. |
-| exit code `2` | The test itself couldn't run, for example a wrong URL or k6 not found. |
+| exit code `2` | The test itself couldn't run, for example a wrong URL or a scenario file that doesn't exist. |
 
 The checks, in plain words:
 
@@ -388,7 +401,7 @@ The checks, in plain words:
 | `error_drift` | Errors become more frequent over time (a warning). |
 | `session_not_found` | The server "forgets" an agent's session, which often means a load-balancer problem. |
 | `threshold` | A tool went over your time or error budget. |
-| `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
+| `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or mcpload's load generator itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
 | `version_skew` | Version-skew runs only: requests that reached a replica on a different build. A warning when they all fail fast with a typed error clients can handle (e.g. `Unsupported protocol version`), a fail when any of them hangs until the client timeout. |
 | `capacity` | Step-load runs only: how many agents at once the server held within your time and error budgets, and what broke at the next step, e.g. "Held budgets up to 50 agents; at 100 agents `slow` p95 1.9 s > 800 ms". Fails if your `--min-agents` target isn't met (or, without a target, if even the first step breaks). Says "inconclusive" instead of blaming the server when the test machine was maxed out. |
 | `session_survival` | Long-lived runs only: fails when sessions die before their planned end, e.g. "18 of 50 sessions died after a median 5m02s with session_not_found"; warns when calls late in a session are much slower than early ones. |
@@ -447,8 +460,8 @@ The badge says that you test with mcpload. It doesn't show a live result, so kee
 
 ## Common questions
 
-**Do I need to know k6?**
-No. The ready-made scenarios cover the common cases, and you control them with flags and `--env` settings. If you do know k6, you can write your own scripts (see below).
+**Do I need to write test scripts?**
+No. The ready-made scenarios cover the common cases, and you control them with flags and `--env` settings. If you want a custom traffic pattern, you can write your own scenario in JavaScript (see below; mcpload's engine is k6, so k6 experience carries over).
 
 **Will it break my server?**
 It can, if you push it hard. That's the point of a load test, so use staging and start with a few agents. Be careful with tools that change data: limit the test with `TOOL_MIX`.
@@ -475,7 +488,7 @@ See [How it compares](#how-it-compares). In short: those give you an MCP client 
 <details>
 <summary><b>Write your own scenarios (JavaScript)</b></summary>
 
-mcpload's MCP support is a k6 extension, so you can script any traffic pattern:
+mcpload's load engine is [k6](https://k6.io) with an MCP extension built in, so you can script any traffic pattern as a k6 script and run it with `mcpload run --scenario my-test.js --url ...`:
 
 ```js
 import mcp from 'k6/x/mcpload';

@@ -114,6 +114,76 @@ jobs:
           ./mcpload validate ../../report/examples/healthy.json
           ./mcpload validate ../../report/examples/leaky.json
           ./mcpload validate ../../report/examples/step-load.json
+      # Release builds embed the engine and scenarios (-tags embedengine).
+      # Use a stand-in engine script so the tagged build is compiled, vetted
+      # and its extraction exercised without building k6 here.
+      - name: Embedded-engine build (stand-in payload)
+        run: |
+          set -euo pipefail
+          payload=internal/engine/bin
+          mkdir -p "$payload"
+          printf '#!/bin/sh\necho "k6 v0.0.0-fake (go1, linux/amd64)"\necho "Extensions:"\necho "  github.com/atul121001/mcpload/xk6-mcpload (devel), k6/x/mcpload [js]"\n' > "$payload/engine"
+          cp -r ../../scenarios "$payload/scenarios"
+          go vet -tags embedengine ./...
+          go test -tags embedengine ./internal/engine
+          go build -tags embedengine -trimpath -o "$RUNNER_TEMP/solo/mcpload" .
+          cd "$RUNNER_TEMP"
+          MCPLOAD_CACHE_DIR="$RUNNER_TEMP/cache" ./solo/mcpload version | tee version.txt
+          grep -q 'engine: .*with xk6-mcpload (embedded)' version.txt
+          grep -q 'scenarios: built in' version.txt
+          # Second run reuses the extracted copy.
+          MCPLOAD_CACHE_DIR="$RUNNER_TEMP/cache" ./solo/mcpload version >/dev/null
+          test "$(find "$RUNNER_TEMP/cache/engine" -type f | wc -l | tr -d ' ')" -eq 1
+
+  install:
+    name: install.sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      - name: Install the latest release
+        env:
+          MCPLOAD_INSTALL_DIR: ${{ runner.temp }}/mcpload-home
+          MCPLOAD_BIN_DIR: ${{ runner.temp }}/bin
+        run: sh ./install.sh
+      - name: Run mcpload from another folder
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          test -L "$RUNNER_TEMP/bin/mcpload"
+          test -L "$RUNNER_TEMP/mcpload-home/current"
+          PATH="$RUNNER_TEMP/bin:$PATH" mcpload version
+      - name: Re-running upgrades in place
+        env:
+          MCPLOAD_INSTALL_DIR: ${{ runner.temp }}/mcpload-home
+          MCPLOAD_BIN_DIR: ${{ runner.temp }}/bin
+        run: |
+          sh ./install.sh
+          test "$(find "$RUNNER_TEMP/mcpload-home" -mindepth 1 -maxdepth 1 -name 'v*' | wc -l | tr -d ' ')" -eq 1
+
+  install-windows:
+    name: install.ps1 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the latest release (Windows PowerShell 5.1)
+        shell: powershell
+        env:
+          MCPLOAD_INSTALL_DIR: ${{ runner.temp }}\mcpload
+        run: |
+          Get-Content -Raw .\install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Set-Location $env:RUNNER_TEMP
+          mcpload version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($userPath -like "*$env:MCPLOAD_INSTALL_DIR\v*")) { Write-Error "install dir not on the user PATH: $userPath"; exit 1 }
 
   action:
     name: action (summary script + workflow lint)

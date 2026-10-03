@@ -17,20 +17,46 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/atul121001/mcpload/cmd/mcpload/internal/engine"
 )
 
-// FindBinary resolves the k6 binary: an explicit path wins; otherwise ./k6.exe
-// (Windows) or ./k6 in the working directory, then next to the mcpload
-// executable (release archives ship both together), then k6 on PATH.
+// Engine sources reported by Locate.
+const (
+	SourceFlag     = "--engine"
+	SourceEnv      = "MCPLOAD_ENGINE"
+	SourceEmbedded = "embedded"
+	SourceCwd      = "current folder"
+	SourceExeDir   = "next to mcpload"
+	SourcePath     = "PATH"
+)
+
+// FindBinary resolves the engine (k6 built with xk6-mcpload); see Locate.
 func FindBinary(explicit string) (string, error) {
+	p, _, err := Locate(explicit)
+	return p, err
+}
+
+// Locate resolves the engine binary and says where it came from: an explicit
+// path (--engine / --k6) wins, then $MCPLOAD_ENGINE, then the engine embedded
+// in release builds. Dev builds without it look for ./k6.exe (Windows) or
+// ./k6 in the working directory, then next to the real mcpload executable
+// (older release archives shipped k6 there), then k6 on PATH.
+func Locate(explicit string) (path, source string, err error) {
 	if explicit != "" {
-		if p, err := exec.LookPath(explicit); err == nil {
-			return p, nil
+		p, err := explicitBinary(explicit)
+		return p, SourceFlag, err
+	}
+	if env := os.Getenv("MCPLOAD_ENGINE"); env != "" {
+		p, err := explicitBinary(env)
+		if err != nil {
+			err = fmt.Errorf("MCPLOAD_ENGINE: %w", err)
 		}
-		if st, err := os.Stat(explicit); err == nil && !st.IsDir() {
-			return filepath.Abs(explicit)
-		}
-		return "", fmt.Errorf("k6 binary %q not found", explicit)
+		return p, SourceEnv, err
+	}
+	if engine.Embedded() {
+		p, err := engine.Path()
+		return p, SourceEmbedded, err
 	}
 	local := []string{"k6"}
 	if runtime.GOOS == "windows" {
@@ -38,23 +64,54 @@ func FindBinary(explicit string) (string, error) {
 	}
 	for _, name := range local {
 		if st, err := os.Stat(name); err == nil && !st.IsDir() {
-			return filepath.Abs(name)
+			p, err := filepath.Abs(name)
+			return p, SourceCwd, err
 		}
 	}
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
+	if dir := ExeDir(); dir != "" {
 		for _, name := range local {
 			p := filepath.Join(dir, name)
 			if st, err := os.Stat(p); err == nil && !st.IsDir() {
-				return p, nil
+				return p, SourceExeDir, nil
 			}
 		}
 	}
 	p, err := exec.LookPath("k6")
 	if err != nil {
-		return "", errors.New("k6 binary not found (looked in the current folder, next to mcpload, and on PATH); download a release or pass --k6")
+		return "", "", errors.New("the mcpload engine was not found: this build has no embedded engine, and no k6 built with xk6-mcpload is in the current folder, next to mcpload, or on PATH; install a release build (see the README) or pass --engine <path>")
 	}
-	return p, nil
+	return p, SourcePath, nil
+}
+
+func explicitBinary(p string) (string, error) {
+	if lp, err := exec.LookPath(p); err == nil {
+		return lp, nil
+	}
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return filepath.Abs(p)
+	}
+	return "", fmt.Errorf("engine binary %q not found", p)
+}
+
+// ExeDir is the folder of the real mcpload executable, or "" if unknown.
+// Symlinks are resolved, so an install that links bin/mcpload to
+// ~/.mcpload/current/mcpload (install.sh, Homebrew) still finds the k6 and
+// scenarios/ that ship next to the real binary.
+func ExeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return RealDir(exe)
+}
+
+// RealDir returns the folder of path after resolving symlinks; if they cannot
+// be resolved it falls back to the folder of path itself.
+func RealDir(path string) string {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		path = r
+	}
+	return filepath.Dir(path)
 }
 
 var versionRe = regexp.MustCompile(`v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*`)
@@ -67,6 +124,9 @@ func Version(ctx context.Context, bin string) (string, error) {
 	}
 	return parseVersion(string(out)), nil
 }
+
+// ParseVersion extracts the version from `k6 version` output.
+func ParseVersion(out string) string { return parseVersion(out) }
 
 func parseVersion(out string) string {
 	line := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0])

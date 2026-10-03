@@ -64,8 +64,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "upload":
 		return uploadCmd(rest, stdout, stderr)
 	case "version", "--version", "-version":
-		fmt.Fprintf(stdout, "mcpload %s\n", Version)
-		return ExitPass
+		return versionCmd(stdout)
 	case "help", "-h", "--help", "-help":
 		fmt.Fprint(stdout, usageText)
 		return ExitPass
@@ -104,10 +103,40 @@ func newFlagSet(name, synopsis string, stderr io.Writer) *flag.FlagSet {
 		fs.VisitAll(func(*flag.Flag) { hasFlags = true })
 		if hasFlags {
 			fmt.Fprintln(stderr, "\nFlags:")
-			fs.PrintDefaults()
+			visibleFlags(fs).PrintDefaults()
 		}
 	}
 	return fs
+}
+
+// hidden lists flags left out of -h output, per FlagSet.
+var hidden = map[*flag.FlagSet]map[string]bool{}
+
+// hideFlags keeps advanced flags working but out of the -h listing.
+func hideFlags(fs *flag.FlagSet, names ...string) {
+	if hidden[fs] == nil {
+		hidden[fs] = map[string]bool{}
+	}
+	for _, n := range names {
+		hidden[fs][n] = true
+	}
+}
+
+// visibleFlags returns a copy of fs without its hidden flags, for usage text.
+func visibleFlags(fs *flag.FlagSet) *flag.FlagSet {
+	h := hidden[fs]
+	if len(h) == 0 {
+		return fs
+	}
+	vis := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
+	vis.SetOutput(fs.Output())
+	fs.VisitAll(func(f *flag.Flag) {
+		if !h[f.Name] {
+			vis.Var(f.Value, f.Name, f.Usage)
+			vis.Lookup(f.Name).DefValue = f.DefValue
+		}
+	})
+	return vis
 }
 
 // flagExit maps a flag parse error to an exit code (-h is success).

@@ -45,6 +45,9 @@ k6 JavaScript runs on a single thread per VU. Real agents fire several `tools/ca
 ### D6. Server-side leak evidence comes from a sampler outside k6
 Memory, file descriptors and session counts live on the server. The `mcpload` CLI starts `k6 run` and samples those resources itself (§6).
 
+### D7. One program for users: the engine is embedded
+Users install and run only `mcpload`. Release builds (`go build -tags embedengine`, see `.github/workflows/release.yml`) embed the platform's k6 + xk6-mcpload binary (the "engine") and the `scenarios/` folder with `go:embed`. On first use mcpload extracts them to the user cache folder under a name derived from their SHA-256 (atomic write, hash checked on reuse) and runs the engine from there. Builds without the tag (development, `go test`) embed nothing and fall back to a `k6` in the current folder, next to the mcpload executable, or on `PATH`; `--engine` / `$MCPLOAD_ENGINE` override both. Details in [cmd/mcpload/README.md](../cmd/mcpload/README.md#the-engine). Install scripts (`install.sh`, `install.ps1`) and the Homebrew formula (`packaging/homebrew/`) only ever put `mcpload` on `PATH`.
+
 ## 2. Components
 ```
 xk6-mcpload/            Go module → JS import "k6/x/mcpload"

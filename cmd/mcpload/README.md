@@ -1,6 +1,6 @@
 # mcpload CLI
 
-`mcpload` wraps a k6 binary built with [`xk6-mcpload`](../../xk6-mcpload). It runs a scenario, samples the server's resources while the run is going, computes leak and drift verdicts, and writes `report.json` ([schema v1](../../report/schema/README.md)) and a self-contained `report.html`.
+`mcpload` drives a load engine: k6 built with [`xk6-mcpload`](../../xk6-mcpload). It runs a scenario, samples the server's resources while the run is going, computes leak and drift verdicts, and writes `report.json` ([schema v1](../../report/schema/README.md)) and a self-contained `report.html`. Release builds embed the engine and the bundled scenarios, so users install one program (see the [README](../../README.md#try-it-in-5-minutes)).
 
 ## Build
 
@@ -11,7 +11,33 @@ go build -ldflags "-X main.version=v0.3.0" -o mcpload .   # stamp a version
 go vet ./... && go test ./...
 ```
 
-`mcpload` needs the custom k6 binary. By default it uses `./k6.exe` or `./k6` in the working directory, then next to the mcpload executable, then `k6` on `PATH`. Use `--k6` to point at a different one. The HTML template is embedded, so Node isn't needed.
+### The engine
+
+Which engine `run` uses, in order:
+
+1. `--engine <path>` (alias `--k6`; advanced, not shown in `-h`)
+2. `$MCPLOAD_ENGINE`
+3. the engine embedded in release builds (`-tags embedengine`). On first use it is extracted to `<user cache dir>/mcpload/engine/<sha256 prefix>/` (or `$MCPLOAD_CACHE_DIR`), written atomically and checked against its SHA-256 on every start.
+4. development builds without the tag: `./k6.exe` or `./k6` in the working directory, then next to the real (symlink-resolved) mcpload executable, then `k6` on `PATH`.
+
+A release build expects, at build time, the engine for the target os/arch at `internal/engine/bin/engine` and a copy of the repo's `scenarios/` at `internal/engine/bin/scenarios/` (both gitignored). [release.yml](../../.github/workflows/release.yml) builds them per platform:
+
+```sh
+mkdir -p internal/engine/bin
+xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=../../xk6-mcpload --output internal/engine/bin/engine
+cp -r ../../scenarios internal/engine/bin/scenarios
+go build -tags embedengine -o mcpload .   # about 57 MB; a build without the tag is about 8 MB
+```
+
+`mcpload version` prints the engine and scenarios folder it would use, e.g.:
+
+```text
+mcpload v0.4.0
+  engine:    k6 v2.3.0 with xk6-mcpload (embedded)
+  scenarios: built in (/home/me/.cache/mcpload/scenarios/5cf4ae91903f9086/scenarios)
+```
+
+The HTML template is embedded too, so Node isn't needed.
 
 ## Commands
 
@@ -30,7 +56,7 @@ mcpload version
 |---|---|
 | 0 | The run passed: no verdict is `fail` and every threshold passed. Warnings are allowed. |
 | 1 | The run failed: a verdict is `fail` or a k6 threshold failed. `report.json` and `report.html` are still written. |
-| 2 | Usage or runtime error, such as bad flags, k6 not found, the sampler probe failing, k6 crashing, a failed upload, or a report that fails its semantic checks. |
+| 2 | Usage or runtime error, such as bad flags, the engine not found, the sampler probe failing, k6 crashing, a failed upload, or a report that fails its semantic checks. |
 
 ### `run` flags
 
@@ -39,7 +65,6 @@ mcpload version
 | `--scenario` | `agent-session` | k6 script path (e.g. `scenarios/soak.js`, used as is) or a bundled scenario name (e.g. `soak`, `lb-check`). See [Choosing a scenario](#choosing-a-scenario). |
 | `--url` | (required) | MCP endpoint, passed to k6 as `MCP_URL` |
 | `--protocol` | `auto` | `MCP_PROTOCOL` |
-| `--k6` | `./k6.exe`, `./k6`, next to mcpload, then `k6` on PATH | k6 binary built with xk6-mcpload |
 | `--sampler` | `none` | `none`, `docker` or `prometheus` |
 | `--container` | | container name or id, for `--sampler docker` |
 | `--prom-url` | | Prometheus text endpoint, e.g. `http://localhost:3001/metrics`, for `--sampler prometheus` |
@@ -77,7 +102,7 @@ The first test needs only the endpoint:
 ./mcpload run --url https://your-server/mcp
 ```
 
-Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It looks for `scenarios/agent-session.js` in the current folder first, then next to the mcpload executable (release archives ship `mcpload`, `k6` and `scenarios/` together, so this works from any folder). A bare name such as `--scenario soak` or `--scenario lb-check` is looked up the same way as `scenarios/<name>.js`. A value that is an existing file, or that looks like a path (has a `/`, `\` or an extension such as `.js`), is used as is, as before. mcpload prints the script it picked (`mcpload: using scenario ...`). If nothing is found it exits 2 and lists the paths it tried.
+Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It looks for `scenarios/agent-session.js` in the current folder first, then next to the real mcpload executable (symlinks are resolved, so an install that links `mcpload` into `~/.local/bin` or Homebrew's `bin` still finds the folder it came with), then among the scenarios built into release builds (extracted to the user cache folder on first use), so this works from any folder. A bare name such as `--scenario soak` or `--scenario lb-check` is looked up the same way as `scenarios/<name>.js`. A value that is an existing file, or that looks like a path (has a `/`, `\` or an extension such as `.js`), is used as is, as before. mcpload prints the script it picked (`mcpload: using scenario ...`). If nothing is found it exits 2 and lists the paths it tried.
 
 ## Demo servers (`demo`)
 
