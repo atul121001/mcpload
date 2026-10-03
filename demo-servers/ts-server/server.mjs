@@ -38,6 +38,7 @@ function makeBigText(n) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
+const toolError = (t) => ({ isError: true, content: [{ type: 'text', text: t }] });
 
 // POOL_SIZE > 0: one process-wide FIFO pool of slots that every tool call must hold while it runs.
 const pool = { free: POOL_SIZE, waiting: [] };
@@ -111,6 +112,55 @@ function createMcpServer() {
         score: Number((1 - i / (n + 1)).toFixed(3)),
       }));
       return text(JSON.stringify({ query, results }));
+    },
+  );
+
+  // Server-to-client requests, sent on this tools/call's own SSE stream (relatedRequestId). A client that did
+  // not declare the capability gets isError (no request is sent), so runs without sampling/elicitation
+  // configured just see a tool error. The demo tool mix never calls these two.
+  server.registerTool(
+    'sample_llm',
+    {
+      description: 'Asks the client to sample an LLM (sampling/createMessage) and returns its reply.',
+      inputSchema: { prompt: z.string().optional(), maxTokens: z.number().int().min(1).max(4096).optional() },
+    },
+    async ({ prompt, maxTokens }, extra) => {
+      if (!server.server.getClientCapabilities()?.sampling) return toolError('sample_llm: client does not support sampling');
+      try {
+        const r = await server.server.createMessage(
+          { messages: [{ role: 'user', content: { type: 'text', text: prompt ?? 'Summarise the last search results.' } }], maxTokens: maxTokens ?? 100 },
+          { relatedRequestId: extra.requestId },
+        );
+        return text(`sampled (${r.model}, ${r.stopReason ?? 'n/a'}): ${r.content?.type === 'text' ? r.content.text : r.content?.type}`);
+      } catch (e) {
+        return toolError(`sample_llm: ${e.message}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    'elicit_input',
+    {
+      description: 'Asks the user for input through the client (elicitation/create, form mode) and returns the answer.',
+      inputSchema: { message: z.string().optional() },
+    },
+    async ({ message }, extra) => {
+      if (!server.server.getClientCapabilities()?.elicitation) return toolError('elicit_input: client does not support elicitation');
+      try {
+        const r = await server.server.elicitInput(
+          {
+            message: message ?? 'Confirm the action?',
+            requestedSchema: {
+              type: 'object',
+              properties: { confirm: { type: 'boolean', title: 'Confirm' }, note: { type: 'string', title: 'Note' } },
+            },
+          },
+          { relatedRequestId: extra.requestId },
+        );
+        return text(`elicitation ${r.action}${r.content ? ': ' + JSON.stringify(r.content) : ''}`);
+      } catch (e) {
+        return toolError(`elicit_input: ${e.message}`);
+      }
     },
   );
 

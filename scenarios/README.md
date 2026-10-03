@@ -74,6 +74,7 @@ If a tool needs meaningful values, such as a real ID, set them in `TOOL_ARGS`.
 | `CONNECT_P95_MS` | `1500` | `mcp_connect_duration` p95 budget |
 | `CHECKS_MIN` | `0.99` | minimum pass rate over all checks (`connect ok`, `tools/list returned tools`, `tool mix matched`, `tools/call no transport error`, …) |
 | `CONNECT_BACKOFF_MS` | `1000` | how long to sleep after a failed `connect()`, or when `TOOL_MIX` matches no listed tool, so the target isn't hot-looped |
+| `SAMPLING`, `ELICITATION`, `ROOTS` | off | answer the server's `sampling/createMessage`, `elicitation/create` or `roots/list` requests (stateful servers) and declare the capability: `1` for the default mock answer, or the client option as JSON, e.g. `SAMPLING={"delayMs":200}`, `ELICITATION={"action":"decline"}`. See [xk6-mcpload](../xk6-mcpload/README.md#server-to-client-requests). The demo mix never calls the TS demo tools that need them, so name them in `TOOL_MIX`: `--env SAMPLING=1 --env ELICITATION=1 --env TOOL_MIX={"sample_llm":1,"elicit_input":1,"fast":1}` |
 
 Each script also has its own knobs, documented in its header comment. Examples: `VUS`, `DURATION`, `BURST_VUS`, `FLOOD_RATE`, `SOAK_MIN`, `WARMUP_MIN`, `COOLDOWN_MIN`, `RATE`, `TIME_UNIT`, `PRE_VUS`, `MAX_VUS`, `STEPS`, `REFRESH_P95_MS`.
 

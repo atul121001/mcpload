@@ -32,6 +32,14 @@ type Options struct {
 	ClientInfo Implementation
 	// Capabilities sent as client capabilities. nil means {}.
 	Capabilities map[string]any
+	// Sampling, Elicitation and Roots answer the server-to-client requests
+	// sampling/createMessage, elicitation/create and roots/list that a
+	// stateful server sends on a response stream. Each one that is set is
+	// also declared in initialize's client capabilities. nil: such requests
+	// are answered with -32601 (method not found).
+	Sampling    *Responder
+	Elicitation *Responder
+	Roots       *Responder
 	// SkipDiscover disables the server/discover call that Connect makes in
 	// explicit stateless mode. (In "auto" mode discover is the probe and is
 	// always sent.)
@@ -372,7 +380,7 @@ func (s *Session) initialize(ctx context.Context, version string) (int, *Error) 
 		method: "initialize", id: &id,
 		params: map[string]any{
 			"protocolVersion": version,
-			"capabilities":    s.clientCaps(),
+			"capabilities":    s.initCaps(),
 			"clientInfo":      s.opts.ClientInfo,
 		},
 	})
@@ -519,6 +527,13 @@ func (o *recordingObserver) OnRequest(st RequestStats) {
 }
 
 func (o *recordingObserver) OnTokenFetch(st TokenStats) { o.next.OnTokenFetch(st) }
+
+// OnServerRequest is forwarded right away too: answers are never held back.
+func (o *recordingObserver) OnServerRequest(st ServerRequestStats) {
+	if n, ok := o.next.(ServerRequestObserver); ok {
+		n.OnServerRequest(st)
+	}
+}
 
 func (o *recordingObserver) recorded() *RequestStats {
 	o.mu.Lock()

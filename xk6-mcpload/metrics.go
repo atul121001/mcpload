@@ -25,6 +25,8 @@ type mcpMetrics struct {
 	Errors          *metrics.Metric
 	ToolErrorRate   *metrics.Metric
 	SessionsOpen    *metrics.Metric
+	ServerReqs      *metrics.Metric
+	ServerReqDur    *metrics.Metric
 
 	root *metrics.TagSet // the registry root tag set (no tags)
 }
@@ -47,6 +49,8 @@ func registerMetrics(r *metrics.Registry) (*mcpMetrics, error) {
 	reg(&m.Errors, "mcp_errors", metrics.Counter)
 	reg(&m.ToolErrorRate, "mcp_tool_error_rate", metrics.Rate)
 	reg(&m.SessionsOpen, "mcp_sessions_open", metrics.Gauge)
+	reg(&m.ServerReqs, "mcp_server_requests", metrics.Counter)
+	reg(&m.ServerReqDur, "mcp_server_request_duration", metrics.Trend, metrics.Time)
 	return m, err
 }
 
@@ -77,7 +81,10 @@ type emitter struct {
 	stableTags *metrics.TagSet
 }
 
-var _ client.Observer = (*emitter)(nil)
+var (
+	_ client.Observer              = (*emitter)(nil)
+	_ client.ServerRequestObserver = (*emitter)(nil)
+)
 
 func withTag(ts *metrics.TagSet, k, v string) *metrics.TagSet {
 	if v == "" {
@@ -134,6 +141,26 @@ func (e *emitter) OnRequest(st client.RequestStats) {
 		ss = append(ss, sample(e.m.ToolErrorRate, metrics.B(st.ErrorType != "")))
 	}
 	e.push(tags, end, ss...)
+}
+
+// OnServerRequest emits the samples for a server-to-client request read from
+// a response stream. `method` is the server's method, `tool` the tool whose
+// stream carried it and `status` the status of the answer POST. They are not
+// counted in mcp_reqs: the answer is not a client request.
+func (e *emitter) OnServerRequest(st client.ServerRequestStats) {
+	tags := withTag(e.tags, "method", st.Method)
+	tags = withTag(tags, "tool", st.Tool)
+	tags = withTag(tags, "protocol", st.Protocol)
+	tags = withTag(tags, "status", statusTag(st.Status))
+	tags = withTag(tags, "error_type", st.ErrorType)
+	ss := []metrics.Sample{sample(e.m.ServerReqs, 1)}
+	if !st.NotAnswered {
+		ss = append(ss, sample(e.m.ServerReqDur, metrics.D(st.Duration)))
+	}
+	if st.ErrorType != "" {
+		ss = append(ss, sample(e.m.Errors, 1))
+	}
+	e.push(tags, st.Start.Add(st.Duration), ss...)
 }
 
 func (e *emitter) OnConnect(st client.ConnectStats) {

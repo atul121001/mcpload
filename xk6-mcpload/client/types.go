@@ -55,6 +55,10 @@ const (
 	ErrSessionNotFound = "session_not_found"
 	ErrHeaderMismatch  = "header_mismatch"
 	ErrAuth            = "auth"
+	// ErrUnsupportedRequest: the server sent a request on a response stream
+	// that the client has no answer for (answered with -32601), or any
+	// request on a stateless (2026-07-28) stream (not answered).
+	ErrUnsupportedRequest = "unsupported_request"
 )
 
 // IsStateless reports whether a protocol version uses the stateless
@@ -214,6 +218,7 @@ type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 }

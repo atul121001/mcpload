@@ -374,6 +374,8 @@ Full API: [xk6-mcpload/README.md](xk6-mcpload/README.md).
 | `mcp_errors` | Counter | errors by `error_type`: `http`, `jsonrpc`, `tool_iserror`, `timeout`, `session_not_found`, `header_mismatch`, `auth` |
 | `mcp_tool_error_rate` | Rate | failed `tools/call` (including `isError: true`) |
 | `mcp_sessions_open` | Gauge | client-side open sessions |
+| `mcp_server_requests` | Counter | server-to-client requests (sampling, elicitation, ...) answered inside response streams, by `method`; unexpected ones count in `mcp_errors` as `unsupported_request` |
+| `mcp_server_request_duration` | Trend | time to answer a server-to-client request (includes the simulated `delayMs`) |
 
 Report format: [report/schema/README.md](report/schema/README.md).
 </details>
