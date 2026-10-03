@@ -60,6 +60,9 @@ mcpload version
 | `--include-payloads` | false | sets `INCLUDE_PAYLOADS=1` and `payloadsIncluded: true` |
 | `--k6-out` | (temp dir, deleted) | keep k6's raw `metrics.ndjson` and `summary.json` in this directory |
 | `--wait-ready` | `0` (off) | before starting, wait up to this long (e.g. `2m`) for the server to answer an MCP handshake. See [How `run` works](#how-run-works). |
+| `--chaos-restart` | `0` (off) | run `docker restart` on `--chaos-container` this long after k6 starts (e.g. `30s`). **Only on servers you own.** See [Chaos restart and the recovery verdict](#chaos-restart-and-the-recovery-verdict). |
+| `--chaos-container` | `--container` | the container `--chaos-restart` restarts. mcpload never restarts a container that wasn't named. |
+| `--calls-url` | | the server's record of executed call ids (`GET <url>?prefix=<p>` → `{"executions": {"<call id>": count}}`), e.g. `http://localhost:3019/calls`, for the `call_integrity` verdict |
 
 `--soak-min`, `--warmup-min`, `--cooldown-min`, `--vus` and `--duration` reach k6 only when you set them. When a flag is left out, the script uses its own default. The CLI computes report phases with the same defaults as `scenarios/soak.js`.
 
@@ -121,8 +124,8 @@ MCPLOAD_KEY=... ./mcpload upload --url https://reports.example.com report.json
    - `thresholds[]`: one entry per expression from `k6 inspect`, plus any extras in the summary export. `passed` comes from k6's summary export, where `true` means *failed*. `observed` is recomputed from the raw samples, so it is available for any `p(N)`, `avg`, `rate` or `count`.
 6. Server points are averaged into the same buckets: `t` = bucket start in seconds from run start. Docker fills only `rssBytes`. Prometheus fills `rssBytes`, `heapBytes` (`nodejs_heap_size_used_bytes`, the prom-client default, falling back to `nodejs_heap_used_bytes`), `openFds` and `activeSessions`, with `null` where a metric is missing.
    There are `ceil(durationS / interval)` buckets. A trailing bucket that covers less than half an interval is dropped from every series, client and server alike. Its rps would otherwise show a false drop and skew the fits. The samples in it still count in `summary` and `tools[]`, and the other buckets don't change.
-7. Phases: for `soak`, they come from `SOAK_MIN`, `WARMUP_MIN` and `COOLDOWN_MIN`. Any other scenario uses `warmupEndS = 0` and `loadEndS = cooldownEndS = durationS`.
-8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found`, then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
+7. Phases: for `soak`, they come from `SOAK_MIN`, `WARMUP_MIN` and `COOLDOWN_MIN`; for `long-lived`, from `WARMUP_MIN` (1), `SESSION_MIN` (10) and `COOLDOWN_MIN` (2). Any other scenario uses `warmupEndS = 0` and `loadEndS = cooldownEndS = durationS`.
+8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found`, then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. A `long-lived` run adds `session_survival`, a run with `--chaos-restart` (or of `reconnect-storm`) adds `recovery`, and a run whose calls carry call ids (or with `--calls-url`) adds `call_integrity`. mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
 
 Docker (`MemUsage`, which is the cgroup) and Prometheus (`process_resident_memory_bytes`) report RSS on different scales. Compare slopes only within one sampler.
 
@@ -161,3 +164,50 @@ How `capacity` affects the result:
 | no request carried a step tag | `skipped` |
 
 The step-load script sets no k6 thresholds, so a breach at a high step never fails the run by itself; set `--min-agents` to gate CI on capacity.
+
+## Long-lived sessions and the session_survival verdict
+
+`--scenario long-lived` holds one session per agent for `SESSION_MIN` minutes (see [scenarios/README.md](../../scenarios/README.md#long-lived-sessions)). mcpload reads `mcp_session_lifetime` and writes `report.json` `sessions`: how many sessions survived and died, deaths by cause, the median lifetime of the ones that died, reconnects, and, for the tool whose latency rose most, the p95 of successful calls in the first and last third of the sessions.
+
+| | `session_survival` |
+|---|---|
+| a session died before its planned end | `fail`, e.g. "18 of 50 sessions died after a median 5m02s with session_not_found 18: the server dropped live sessions ..." |
+| none died, but for some tool (≥ 30 calls early and late) the late p95 is ≥ 1.5× the early p95 and ≥ 25 ms higher | `warn` |
+| otherwise | `pass` |
+| no long-lived session ended | `skipped` |
+
+## Chaos restart and the recovery verdict
+
+`--chaos-restart 30s --chaos-container <name>` makes mcpload run `docker restart <name>` 30 s after k6 starts, through the docker CLI as the docker sampler does. `--chaos-container` defaults to `--container`; without either, mcpload refuses to start. It prints which container it will restart before the run and again when it does. **Only restart containers you own and are allowed to disrupt.** Pair it with `--scenario reconnect-storm`, whose agents reconnect as soon as their session breaks.
+
+```sh
+./mcpload run --scenario reconnect-storm --url http://localhost:3019/mcp --vus 20 --duration 2m \
+  --chaos-restart 30s --chaos-container mcpload-chaos-ts --calls-url http://localhost:3019/calls --html storm.html
+```
+
+`report.json` gets `chaos`: `{action: "restart", container, ran, atS, durationS, error?, recovery}`. `atS` is when `docker restart` started (seconds since run start); the HTML report draws it, and the recovery point, as vertical lines on the time-series charts. From 100 ms buckets of the client's own requests, mcpload computes `recovery`:
+
+- **recovery point**: the first moment after the restart when requests are served without errors and the following `RECOVERY_WINDOW` (5 s) has requests, an error rate below `ERR_RATE` (tool errors, `isError: true`, left out: they say nothing about reachability) and, if it has successful connects, a connect p95 below `CONNECT_P95_MS`;
+- `serverBackS` (first successful connect after the first error), `reconnects` and `lastReconnectS` (agents that got a new session after a break), and the connect attempts, failed connects and errors by type from the restart to the end of the recovery window: the connect flood.
+
+| | `recovery` |
+|---|---|
+| recovered within `RECOVERY_BUDGET` (30 s) of the restart | `pass`, e.g. "After the restart of mcpload-chaos-ts at 20 s (docker restart took 0.8 s), the server accepted sessions again after 1.3 s and 10 agents reconnected within 2.0 s (42 connect attempts, 32 failed); errors returned to under 1% with connect p95 under 1500 ms 2.0 s after the restart (budget 30 s). Errors during the outage: http 57, session_not_found 3." |
+| recovered later, or not before the run ended | `fail` |
+| `docker restart` failed | `warn` |
+| the run ended before the restart was due | `skipped` |
+
+`session_not_found` errors in that span are expected after a restart (the server lost its sessions), so the `session_not_found` verdict leaves them out and says how many there were.
+
+### Call integrity
+
+`reconnect-storm` tags every `tools/call` with a call id in `params._meta["io.mcpload/callId"]` (`<prefix>-<vu>-<n>`; mcpload passes a fresh `CALL_ID_PREFIX` per run). With `--calls-url`, mcpload asks the server which of this run's ids it executed and how often, and compares that with what the client saw. The result goes in `report.json` `callIntegrity` and the `call_integrity` verdict:
+
+| | `call_integrity` |
+|---|---|
+| a call id ran more than once on the server (e.g. `RETRY_ON_ERROR=1` re-sent a call whose response was lost in the restart, or `DOUBLE_SEND` against a non-atomic duplicate check) | `fail`, naming how many were re-sent by the client and how many were not |
+| calls failed on the client (error or timeout) but ran on the server | `warn`: the client can't tell them from calls that never ran |
+| otherwise | `pass` |
+| no call carried an id, or no `--calls-url` (or it could not be read) | `skipped`: "server-side executions not measured ..." |
+
+The TS demo server implements the endpoint with `TRACK_CALLS=1` (see [demo-servers/README.md](../../demo-servers/README.md#call-tracking-and-chaos-restarts-ts-image-off-in-compose)); [scenarios/README.md](../../scenarios/README.md#reconnect-storm) describes how to add the same record to your own server.

@@ -17,6 +17,8 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
 | `isolation.js` | Do fast tools wait behind slow ones? Runs agent sessions twice at the same concurrency: `solo` (the mix without `SLOW_TOOLS`), then `mixed` (the full mix). mcpload compares each tool's p95 between the two (verdict `tool_isolation`). | 20 VUs, 1m per phase |
 | `step-load.js` | How many agents at once before the server breaks its budgets? Agent sessions with concurrency rising in steps (`STEPS`); each step ramps for `RAMP`, then holds for `STEP_DURATION`. mcpload judges every step against the per-tool budgets (verdict `capacity`). See [Step load](#step-load). | steps 10, 25, 50, 100, 200 VUs, 5s ramp + 1m hold each (about 5.5 min) |
+| `long-lived.js` | Each VU opens **one** session and keeps it until the end of the load phase, calling tools with think time and pinging when quiet; it reconnects only when the session dies. mcpload checks that no session dies early and compares late with early calls of the same sessions (verdict `session_survival`). Has soak-style phases, so the leak verdicts run too. See [Long-lived sessions](#long-lived-sessions). | 20 VUs: 1m warm-up + 10m sessions + 2m cool-down |
+| `reconnect-storm.js` | Agents that reconnect as soon as their session breaks. Use it with `mcpload run --chaos-restart`: mcpload restarts the server's container mid-run and measures how long until errors and connect times are back to normal (verdict `recovery`). Every call carries a call id, so with `--calls-url` mcpload also counts calls that failed on the client but ran on the server, and calls that ran twice (verdict `call_integrity`). See [Reconnect storm](#reconnect-storm). | 20 VUs for 2m |
 | `oauth-refresh.js` | 50 VUs on short-lived client-credentials tokens. Measures `mcp_oauth_refresh_duration` and counts auth errors. | 3m |
 
 ## Demo targets (`demo-servers/`, `docker compose up -d --build`)
@@ -78,7 +80,7 @@ If a tool needs meaningful values, such as a real ID, set them in `TOOL_ARGS`.
 | `CONNECT_BACKOFF_MS` | `1000` | how long to sleep after a failed `connect()`, or when `TOOL_MIX` matches no listed tool, so the target isn't hot-looped |
 | `SAMPLING`, `ELICITATION`, `ROOTS` | off | answer the server's `sampling/createMessage`, `elicitation/create` or `roots/list` requests (stateful servers) and declare the capability: `1` for the default mock answer, or the client option as JSON, e.g. `SAMPLING={"delayMs":200}`, `ELICITATION={"action":"decline"}`. See [xk6-mcpload](../xk6-mcpload/README.md#server-to-client-requests). The demo mix never calls the TS demo tools that need them, so name them in `TOOL_MIX`: `--env SAMPLING=1 --env ELICITATION=1 --env TOOL_MIX={"sample_llm":1,"elicit_input":1,"fast":1}` |
 
-Each script also has its own knobs, documented in its header comment. Examples: `VUS`, `DURATION`, `BURST_VUS`, `FLOOD_RATE`, `SOAK_MIN`, `WARMUP_MIN`, `COOLDOWN_MIN`, `RATE`, `TIME_UNIT`, `PRE_VUS`, `MAX_VUS`, `STEPS`, `REFRESH_P95_MS`.
+Each script also has its own knobs, documented in its header comment. Examples: `VUS`, `DURATION`, `BURST_VUS`, `FLOOD_RATE`, `SOAK_MIN`, `SESSION_MIN`, `WARMUP_MIN`, `COOLDOWN_MIN`, `RATE`, `TIME_UNIT`, `PRE_VUS`, `MAX_VUS`, `STEPS`, `REFRESH_P95_MS`.
 
 ## Thresholds
 
@@ -106,6 +108,8 @@ Each scenario adds its own thresholds on top:
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
 - `agent-workflow` adds per-tool thresholds for every tool its plan calls, plus `mcp_workflow_duration: p(95)<WORKFLOW_P95_MS` (and `p(99)<WORKFLOW_P99_MS` when set), `mcp_workflow_complete: rate>=WORKFLOW_MIN_COMPLETE`, and `mcp_workflow_step_duration{step:<name>}: p(95)<STEP_P95_MS` for each step (`STEP_BUDGETS` overrides per step). See [Agent workflows](#agent-workflows).
 - `step-load` sets **no** thresholds. Its budgets are judged per step by mcpload (see below), because a breach at the top step is what a step-load run is looking for, not a failed run.
+- `long-lived` adds `mcp_session_survived: rate>=SURVIVAL_MIN` (default 1: any session that dies early fails the run).
+- `reconnect-storm` sets **no** thresholds: errors during the outage are what the test provokes. The `recovery` verdict judges the run.
 
 If any threshold fails, k6 exits with code 99, which gates CI.
 
@@ -193,6 +197,70 @@ mcpload judges each step against the same budgets the other scenarios turn into 
 
 Keep `STEP_DURATION` long enough for a few hundred calls per step (sessions last a few seconds). With very short steps, a tool with a 10% error rate, such as the demo `flaky`, can cross its 20% budget by chance.
 
+## Long-lived sessions
+
+A server can look healthy with short sessions while it drops sessions that stay open, or slows down as a session's state grows. In `long-lived.js` every VU is one agent (an IDE, a chat client) that opens a single session and holds it:
+
+- warm-up `[0, W)`, `W = WARMUP_MIN*60`: the VUs open their sessions, spread evenly over the warm-up;
+- load `[W, W + SESSION_MIN*60)`: all sessions open and in use; every session is planned to last until the end of this phase;
+- cool-down: `COOLDOWN_MIN*60` seconds with no MCP traffic. mcpload computes `phases` from the same env vars, so `memory_leak`, `session_leak` and `fd_leak` work as in a soak.
+
+Between rounds of `PARALLEL` calls the agent thinks (exponential, mean `THINK_MS`), then pauses a further `IDLE_MS`. When the session has been quiet for `PING_EVERY` seconds it sends a `ping`. A session **dies** when a call or ping gets `session_not_found`, or when `DEAD_ROUNDS` rounds in a row fail with transport errors only; the agent then reconnects and carries on. Calls in the first and last third of a session's planned lifetime are tagged `session_age=early|late`.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `VUS` | `20` | agents, one session each |
+| `SESSION_MIN`, `WARMUP_MIN`, `COOLDOWN_MIN` | `10`, `1`, `2` | phase lengths in minutes |
+| `THINK_MS` | `2000` | mean think time between rounds |
+| `IDLE_MS` | `0` | extra fixed pause after every round (an agent that goes quiet) |
+| `PING_EVERY` | `60` | ping after this many quiet seconds; `0` never pings |
+| `DEAD_ROUNDS` | `3` | rounds of transport-only failures that count as a dead session |
+| `SURVIVAL_MIN` | `1` | threshold on `mcp_session_survived` |
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `mcp_session_survived` | Rate | 1 for a session that lived to its planned end, 0 for one that died (tag `cause`) |
+| `mcp_session_lifetime` | Trend (ms) | how long each session lasted (tags `outcome=survived\|died`, `cause`) |
+| `mcp_session_reconnects` | Counter | reconnects after a death |
+
+**Idle expiry.** Servers reap sessions that stay idle too long (the TS demo after `SESSION_IDLE_MS`, 5 min). With the defaults a session is never quiet that long. To test idle expiry, pause longer than the server's timeout without pinging, then compare with pinging:
+
+```sh
+docker run -d --rm --name mcpload-idle-ts -p 127.0.0.1:3020:3000 -e SESSION_IDLE_MS=20000 mcpload-chaos/ts-server:local   # image: see demo-servers/README.md
+./mcpload run --scenario long-lived --url http://localhost:3020/mcp --vus 10 --warmup-min 0.25 --cooldown-min 0.25 \
+  --env SESSION_MIN=2 --env IDLE_MS=45000 --env PING_EVERY=0    # session_survival FAIL: sessions die with session_not_found
+#   ... --env PING_EVERY=10                                      # PASS: pings keep the sessions alive
+```
+
+## Reconnect storm
+
+`reconnect-storm.js` runs `VUS` agents for `DURATION`. Each holds a session and calls tools with think time. When a session breaks (`session_not_found`, or every call of a round failing with a transport error) the agent drops it without a DELETE and reconnects at once. Failed connects back off: `RECONNECT_BACKOFF_MS` before the second attempt, doubling up to `RECONNECT_MAX_MS`, with `JITTER` (0–1) taking up to that fraction off each wait at random. With all agents losing their session at the same moment, this is the reconnect storm. Run it through mcpload with `--chaos-restart` (see [cmd/mcpload/README.md](../cmd/mcpload/README.md#chaos-restart-and-the-recovery-verdict)); only restart servers you own.
+
+Every `tools/call` carries a call id in `params._meta`:
+
+```json
+{ "method": "tools/call", "params": { "name": "search", "arguments": { "query": "x" }, "_meta": { "io.mcpload/callId": "3f9c2a1b-7-42" } } }
+```
+
+The id is `<CALL_ID_PREFIX>-<vu>-<n>`; mcpload sets a fresh prefix per run. A server that records the ids it executes can tell what really happened to the calls that were in flight when it went down. To support it on your own server, read `params._meta["io.mcpload/callId"]` in your tools/call handler where the tool acts, count executions per id, and serve them as `GET <your url>?prefix=<p>` → `{"executions": {"<id>": <count>, ...}}` for mcpload's `--calls-url` (the TS demo does this with `TRACK_CALLS=1`). A counter such as `mcp_tool_duplicate_executions_total` (ids run more than once) is a cheap production alarm for the same thing.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `VUS`, `DURATION` | `20`, `2m` | agents and run length |
+| `RECONNECT_BACKOFF_MS`, `RECONNECT_MAX_MS` | `100`, `5000` | backoff between failed reconnect attempts (the first attempt is immediate); `0` retries in a hot loop |
+| `JITTER` | `0` | fraction (0–1) of each backoff taken off at random |
+| `RETRY_ON_ERROR` | `0` | `1`: re-send each call that failed with a transport error or `session_not_found`, **with the same call id**, on this session or the next one, up to `RETRY_MAX` attempts in all (3). A call whose response was lost in the restart then runs twice: the client-retry duplicate. |
+| `DOUBLE_SEND` | `0` | share of calls sent twice at once with the same id (a hedged request, or two workers taking one job). Against a server whose duplicate check isn't atomic (`DEDUPE=racy` on the TS demo) both run. |
+| `CALL_ID_PREFIX` | random | call id prefix; mcpload sets it |
+| `RECOVERY_BUDGET`, `RECOVERY_WINDOW` | `30`, `5` | read by mcpload: seconds the server may take to recover, and how long a healthy stretch must last |
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `mcp_session_breaks` | Counter | broken sessions (tag `cause`) |
+| `mcp_reconnects`, `mcp_reconnect_duration` | Counter, Trend (ms) | reconnects after a break, and the time from the break to the new session |
+| `mcp_calls_tagged` | Counter | call ids sent |
+| `mcp_call_attempts` | Counter | one sample per attempt of a call id that failed or was sent more than once (tags `call_id`, `outcome` = `answered` or the error type) |
+
 ## Syntax check and unit tests
 
 `package.json` sets `"type": "module"`, so Node can parse these files. It doesn't run them.
@@ -201,9 +269,10 @@ Keep `STEP_DURATION` long enough for a few hundred calls per step (sessions last
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules, break detection, reconnect backoff, call ids) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
 node scenarios/lib/workflow.test.mjs
+node scenarios/lib/resilience.test.mjs
 ```

@@ -61,6 +61,8 @@ export default function () {
   const r = s.callTool('search', { q: 'x' });
   // never throws: { isError, content, structuredContent?, durationMs, error?: {type, message, status?, code?} }
   const rs = s.callParallel([{ name: 'a', args: {} }, { name: 'b', args: {} }]); // goroutines, input order
+  // optional params._meta, e.g. a call id the server can record (scenarios/reconnect-storm.js):
+  s.callTool('search', { q: 'x' }, { meta: { 'io.mcpload/callId': 'r1-3-17' } }); // callParallel: {name, args, meta}
   s.ping();                       // throws on failure
   s.close();                      // DELETE in stateful mode; no-op on the wire in stateless mode
 }

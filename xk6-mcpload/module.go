@@ -445,12 +445,36 @@ func (js *jsSession) listTools() sobek.Value {
 	return toJS(rt, out)
 }
 
-func (js *jsSession) callTool(name string, args sobek.Value) sobek.Value {
+// callTool(name, args?, opts?): opts.meta is sent as params._meta.
+func (js *jsSession) callTool(name string, args sobek.Value, opts sobek.Value) sobek.Value {
 	rt := js.mi.vu.Runtime()
 	a := exportArgs(args)
+	var meta map[string]any
+	if !common.IsNullish(opts) {
+		o, ok := opts.Export().(map[string]any)
+		if !ok {
+			common.Throw(rt, errors.New("callTool: options must be an object like {meta}"))
+		}
+		var err error
+		if meta, err = exportMeta(o["meta"]); err != nil {
+			common.Throw(rt, fmt.Errorf("callTool: %w", err))
+		}
+	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
-	r := js.s.CallTool(ctx, name, a)
+	r := js.s.CallToolMeta(ctx, name, a, meta)
 	return toJS(rt, toolResultJSON(r, js.includePayloads))
+}
+
+// exportMeta checks a JS meta value: absent or an object.
+func exportMeta(v any) (map[string]any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("meta must be an object")
+	}
+	return m, nil
 }
 
 func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
@@ -470,7 +494,11 @@ func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 		if !ok || str(m["name"]) == "" {
 			common.Throw(rt, fmt.Errorf("callParallel: element %d must be {name, args}", i))
 		}
-		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"]}
+		meta, err := exportMeta(m["meta"])
+		if err != nil {
+			common.Throw(rt, fmt.Errorf("callParallel: element %d: %w", i, err))
+		}
+		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"], Meta: meta}
 	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
 	results := js.s.CallParallel(ctx, calls) // returns after all goroutines finish

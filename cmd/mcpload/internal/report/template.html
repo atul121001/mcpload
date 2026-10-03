@@ -423,6 +423,16 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
       if (ph[2] - ph[1] <= 0 || X(ph[2]) - X(ph[1]) < ph[0].length * 6 + 12) return;
       s.push('<text class="phase-label" x="' + (X(ph[1]) + 6) + '" y="' + (m.t + 12) + '">' + ph[0] + '</text>');
     });
+    // chaos restart (--chaos-restart): a vertical line at the restart, and one where the clients recovered
+    var CH = R.chaos && R.chaos.ran && !R.chaos.error ? R.chaos : null;
+    if (CH) {
+      var rec = CH.recovery && CH.recovery.recoveryS != null ? CH.atS + CH.recovery.recoveryS : null;
+      [['restart', CH.atS, 'var(--bad)'], ['recovered', rec, 'var(--good)']].forEach(function (mk) {
+        if (mk[1] == null || mk[1] > xMax) return;
+        s.push('<line x1="' + X(mk[1]) + '" x2="' + X(mk[1]) + '" y1="' + m.t + '" y2="' + (H - m.b) + '" style="stroke:' + mk[2] + '" stroke-width="1.5" stroke-dasharray="4 4"><title>' + esc(mk[0] + ' at ' + mmss(mk[1])) + '</title></line>');
+      });
+      s.push('<text class="phase-label" x="' + (X(CH.atS) + 4) + '" y="' + (m.t + 26) + '">restart</text>');
+    }
     // grid + y axis
     s.push('<g class="axis">');
     ticks.forEach(function (v) {
@@ -449,9 +459,12 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     o.series.forEach(function (sr, k) { if (!sr.noHover) s.push('<circle class="dot' + k + '" r="4.5" style="fill:' + sr.color + ';stroke:var(--surface)" stroke-width="2" visibility="hidden"/>'); });
     s.push('<rect class="hit" x="' + m.l + '" y="' + m.t + '" width="' + (W - m.l - m.r) + '" height="' + (H - m.t - m.b) + '" fill="transparent"/>');
     s.push('</svg>');
+    var chaosLegend = CH ? '<span><i class="dash" style="border-top-color:var(--bad)"></i>restart ' + mmss(CH.atS) + '</span>' +
+      (rec != null ? '<span><i class="dash" style="border-top-color:var(--good)"></i>recovered ' + mmss(rec) + '</span>' : '') : '';
     var legend = o.series.length > 1 ? '<div class="legend">' + o.series.map(function (sr) {
       return '<span><i class="' + (sr.dash ? 'dash' : '') + '" style="border-top-color:' + sr.color + '"></i>' + esc(sr.name) + '</span>';
-    }).join('') + '<span><i class="box" style="background:var(--phase-warm)"></i>warm-up</span><span><i class="box" style="background:var(--phase-cool)"></i>cool-down</span></div>' : '';
+    }).join('') + '<span><i class="box" style="background:var(--phase-warm)"></i>warm-up</span><span><i class="box" style="background:var(--phase-cool)"></i>cool-down</span>' + chaosLegend + '</div>'
+      : chaosLegend ? '<div class="legend">' + chaosLegend + '</div>' : '';
     // data table (screen only; accessibility / exact values)
     var rows = t.map(function (tt, i) { return '<tr><td>' + mmss(tt) + '</td>' + o.series.filter(function (sr) { return !sr.noHover; }).map(function (sr) { return '<td>' + esc(sr.values[i] == null ? '–' : o.tipFmt(sr.values[i])) + '</td>'; }).join('') + '</tr>'; }).join('');
     var table = '<details><summary>Data table</summary><div class="tablewrap" style="max-height:260px;overflow:auto"><table class="small"><thead><tr><th>t</th>' +

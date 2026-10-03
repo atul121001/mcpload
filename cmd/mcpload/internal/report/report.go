@@ -41,13 +41,17 @@ const (
 	VerdictGenerator       = "generator"
 	VerdictToolIsolation   = "tool_isolation"
 	VerdictCapacity        = "capacity"
+	VerdictSessionSurvival = "session_survival"
+	VerdictRecovery        = "recovery"
+	VerdictCallIntegrity   = "call_integrity"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
 var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
-	VerdictToolIsolation, VerdictCapacity,
+	VerdictToolIsolation, VerdictCapacity, VerdictSessionSurvival, VerdictRecovery,
+	VerdictCallIntegrity,
 }
 
 // Verdict statuses.
@@ -74,6 +78,89 @@ type Report struct {
 	Workflow *Workflow `json:"workflow,omitempty"`
 	// Capacity is the per-step result of a step-load run (optional).
 	Capacity *Capacity `json:"capacity,omitempty"`
+	// Sessions summarises long-lived sessions (scenario long-lived); nil otherwise.
+	Sessions *Sessions `json:"sessions,omitempty"`
+	// Chaos is the fault mcpload injected during the run (--chaos-restart); nil otherwise.
+	Chaos *Chaos `json:"chaos,omitempty"`
+	// CallIntegrity compares the calls the client sent with the ones the
+	// server executed (--calls-url); nil when not measured.
+	CallIntegrity *CallIntegrity `json:"callIntegrity,omitempty"`
+}
+
+// Sessions is report.sessions: long-lived sessions and how they ended.
+// DiedAfterS is the median lifetime (s) of the sessions that died, nil when
+// none did. EarlyP95Ms/LateP95Ms are the p95 of successful calls in the first
+// and last third of the sessions for DriftTool, the tool whose p95 rose most
+// (nil without enough calls).
+type Sessions struct {
+	Total        int64            `json:"total"`
+	Survived     int64            `json:"survived"`
+	Died         int64            `json:"died"`
+	DiedByCause  map[string]int64 `json:"diedByCause"`
+	DiedAfterS   *float64         `json:"diedAfterS"`
+	LifetimeP50S float64          `json:"lifetimeP50S"`
+	Reconnects   int64            `json:"reconnects"`
+	DriftTool    string           `json:"driftTool,omitempty"`
+	EarlyP95Ms   *float64         `json:"earlyP95Ms"`
+	LateP95Ms    *float64         `json:"lateP95Ms"`
+}
+
+// Chaos is report.chaos: a container restart mcpload ran during the run.
+// AtS is when `docker restart` started (seconds since run start), DurationS
+// how long the command took. Ran is false when the run ended first.
+type Chaos struct {
+	Action    string    `json:"action"`
+	Container string    `json:"container"`
+	Ran       bool      `json:"ran"`
+	AtS       float64   `json:"atS"`
+	DurationS float64   `json:"durationS"`
+	Error     string    `json:"error,omitempty"`
+	Recovery  *Recovery `json:"recovery,omitempty"`
+}
+
+// Recovery is how the server and its clients came back after the restart
+// (verdict recovery). Times are seconds after Chaos.AtS. RecoveryS is the
+// start of the first WindowS-long window with requests, an error rate (tool
+// errors left out) under ErrorRate and a connect p95 under ConnectP95Ms; nil
+// when that never happened. ServerBackS is the first successful connect after
+// the first error; LastReconnectS the last reconnect of an agent whose session
+// broke. Connect and error counts cover [AtS, AtS+RecoveryS+WindowS] (to the
+// end of the run when not recovered).
+type Recovery struct {
+	Recovered       bool             `json:"recovered"`
+	RecoveryS       *float64         `json:"recoveryS"`
+	ServerBackS     *float64         `json:"serverBackS"`
+	LastReconnectS  *float64         `json:"lastReconnectS"`
+	BudgetS         float64          `json:"budgetS"`
+	WindowS         float64          `json:"windowS"`
+	ErrorRate       float64          `json:"errorRate"`
+	ConnectP95Ms    float64          `json:"connectP95Ms"`
+	Reconnects      int64            `json:"reconnects"`
+	ConnectAttempts int64            `json:"connectAttempts"`
+	ConnectFailures int64            `json:"connectFailures"`
+	ErrorsByType    map[string]int64 `json:"errorsByType"`
+}
+
+// CallIntegrity is report.callIntegrity: per call id (params._meta
+// "io.mcpload/callId"), what the client saw against what the server ran.
+type CallIntegrity struct {
+	// Source is where the server's executions came from (the --calls-url).
+	Source string `json:"source"`
+	// Tagged call ids sent; Retried: sent more than once; ClientFailed: every attempt failed on the client.
+	Tagged       int64 `json:"tagged"`
+	Retried      int64 `json:"retried"`
+	ClientFailed int64 `json:"clientFailed"`
+	// Executed ids the server ran at least once, Executions in all.
+	Executed   int64 `json:"executed"`
+	Executions int64 `json:"executions"`
+	// FailedButExecuted: failed on the client, ran on the server. NeverRan: failed and never ran.
+	FailedButExecuted int64 `json:"failedButExecuted"`
+	NeverRan          int64 `json:"neverRan"`
+	// Duplicated ids ran more than once (DuplicateExecutions extra runs);
+	// DuplicatedAfterRetry of them had been sent more than once by the client.
+	Duplicated           int64 `json:"duplicated"`
+	DuplicateExecutions  int64 `json:"duplicateExecutions"`
+	DuplicatedAfterRetry int64 `json:"duplicatedAfterRetry"`
 }
 
 // Latency is a set of durations in ms; all zero when Count is 0.
@@ -399,6 +486,27 @@ func (r *Report) Normalize() {
 	for i := range r.Verdicts {
 		v := &r.Verdicts[i]
 		for _, p := range []**float64{&v.SlopePerMin, &v.R2, &v.Baseline} {
+			if *p != nil && !finite(**p) {
+				*p = nil
+			}
+		}
+	}
+	if ss := r.Sessions; ss != nil {
+		if ss.DiedByCause == nil {
+			ss.DiedByCause = map[string]int64{}
+		}
+		for _, p := range []**float64{&ss.DiedAfterS, &ss.EarlyP95Ms, &ss.LateP95Ms} {
+			if *p != nil && !finite(**p) {
+				*p = nil
+			}
+		}
+	}
+	if ch := r.Chaos; ch != nil && ch.Recovery != nil {
+		rc := ch.Recovery
+		if rc.ErrorsByType == nil {
+			rc.ErrorsByType = map[string]int64{}
+		}
+		for _, p := range []**float64{&rc.RecoveryS, &rc.ServerBackS, &rc.LastReconnectS} {
 			if *p != nil && !finite(**p) {
 				*p = nil
 			}
@@ -741,6 +849,90 @@ func (r *Report) Check() error {
 		}
 	}
 
+	if ss := r.Sessions; ss != nil {
+		if ss.Total < 0 || ss.Survived < 0 || ss.Died < 0 || ss.Reconnects < 0 {
+			add("sessions counts must be >= 0")
+		}
+		if ss.Survived+ss.Died != ss.Total {
+			add("sessions.survived + sessions.died (%d) != sessions.total (%d)", ss.Survived+ss.Died, ss.Total)
+		}
+		if ss.DiedByCause == nil {
+			add("sessions.diedByCause is required")
+		}
+		var byCause int64
+		for k, v := range ss.DiedByCause {
+			if !reErrorType.MatchString(k) || v < 0 {
+				add("sessions.diedByCause[%s] invalid", k)
+			}
+			byCause += v
+		}
+		if byCause != ss.Died {
+			add("sum of sessions.diedByCause (%d) != sessions.died (%d)", byCause, ss.Died)
+		}
+		nonNeg("sessions.lifetimeP50S", ss.LifetimeP50S)
+		for _, p := range []struct {
+			path string
+			v    *float64
+		}{{"sessions.diedAfterS", ss.DiedAfterS}, {"sessions.earlyP95Ms", ss.EarlyP95Ms}, {"sessions.lateP95Ms", ss.LateP95Ms}} {
+			if p.v != nil {
+				nonNeg(p.path, *p.v)
+			}
+		}
+	}
+	if ch := r.Chaos; ch != nil {
+		if ch.Action != "restart" {
+			add("chaos.action must be \"restart\" (got %q)", ch.Action)
+		}
+		nonEmpty("chaos.container", ch.Container)
+		nonNeg("chaos.atS", ch.AtS)
+		nonNeg("chaos.durationS", ch.DurationS)
+		if rc := ch.Recovery; rc != nil {
+			if rc.Recovered != (rc.RecoveryS != nil) {
+				add("chaos.recovery.recoveryS must be set exactly when recovered is true")
+			}
+			for _, p := range []struct {
+				path string
+				v    *float64
+			}{{"chaos.recovery.recoveryS", rc.RecoveryS}, {"chaos.recovery.serverBackS", rc.ServerBackS}, {"chaos.recovery.lastReconnectS", rc.LastReconnectS}} {
+				if p.v != nil {
+					nonNeg(p.path, *p.v)
+				}
+			}
+			nonNeg("chaos.recovery.budgetS", rc.BudgetS)
+			nonNeg("chaos.recovery.windowS", rc.WindowS)
+			rate("chaos.recovery.errorRate", rc.ErrorRate)
+			nonNeg("chaos.recovery.connectP95Ms", rc.ConnectP95Ms)
+			if rc.Reconnects < 0 || rc.ConnectAttempts < 0 || rc.ConnectFailures < 0 || rc.ConnectFailures > rc.ConnectAttempts {
+				add("chaos.recovery: counts must be >= 0 and connectFailures <= connectAttempts")
+			}
+			if rc.ErrorsByType == nil {
+				add("chaos.recovery.errorsByType is required")
+			}
+			for k, v := range rc.ErrorsByType {
+				if !reErrorType.MatchString(k) || v < 0 {
+					add("chaos.recovery.errorsByType[%s] invalid", k)
+				}
+			}
+		}
+	}
+	if ci := r.CallIntegrity; ci != nil {
+		nonEmpty("callIntegrity.source", ci.Source)
+		for _, p := range []struct {
+			path string
+			v    int64
+		}{{"tagged", ci.Tagged}, {"retried", ci.Retried}, {"clientFailed", ci.ClientFailed}, {"executed", ci.Executed}, {"executions", ci.Executions},
+			{"failedButExecuted", ci.FailedButExecuted}, {"neverRan", ci.NeverRan}, {"duplicated", ci.Duplicated}, {"duplicateExecutions", ci.DuplicateExecutions}, {"duplicatedAfterRetry", ci.DuplicatedAfterRetry}} {
+			if p.v < 0 {
+				add("callIntegrity.%s must be >= 0", p.path)
+			}
+		}
+		if ci.FailedButExecuted+ci.NeverRan != ci.ClientFailed {
+			add("callIntegrity.failedButExecuted + neverRan (%d) != clientFailed (%d)", ci.FailedButExecuted+ci.NeverRan, ci.ClientFailed)
+		}
+		if ci.Executed > ci.Executions || ci.Duplicated > ci.Executed || ci.DuplicatedAfterRetry > ci.Duplicated {
+			add("callIntegrity: executed <= executions, duplicated <= executed and duplicatedAfterRetry <= duplicated must hold")
+		}
+	}
 	if c := r.Capacity; c != nil {
 		if c.Steps == nil {
 			add("capacity.steps is required")

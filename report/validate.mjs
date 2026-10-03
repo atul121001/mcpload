@@ -82,6 +82,24 @@ export function semanticErrors(r) {
       }
     });
   }
+  const ss = r.sessions;
+  if (ss) {
+    if (ss.survived + ss.died !== ss.total) errs.push(`sessions.survived + sessions.died (${ss.survived + ss.died}) != sessions.total (${ss.total})`);
+    const byCause = Object.values(ss.diedByCause).reduce((a, b) => a + b, 0);
+    if (byCause !== ss.died) errs.push(`sum of sessions.diedByCause (${byCause}) != sessions.died (${ss.died})`);
+  }
+  const rc = r.chaos && r.chaos.recovery;
+  if (rc) {
+    if (rc.recovered !== (rc.recoveryS !== null)) errs.push('chaos.recovery.recoveryS must be set exactly when recovered is true');
+    if (rc.connectFailures > rc.connectAttempts) errs.push('chaos.recovery: counts must be >= 0 and connectFailures <= connectAttempts');
+  }
+  const ci = r.callIntegrity;
+  if (ci) {
+    if (ci.failedButExecuted + ci.neverRan !== ci.clientFailed) errs.push(`callIntegrity.failedButExecuted + neverRan (${ci.failedButExecuted + ci.neverRan}) != clientFailed (${ci.clientFailed})`);
+    if (ci.executed > ci.executions || ci.duplicated > ci.executed || ci.duplicatedAfterRetry > ci.duplicated) {
+      errs.push('callIntegrity: executed <= executions, duplicated <= executed and duplicatedAfterRetry <= duplicated must hold');
+    }
+  }
   return errs;
 }
 

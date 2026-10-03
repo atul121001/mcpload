@@ -131,10 +131,12 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
-// ToolCall is one element of a parallel call batch.
+// ToolCall is one element of a parallel call batch. Meta, when set, is sent
+// as the request's params._meta (e.g. a call id the server can record).
 type ToolCall struct {
 	Name string
 	Args any
+	Meta map[string]any
 }
 
 // ToolResult is the outcome of a tools/call. Err is set on any failure,

@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "burst", "lb-check", "isolation", "step-load", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "burst", "lb-check", "isolation", "step-load", "long-lived", "reconnect-storm", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -231,6 +231,73 @@
         },
         "steps": { "type": "array", "items": { "$ref": "#/$defs/step" }, "description": "One entry per step that produced requests, sorted by vus." }
       }
+    },
+    "sessions": {
+      "type": "object",
+      "description": "Long-lived sessions (scenario long-lived, metric mcp_session_lifetime) and how they ended (verdict 'session_survival').",
+      "required": ["total", "survived", "died", "diedByCause", "diedAfterS", "lifetimeP50S", "reconnects", "earlyP95Ms", "lateP95Ms"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0, "description": "Sessions that ended (survived + died)." },
+        "survived": { "type": "integer", "minimum": 0, "description": "Sessions that stayed open until their planned end." },
+        "died": { "type": "integer", "minimum": 0, "description": "Sessions that ended early: session_not_found, or rounds of transport errors only." },
+        "diedByCause": { "type": "object", "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" }, "additionalProperties": { "type": "integer", "minimum": 0 }, "description": "Deaths by error type; sums to died." },
+        "diedAfterS": { "type": ["number", "null"], "minimum": 0, "description": "Median lifetime (s) of the sessions that died; null when none did." },
+        "lifetimeP50S": { "type": "number", "minimum": 0, "description": "Median lifetime (s) of all sessions." },
+        "reconnects": { "type": "integer", "minimum": 0, "description": "Reconnects that followed a death." },
+        "driftTool": { "type": "string", "description": "Tool whose p95 rose most from early to late in the sessions (absent without enough calls)." },
+        "earlyP95Ms": { "type": ["number", "null"], "minimum": 0, "description": "driftTool p95 of successful calls in the first third of the sessions." },
+        "lateP95Ms": { "type": ["number", "null"], "minimum": 0, "description": "driftTool p95 of successful calls in the last third of the sessions." }
+      }
+    },
+    "chaos": {
+      "type": "object",
+      "description": "A fault mcpload injected during the run (--chaos-restart): docker restart of one named container.",
+      "required": ["action", "container", "ran", "atS", "durationS"],
+      "properties": {
+        "action": { "enum": ["restart"] },
+        "container": { "type": "string", "minLength": 1 },
+        "ran": { "type": "boolean", "description": "False when the run ended before the restart was due." },
+        "atS": { "type": "number", "minimum": 0, "description": "When docker restart started, seconds since run start." },
+        "durationS": { "type": "number", "minimum": 0, "description": "How long docker restart took." },
+        "error": { "type": "string", "description": "Why docker restart failed (recovery is then not measured)." },
+        "recovery": {
+          "type": "object",
+          "description": "How the server and its clients came back (verdict 'recovery'). Times are seconds after atS.",
+          "required": ["recovered", "recoveryS", "serverBackS", "lastReconnectS", "budgetS", "windowS", "errorRate", "connectP95Ms", "reconnects", "connectAttempts", "connectFailures", "errorsByType"],
+          "properties": {
+            "recovered": { "type": "boolean" },
+            "recoveryS": { "type": ["number", "null"], "minimum": 0, "description": "Start of the first windowS-long window with requests served, an error rate (tool_iserror left out) below errorRate and a connect p95 below connectP95Ms; null when never." },
+            "serverBackS": { "type": ["number", "null"], "minimum": 0, "description": "First successful connect after the first error." },
+            "lastReconnectS": { "type": ["number", "null"], "minimum": 0, "description": "Last reconnect of an agent whose session broke." },
+            "budgetS": { "type": "number", "minimum": 0 },
+            "windowS": { "type": "number", "minimum": 0 },
+            "errorRate": { "$ref": "#/$defs/rate" },
+            "connectP95Ms": { "$ref": "#/$defs/ms" },
+            "reconnects": { "type": "integer", "minimum": 0 },
+            "connectAttempts": { "type": "integer", "minimum": 0, "description": "Connects from atS to the end of the recovery window (the flood)." },
+            "connectFailures": { "type": "integer", "minimum": 0 },
+            "errorsByType": { "type": "object", "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" }, "additionalProperties": { "type": "integer", "minimum": 0 }, "description": "Errors other than tool_iserror over the same span." }
+          }
+        }
+      }
+    },
+    "callIntegrity": {
+      "type": "object",
+      "description": "Per call id (params._meta \"io.mcpload/callId\"): what the client saw against what the server executed (--calls-url; verdict 'call_integrity').",
+      "required": ["source", "tagged", "retried", "clientFailed", "executed", "executions", "failedButExecuted", "neverRan", "duplicated", "duplicateExecutions", "duplicatedAfterRetry"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "description": "Where the server's record of executions came from." },
+        "tagged": { "type": "integer", "minimum": 0, "description": "Call ids the client sent." },
+        "retried": { "type": "integer", "minimum": 0, "description": "Call ids the client sent more than once (retry, double send)." },
+        "clientFailed": { "type": "integer", "minimum": 0, "description": "Call ids whose every attempt failed on the client; = failedButExecuted + neverRan." },
+        "executed": { "type": "integer", "minimum": 0, "description": "Call ids the server ran at least once." },
+        "executions": { "type": "integer", "minimum": 0, "description": "Executions in all." },
+        "failedButExecuted": { "type": "integer", "minimum": 0, "description": "Failed on the client, ran on the server." },
+        "neverRan": { "type": "integer", "minimum": 0, "description": "Failed on the client, never ran." },
+        "duplicated": { "type": "integer", "minimum": 0, "description": "Call ids the server ran more than once." },
+        "duplicateExecutions": { "type": "integer", "minimum": 0, "description": "Extra executions of duplicated ids." },
+        "duplicatedAfterRetry": { "type": "integer", "minimum": 0, "description": "Duplicated ids the client had sent more than once." }
+      }
     }
   },
   "$defs": {
@@ -304,7 +371,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "session_survival", "recovery", "call_integrity"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

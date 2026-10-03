@@ -10,6 +10,15 @@
 //
 // Other env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), LEAK_BYTES (1048576),
 //            SESSION_IDLE_MS (300000; 0 disables idle reaping), SERVER_NAME.
+//
+// Call tracking (TRACK_CALLS=1, off by default): every tools/call that carries params._meta["io.mcpload/callId"]
+// is recorded when its handler starts (the point where a non-idempotent tool would act), appended to CALL_LOG
+// (default /tmp/mcpload-calls.log; the container's own filesystem survives `docker restart`) and reloaded on
+// start. GET /calls?prefix=<p> returns {executions: {callId: count}}; /metrics adds mcp_tool_executions_total and
+// mcp_tool_duplicate_executions_total. DEDUPE=atomic skips a call id that already ran (an idempotency key);
+// DEDUPE=racy does the same check but records the id only after an await (DEDUPE_RACE_MS, 20), so two concurrent
+// calls with one id can both pass it: the non-atomic duplicate check.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID, randomFillSync } from 'node:crypto';
 import express from 'express';
 import client from 'prom-client';
@@ -28,6 +37,11 @@ const POOL_SIZE = Number(process.env.POOL_SIZE ?? 0); // 0: no shared pool
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
 const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
+const TRACK_CALLS = process.env.TRACK_CALLS === '1';
+const CALL_LOG = process.env.CALL_LOG ?? '/tmp/mcpload-calls.log';
+const DEDUPE = process.env.DEDUPE ?? 'off'; // off | atomic | racy
+const DEDUPE_RACE_MS = Number(process.env.DEDUPE_RACE_MS ?? 20);
+const CALL_ID_KEY = 'io.mcpload/callId';
 
 const BIG_TEXT = makeBigText(BIG_BYTES);
 
@@ -55,11 +69,39 @@ async function pooled(fn) {
   }
 }
 
+// ---- call tracking (TRACK_CALLS=1) ----
+/** @type {Map<string, number>} callId -> times its handler started (this run of the process and earlier ones) */
+const executions = new Map();
+if (TRACK_CALLS && existsSync(CALL_LOG)) {
+  for (const id of readFileSync(CALL_LOG, 'utf8').split('\n')) if (id) executions.set(id, (executions.get(id) ?? 0) + 1);
+}
+
+function recordCall(id) {
+  const n = (executions.get(id) ?? 0) + 1;
+  executions.set(id, n);
+  appendFileSync(CALL_LOG, id + '\n'); // synchronous: the record survives an immediate exit
+  callExecutions.inc();
+  if (n > 1) duplicateExecutions.inc();
+}
+
+async function tracked(extra, fn) {
+  const id = TRACK_CALLS ? extra?._meta?.[CALL_ID_KEY] : undefined;
+  if (typeof id !== 'string' || !id) return fn();
+  if (DEDUPE !== 'off' && executions.has(id)) {
+    callsDeduplicated.inc();
+    return text(`call ${id} already ran; skipped`);
+  }
+  if (DEDUPE === 'racy') await sleep(DEDUPE_RACE_MS); // deliberate bug: check, then act after an await
+  recordCall(id);
+  return fn();
+}
+
 // ---- MCP server factory (one McpServer per session, as in the SDK examples) ----
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: '0.1.0' });
   const register = server.registerTool.bind(server);
-  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => handler(...a)));
+  // The handler's last argument is the request's `extra` (it carries params._meta).
+  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => tracked(a[a.length - 1], () => handler(...a))));
 
   server.registerTool('fast', { description: 'Returns immediately.', inputSchema: {} }, async () => text('ok'));
 
@@ -197,6 +239,9 @@ new client.Gauge({ name: 'mcp_leaked_bytes', help: 'Bytes deliberately retained 
 const sessionsCreated = new client.Counter({ name: 'mcp_sessions_created_total', help: 'Sessions created.' });
 const sessionNotFound = new client.Counter({ name: 'mcp_session_not_found_total', help: 'Requests carrying an unknown Mcp-Session-Id.' });
 const authRejected = new client.Counter({ name: 'mcp_auth_rejected_total', help: 'Requests rejected with 401.' });
+const callExecutions = new client.Counter({ name: 'mcp_tool_executions_total', help: 'Tool calls with a call id whose handler started (TRACK_CALLS=1).' });
+const duplicateExecutions = new client.Counter({ name: 'mcp_tool_duplicate_executions_total', help: 'Executions of a call id that had already run (TRACK_CALLS=1).' });
+const callsDeduplicated = new client.Counter({ name: 'mcp_tool_deduplicated_total', help: 'Calls skipped because their call id had already run (DEDUPE).' });
 
 // ---- HTTP ----
 const app = express();
@@ -207,6 +252,14 @@ app.get('/healthz', (_req, res) => res.json({ ok: true, name: SERVER_NAME, repli
 app.get('/metrics', async (_req, res) => {
   res.setHeader('Content-Type', register.contentType);
   res.end(await register.metrics());
+});
+// Executed call ids (TRACK_CALLS=1), optionally only those starting with ?prefix= (one mcpload run).
+app.get('/calls', (req, res) => {
+  if (!TRACK_CALLS) return res.status(404).json({ error: 'call tracking is off (TRACK_CALLS=1)' });
+  const prefix = String(req.query.prefix ?? '');
+  const out = {};
+  for (const [id, n] of executions) if (id.startsWith(prefix)) out[id] = n;
+  res.json({ executions: out });
 });
 
 function rpcError(res, status, code, message, headers = {}) {
@@ -281,7 +334,8 @@ app.get('/mcp', sessionRequest);
 app.delete('/mcp', sessionRequest);
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms)`);
+  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms` +
+    (TRACK_CALLS ? `, tracking calls in ${CALL_LOG} (${executions.size} known), dedupe=${DEDUPE}` : '') + ')');
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
