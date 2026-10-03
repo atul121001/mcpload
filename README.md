@@ -349,7 +349,7 @@ Without a sampler, mcpload still reports speed and error trends, but it can't ju
 Instead of running `--vus 10`, then 50, then 100 by hand, let mcpload step through them in one run:
 
 ```bash
-./mcpload capacity --url https://staging.example.com/mcp --env MCP_TOKEN=your-token \
+mcpload capacity --url https://staging.example.com/mcp --env MCP_TOKEN=your-token \
   --from 10 --to 1000 --step-duration 1m --refine 2 --html capacity.html
 ```
 
@@ -551,7 +551,7 @@ Fixed budgets catch a tool that is too slow. They don't catch a tool that got 35
 Until `main` has a report (the first run), the comparison is skipped with a notice. The `regressed` output says whether the run regressed. On your machine, compare any two reports with `mcpload compare`, or compare as you run with `mcpload run --baseline main.json`. Here a healthy demo server (port 3001) is the baseline and a server with a too-small connection pool (port 3008) is the change, 10 agents for 30 s each:
 
 ```text
-$ ./mcpload compare base.json slow.json
+$ mcpload compare base.json slow.json
 baseline: run 1c961071 · agent-session · 2025-11-25 · started 2026-10-03T05:30:43Z
 current:  run ad2ec1ec · agent-session · 2025-11-25 · started 2026-10-03T05:31:59Z
                  baseline   current          Δ       %

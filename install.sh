@@ -9,7 +9,7 @@
 # `mcpload` into a folder on your PATH. Running it again upgrades. No sudo.
 #
 # Settings (environment variables):
-#   MCPLOAD_VERSION      release to install, e.g. v0.3.0 (default: latest)
+#   MCPLOAD_VERSION      release to install, e.g. v0.4.0 (default: latest)
 #   MCPLOAD_INSTALL_DIR  where releases are unpacked (default: ~/.mcpload)
 #   MCPLOAD_BIN_DIR      where the `mcpload` link goes (default: ~/.local/bin,
 #                        or /usr/local/bin if it is writable and ~/.local/bin
@@ -64,7 +64,7 @@ detect_arch() {
 	esac
 }
 
-# latest_tag prints the newest release tag, e.g. v0.3.0.
+# latest_tag prints the newest release tag, e.g. v0.4.0.
 latest_tag() {
 	tag="$(fetch "https://api.github.com/repos/$REPO/releases/latest" - 2>/dev/null |
 		sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
@@ -75,7 +75,7 @@ latest_tag() {
 		*/tag/*) tag="${url##*/tag/}" ;;
 		esac
 	fi
-	[ -n "$tag" ] || err "could not find the latest release (GitHub API unreachable?); set MCPLOAD_VERSION=v0.3.0 to pick one"
+	[ -n "$tag" ] || err "could not find the latest release (GitHub API unreachable?); set MCPLOAD_VERSION=v0.4.0 to pick one"
 	echo "$tag"
 }
 

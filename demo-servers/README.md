@@ -78,7 +78,7 @@ The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcplo
 
 ### Without a clone: `mcpload demo` and the published images
 
-Each release publishes these servers to GHCR, for `linux/amd64` and `linux/arm64`, tagged with the release version (`0.3.0`) and `latest`:
+Each release publishes these servers to GHCR, for `linux/amd64` and `linux/arm64`, tagged with the release version (`0.4.0`) and `latest`:
 
 | Image | Built from | Used by |
 |---|---|---|

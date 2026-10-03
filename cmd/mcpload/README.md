@@ -7,7 +7,7 @@
 ```sh
 cd cmd/mcpload
 go build -o mcpload.exe .          # Windows; use -o mcpload elsewhere
-go build -ldflags "-X main.version=v0.3.0" -o mcpload .   # stamp a version
+go build -ldflags "-X main.version=v0.4.0" -o mcpload .   # stamp a version
 go vet ./... && go test ./...
 ```
 
@@ -151,7 +151,7 @@ The mcpload demo servers are up (project mcpload-demo). They listen on 127.0.0.1
 docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload run --url http://host.docker.internal:3001/mcp --duration 1m --html report.html
 ```
 
-On Linux, reach servers bound to the host's 127.0.0.1 with `--network host` and `localhost`, or servers on all interfaces with `--add-host=host.docker.internal:host-gateway`; add `--user "$(id -u):$(id -g)"` so reports aren't owned by root. The image has no `docker` command, so `--sampler docker` and `--chaos-restart` don't work inside it. Build it locally with `docker build -t mcpload:dev .` (add `--build-arg VERSION=v0.3.0` to stamp a version).
+On Linux, reach servers bound to the host's 127.0.0.1 with `--network host` and `localhost`, or servers on all interfaces with `--add-host=host.docker.internal:host-gateway`; add `--user "$(id -u):$(id -g)"` so reports aren't owned by root. The image has no `docker` command, so `--sampler docker` and `--chaos-restart` don't work inside it. Build it locally with `docker build -t mcpload:dev .` (add `--build-arg VERSION=v0.4.0` to stamp a version).
 
 ## Examples
 

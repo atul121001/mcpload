@@ -19,13 +19,13 @@ The job is skipped, with a notice in the run log, until both of these exist.
    - Choose an expiry and put a reminder in your calendar to renew it.
 3. **Add it as a secret** in `atul121001/mcpload`: Settings, Secrets and variables, Actions, New repository secret, name `HOMEBREW_TAP_TOKEN`.
 
-The next `v*` tag publishes the formula. To publish one for a release that already exists, render it locally (see below) and commit it to the tap by hand.
+The next `v*` tag publishes the formula. To publish one for a release that already exists, re-run the `homebrew` job of that release's workflow run (re-runs use the current secrets), or render it locally (see below) and commit it to the tap by hand.
 
 ## Render locally
 
 ```sh
-curl -fsSLO https://github.com/atul121001/mcpload/releases/download/v0.3.0/checksums.txt
-node packaging/homebrew/render.mjs v0.3.0 checksums.txt mcpload.rb
+curl -fsSLO https://github.com/atul121001/mcpload/releases/download/v0.4.0/checksums.txt
+node packaging/homebrew/render.mjs v0.4.0 checksums.txt mcpload.rb
 ruby -c mcpload.rb    # syntax check
 ```
 
