@@ -1,0 +1,9 @@
+# The image needs only the CLI, the k6 extension and the scenarios.
+*
+!cmd/mcpload/
+!xk6-mcpload/
+!scenarios/
+**/node_modules
+**/*.exe
+xk6-mcpload/k6
+cmd/mcpload/mcpload
