@@ -53,6 +53,10 @@ FROM alpine:3.22
 COPY --from=build /out/ /opt/mcpload/
 # (No RUN here, so multi-arch builds need no emulation for this stage.)
 COPY --from=build /out-bin/ /usr/local/bin/
+# This mcpload is built without the embedded engine, so it would otherwise look
+# for ./k6 in the working directory first, which is the user's mounted folder:
+# always run the engine shipped in the image.
+ENV MCPLOAD_ENGINE=/opt/mcpload/k6
 WORKDIR /work
 ENTRYPOINT ["mcpload"]
 CMD ["--help"]
