@@ -451,7 +451,7 @@ func TestReadSSEPicksMatchingID(t *testing.T) {
 		"data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"sampling/createMessage\"}\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"x\":1}}\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":7,\"result\":{\"x\":2}}\r\n\r\n"
-	m, err := readSSE(strings.NewReader(stream), "7")
+	m, err := readSSE(strings.NewReader(stream), "7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestReadSSEPicksMatchingID(t *testing.T) {
 	if r["x"] != 2 {
 		t.Fatalf("got %s", m.Result)
 	}
-	if _, err := readSSE(strings.NewReader("data: {}\n\n"), "1"); err == nil {
+	if _, err := readSSE(strings.NewReader("data: {}\n\n"), "1", nil); err == nil {
 		t.Fatal("expected error on stream end")
 	}
 }

@@ -14,7 +14,8 @@ node validate.mjs path/to/report.json
 - `t` is strictly increasing;
 - phases are ordered;
 - `byErrorType` adds up to `summary.errors`;
-- per-tool percentiles are monotonic (p50 ≤ p95 ≤ p99 ≤ max).
+- per-tool percentiles are monotonic (p50 ≤ p95 ≤ p99 ≤ max);
+- in `workflow`, `completed` ≤ `runs`, step names are unique, and its percentiles are monotonic too.
 
 `mcpload validate` runs the same schema rules and semantic checks in Go (`report.(*Report).Check`), so both validators accept and reject the same reports.
 
@@ -46,7 +47,7 @@ node validate.mjs path/to/report.json
 | `tool` | `{name, version}` of the program that wrote the report (`mcpload`) |
 | `run.id` | unique run id; an upload server can use it to make uploads idempotent |
 | `run.startedAt`, `run.endedAt`, `run.durationS` | wall-clock span of the run |
-| `run.scenario` | `soak`, `agent-session`, `burst`, `lb-check`, `oauth-refresh`, or a custom name |
+| `run.scenario` | `soak`, `agent-session`, `agent-workflow`, `burst`, `lb-check`, `isolation`, `oauth-refresh`, or a custom name |
 | `run.protocol` | the protocol that was actually negotiated, e.g. `2025-06-18` or `2026-07-28` (never `auto`) |
 | `run.target` | `{url, label?}`; `label` is a short display name |
 | `run.git` | optional `{sha, ref?}` of the system under test |
@@ -60,6 +61,7 @@ node validate.mjs path/to/report.json
 | `series` | `intervalS`, `t[]`, `client {p95Ms[], errorRate[], rps[]}`, and `server {sampler, rssBytes[], heapBytes[]?, openFds[]?, activeSessions[]?}`. The arrays run in parallel with `t`. When `sampler` is `none`, `rssBytes` is `[]`. Optional: `client.droppedIterations[]` (dropped iterations per bucket) and `tools` — a map from tool name to `{p95Ms[]}`, the p95 of successful calls of that tool per bucket. |
 | `verdicts[]` | `{id, status, signal, slopePerMin?, r2?, baseline?, cooldownRecovered?, message}`. `signal` names the series or metric the verdict was computed from (e.g. `server.rssBytes`). |
 | `payloadsIncluded` | `true` only when the run used `--include-payloads` |
+| `workflow` | optional; only in runs that emit the `agent-workflow` scenario's metrics. `{runs, completed, completionRate, durationMs, steps[]}`. `runs`/`completed` count `mcp_workflow_complete` samples (workflows started / that ran every step). `durationMs` is `{count, p50, p95, p99, max}` of `mcp_workflow_duration`: complete workflows, from `connect()` to the end of the last step, think pauses included. `steps[]` is `{name, count, p50, p95, p99, max}` of `mcp_workflow_step_duration` per `step` tag, in plan order: the wall time of each step's parallel batch (its slowest call). All latencies are 0 when `count` is 0. |
 
 ### Verdict ids
 

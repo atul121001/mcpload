@@ -5,7 +5,7 @@
 [![ci](https://github.com/atul121001/mcpload/actions/workflows/ci.yml/badge.svg)](https://github.com/atul121001/mcpload/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-mcpload is a free, open-source tool that puts your MCP server through a realistic workout. It sends traffic the way AI agents do, watches how the server holds up over time, and gives you a plain pass or fail with the reasons.
+mcpload is a free, open-source reliability test harness for MCP servers, built around how AI agents actually behave. It doesn't just fire requests at an endpoint: it runs agent sessions that discover tools, call several of them in parallel, use the results to decide what to call next, and answer the server's own questions mid-call. It watches how the server holds up over time and gives you a plain pass or fail with the reasons.
 
 <img src="docs/images/demo.svg" width="820" alt="Terminal demo: mcpload tests a healthy MCP server and reports PASS, then tests a server behind a load balancer without sticky sessions and reports FAIL with session_not_found.">
 
@@ -21,7 +21,18 @@ One command is all it takes:
 
 ## Why you'd want this
 
-An MCP server is how AI agents use your product. Agent traffic is not like normal API traffic. An agent opens a session, asks for your list of tools, and then calls several tools at once, again and again. If the server slows down, leaks memory, or loses sessions, every agent that depends on it fails.
+An MCP server is how AI agents use your product. Agent traffic is not like normal API traffic. A classic load test sends one request, waits for the answer, and sends the next. An agent works more like this:
+
+```text
+open session ─► list tools
+   ─► search ┐
+   ─► fetch  ├─ at the same time
+   ─► fetch  ┘
+   ─► pause to decide ─► call tools built from those results ─► pause ─► ...
+   ─► close session
+```
+
+It keeps a session open, fans out several tool calls at once, and each step depends on the one before. If the server slows down, leaks memory, or loses sessions, every agent that depends on it fails.
 
 Problems like these usually don't show up in a quick manual test. They show up after an hour of real traffic, or once you put two servers behind a load balancer. mcpload is built to catch them before release.
 
@@ -30,6 +41,10 @@ Problems like these usually don't show up in a quick manual test. They show up a
 | The question you have | What mcpload does |
 |---|---|
 | **Can my server handle many agents at once?** | Simulates many agents opening sessions, listing tools and calling tools in parallel, then measures speed and errors for **each tool separately**. |
+| **How many agents can it take before it breaks?** | Raises the number of agents step by step and tells you the last level where every tool stayed within budget, and which tool broke first. |
+| **Do real multi-step tasks stay fast?** | Runs agents through a plan where each step's calls are built from the previous step's results, and times every step and the whole task. |
+| **Does one slow tool hold up the others?** | Compares each tool's speed alone and mixed with your slow tools, to catch a shared pool or a blocked event loop. |
+| **Do sampling and elicitation work under load?** | Answers the server's mid-call requests (sampling, elicitation, roots) with a configurable delay, like a real client waiting on an LLM or a person. |
 | **Does it slowly run out of memory?** | Runs a long test (30–60 minutes is typical), samples the server's memory as it goes, and tells you if memory keeps climbing and never comes back down. |
 | **Does it lose sessions behind a load balancer?** | Spots the classic "session not found" failure when requests from one agent land on different servers. |
 | **Is it ready for the newer stateless MCP spec?** | Speaks both the older session-based protocol and the stateless 2026-07-28 protocol, and picks the right one automatically. |
@@ -326,6 +341,12 @@ Remote MCP servers over streamable HTTP, in any language. It has been tested aga
 **How long should a soak test be?**
 30–60 minutes catches most slow leaks, and 10 minutes of steady load is a sensible minimum. A few minutes is enough to check that everything is wired up, but leak checks are skipped below 2 minutes of steady load, and a short soak only catches fast leaks.
 
+**Does it run a real LLM?**
+No. The agents follow scripted plans, so runs are repeatable and cost nothing. Pauses stand in for the time an agent spends thinking, and answers to sampling requests are canned replies with a delay you choose. Your real agents may call tools in a different order, so write your own plan with `--env WORKFLOW=...` if the default doesn't look like your traffic.
+
+**How is it different from other MCP load-testing extensions?**
+There are k6 extensions, such as [xk6-mcp](https://github.com/dgzlopes/xk6-mcp), that give you an MCP client and request metrics to build your own tests with, and some of them also support stdio and SSE servers, which mcpload doesn't. mcpload's focus is the agent traffic model and the verdicts on top of it: parallel calls within a session, multi-step plans with dependencies, answering server-to-client requests, finding the breaking point, leak detection with a cool-down, load-balancer session checks and per-tool budgets in CI.
+
 ---
 
 ## For advanced users
@@ -374,6 +395,8 @@ Full API: [xk6-mcpload/README.md](xk6-mcpload/README.md).
 | `mcp_errors` | Counter | errors by `error_type`: `http`, `jsonrpc`, `tool_iserror`, `timeout`, `session_not_found`, `header_mismatch`, `auth` |
 | `mcp_tool_error_rate` | Rate | failed `tools/call` (including `isError: true`) |
 | `mcp_sessions_open` | Gauge | client-side open sessions |
+| `mcp_server_requests` | Counter | server-to-client requests (sampling, elicitation, ...) answered inside response streams, by `method`; unexpected ones count in `mcp_errors` as `unsupported_request` |
+| `mcp_server_request_duration` | Trend | time to answer a server-to-client request (includes the simulated `delayMs`) |
 
 Report format: [report/schema/README.md](report/schema/README.md).
 </details>
@@ -384,6 +407,7 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | Scenario | What it simulates |
 |---|---|
 | `agent-session.js` | Agents opening a session, listing tools and calling several in parallel, with pauses in between. |
+| `agent-workflow.js` | Agents working through a multi-step plan: parallel calls, a pause to decide, then calls built from the earlier results. Reports each step's time and the whole workflow's time. Set your own plan with `--env WORKFLOW=...`. |
 | `burst.js` | A sudden rush of new agents, including a flood of session starts. |
 | `soak.js` | Steady traffic for a long time, then a quiet period, to find leaks. |
 | `lb-check.js` | Session handling behind a load balancer. |

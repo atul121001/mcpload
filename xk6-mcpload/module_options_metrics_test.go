@@ -221,3 +221,84 @@ func TestErrorTypeTagOnlyOnFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestServerRequestSamples(t *testing.T) {
+	r := metrics.NewRegistry()
+	m, err := registerMetrics(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan metrics.SampleContainer, 10)
+	e := newTestEmitter(t, context.Background(), r, m, ch, "a", nil)
+	e.OnServerRequest(client.ServerRequestStats{Method: "sampling/createMessage", Tool: "ask", Protocol: "2025-11-25",
+		Status: 202, Start: time.Now(), Duration: 200 * time.Millisecond})
+	e.OnServerRequest(client.ServerRequestStats{Method: "x/unknown", Status: 202, ErrorType: client.ErrUnsupportedRequest,
+		Start: time.Now(), Duration: time.Millisecond})
+	e.OnServerRequest(client.ServerRequestStats{Method: "sampling/createMessage", ErrorType: client.ErrUnsupportedRequest,
+		NotAnswered: true, Start: time.Now()})
+	close(ch)
+	got := map[string]int{}
+	for sc := range ch {
+		for _, s := range sc.GetSamples() {
+			got[s.Metric.Name]++
+			if s.Metric.Name == "mcp_reqs" {
+				t.Fatal("server requests must not count in mcp_reqs")
+			}
+			if s.Metric.Name == "mcp_server_request_duration" {
+				if meth, _ := s.Tags.Get("method"); meth == "sampling/createMessage" {
+					if tool, _ := s.Tags.Get("tool"); tool != "ask" {
+						t.Fatalf("tool tag %q", tool)
+					}
+				}
+			}
+		}
+	}
+	want := map[string]int{"mcp_server_requests": 3, "mcp_server_request_duration": 2, "mcp_errors": 2}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s: %d samples, want %d (all: %v)", k, got[k], v, got)
+		}
+	}
+}
+
+func TestResponderOptions(t *testing.T) {
+	cases := []struct {
+		kind, js string
+		want     string // JSON result, or an error substring prefixed with "!"
+		delay    time.Duration
+	}{
+		{"sampling", `true`, `{"content":{"text":"mcpload mock response","type":"text"},"model":"mcpload-mock","role":"assistant","stopReason":"endTurn"}`, 0},
+		{"sampling", `({response: {role: 'assistant', content: {type: 'text', text: 'ok'}, model: 'x', stopReason: 'endTurn'}, delayMs: 200})`,
+			`{"content":{"text":"ok","type":"text"},"model":"x","role":"assistant","stopReason":"endTurn"}`, 200 * time.Millisecond},
+		{"elicitation", `({action: 'accept', content: {name: 'a'}, delayMs: '1s'})`, `{"action":"accept","content":{"name":"a"}}`, time.Second},
+		{"elicitation", `({action: 'decline', content: {name: 'a'}})`, `{"action":"decline"}`, 0},
+		{"elicitation", `({action: 'maybe'})`, "!action must be", 0},
+		{"roots", `({roots: [{uri: 'file:///tmp', name: 'tmp'}]})`, `{"roots":[{"name":"tmp","uri":"file:///tmp"}]}`, 0},
+		{"sampling", `({model: 'x'})`, `!unknown option "model"`, 0},
+		{"sampling", `({delayMs: -5})`, "!must not be negative", 0},
+		{"sampling", `'yes'`, "!must be true or an object", 0},
+	}
+	for _, tc := range cases {
+		rt := modulestest.NewRuntime(t)
+		v, err := rt.VU.Runtime().RunString(tc.js)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := parseResponder(tc.kind, v.Export())
+		if strings.HasPrefix(tc.want, "!") {
+			if err == nil || !strings.Contains(err.Error(), tc.want[1:]) {
+				t.Errorf("%s %s: want error %q, got %v", tc.kind, tc.js, tc.want[1:], err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s %s: %v", tc.kind, tc.js, err)
+		}
+		if string(r.Result) != tc.want || r.Delay != tc.delay {
+			t.Errorf("%s %s: got %s / %v", tc.kind, tc.js, r.Result, r.Delay)
+		}
+	}
+	if r, err := parseResponder("sampling", false); r != nil || err != nil {
+		t.Fatalf("false: %v %v", r, err)
+	}
+}

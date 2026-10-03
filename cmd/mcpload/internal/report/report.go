@@ -69,6 +69,35 @@ type Report struct {
 	Series           Series      `json:"series"`
 	Verdicts         []Verdict   `json:"verdicts"`
 	PayloadsIncluded bool        `json:"payloadsIncluded"`
+	// Workflow summarises multi-step agent workflows (scenario agent-workflow); nil otherwise.
+	Workflow *Workflow `json:"workflow,omitempty"`
+}
+
+// Latency is a set of durations in ms; all zero when Count is 0.
+type Latency struct {
+	Count int64   `json:"count"`
+	P50   float64 `json:"p50"`
+	P95   float64 `json:"p95"`
+	P99   float64 `json:"p99"`
+	Max   float64 `json:"max"`
+}
+
+// Workflow is report.workflow: Runs workflows started, Completed of them ran
+// every step. DurationMs covers complete workflows (connect to the end of the
+// last step, think time included); Steps are in plan order, each the wall time
+// of the step's parallel batch.
+type Workflow struct {
+	Runs           int64          `json:"runs"`
+	Completed      int64          `json:"completed"`
+	CompletionRate float64        `json:"completionRate"`
+	DurationMs     Latency        `json:"durationMs"`
+	Steps          []WorkflowStep `json:"steps"`
+}
+
+// WorkflowStep is the latency of one plan step.
+type WorkflowStep struct {
+	Name string `json:"name"`
+	Latency
 }
 
 // ToolInfo identifies the program that wrote the report.
@@ -249,6 +278,9 @@ func (r *Report) Normalize() {
 	}
 	if r.Verdicts == nil {
 		r.Verdicts = []Verdict{}
+	}
+	if r.Workflow != nil && r.Workflow.Steps == nil {
+		r.Workflow.Steps = []WorkflowStep{}
 	}
 	s := &r.Series
 	if s.T == nil {
@@ -483,6 +515,41 @@ func (r *Report) Check() error {
 		nonNeg(fmt.Sprintf("tools[%s].max", t.Name), t.Max)
 		if !(t.P50 <= t.P95 && t.P95 <= t.P99 && t.P99 <= t.Max) {
 			add("tools[%s] percentiles not monotonic (p50<=p95<=p99<=max)", t.Name)
+		}
+	}
+
+	if w := r.Workflow; w != nil {
+		if w.Runs < 0 || w.Completed < 0 {
+			add("workflow.runs and workflow.completed must be >= 0")
+		}
+		if w.Completed > w.Runs {
+			add("workflow.completed > workflow.runs")
+		}
+		rate("workflow.completionRate", w.CompletionRate)
+		latency := func(path string, l Latency) {
+			if l.Count < 0 {
+				add("%s.count must be >= 0", path)
+			}
+			nonNeg(path+".p50", l.P50)
+			nonNeg(path+".p95", l.P95)
+			nonNeg(path+".p99", l.P99)
+			nonNeg(path+".max", l.Max)
+			if !(l.P50 <= l.P95 && l.P95 <= l.P99 && l.P99 <= l.Max) {
+				add("%s percentiles not monotonic (p50<=p95<=p99<=max)", path)
+			}
+		}
+		latency("workflow.durationMs", w.DurationMs)
+		if w.Steps == nil {
+			add("workflow.steps is required")
+		}
+		steps := map[string]bool{}
+		for _, st := range w.Steps {
+			nonEmpty("workflow.steps[].name", st.Name)
+			if steps[st.Name] {
+				add("duplicate workflow step '%s'", st.Name)
+			}
+			steps[st.Name] = true
+			latency(fmt.Sprintf("workflow.steps[%s]", st.Name), st.Latency)
 		}
 	}
 

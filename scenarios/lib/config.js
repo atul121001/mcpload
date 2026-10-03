@@ -26,6 +26,9 @@
 //                  error, ...) (default 0.99)
 //   CONNECT_BACKOFF_MS  sleep after a failed connect() (or a TOOL_MIX that matches no listed tool) so a dead or
 //                  misconfigured target is not hot-looped (default 1000)
+//   SAMPLING, ELICITATION, ROOTS  answer the server's sampling/createMessage, elicitation/create or roots/list
+//                  requests (stateful servers only) and declare the capability: "1" for the default mock answer,
+//                  or the client option as JSON, e.g. {"delayMs":200} or {"action":"decline"} (default off)
 import { thresholdToolNames } from './tools.js';
 
 function env(name, def) {
@@ -85,6 +88,14 @@ function buildAuth() {
   return undefined;
 }
 
+/** SAMPLING / ELICITATION / ROOTS: unset or "0" -> off, "1"/"true" -> true (default answer), else a JSON object. */
+function envResponder(name) {
+  const v = env(name, undefined);
+  if (v === undefined || ['0', 'false', 'no'].indexOf(String(v).toLowerCase()) >= 0) return undefined;
+  if (['1', 'true', 'yes'].indexOf(String(v).toLowerCase()) >= 0) return true;
+  return envObject(name);
+}
+
 const userBudgets = envObject('TOOL_BUDGETS') || {};
 
 export const config = {
@@ -94,6 +105,9 @@ export const config = {
   auth: buildAuth(),
   timeout: env('MCP_TIMEOUT', '30s'),
   includePayloads: ['1', 'true', 'yes'].indexOf(String(env('INCLUDE_PAYLOADS', '')).toLowerCase()) >= 0,
+  sampling: envResponder('SAMPLING'),
+  elicitation: envResponder('ELICITATION'),
+  roots: envResponder('ROOTS'),
 
   // Explicit TOOL_MIX, or null: demo mix on a demo server, else uniform over listed tools (lib/tools.js).
   toolMix: envObject('TOOL_MIX') || null,
@@ -134,6 +148,7 @@ export function clientOptions(overrides) {
     includePayloads: config.includePayloads,
   };
   if (config.auth) o.auth = config.auth;
+  for (const k of ['sampling', 'elicitation', 'roots']) if (config[k] !== undefined) o[k] = config[k];
   return Object.assign(o, overrides || {});
 }
 

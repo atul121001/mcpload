@@ -11,6 +11,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | Script | What it does | Default load |
 |---|---|---|
 | `agent-session.js` | Each VU loops through agent sessions: connect, `tools/list`, 1–5 rounds of `callParallel` with think time, then close. | 10 VUs for 2m |
+| `agent-workflow.js` | Each VU loops through a multi-step agent plan (`WORKFLOW`): parallel fan-out, a think pause, then calls whose arguments come from earlier results (optionally one call per result), up to a final call. Measures each step's wall time and the end-to-end workflow time. See [Agent workflows](#agent-workflows). | 10 VUs for 2m |
 | `burst.js` | Two phases. `init_flood` runs bare connect/close at 100/s to test the initialize storm. `agents` then ramps VUs from 0 to 200 in 10s. | about 1.5 min |
 | `soak.js` | Agent sessions at a constant arrival rate (`RATE` per `TIME_UNIT`; fractional rates work). A warm-up ramp comes first and a zero-load cool-down comes last. | 3m warm-up + 30m load + 5m cool-down |
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
@@ -74,6 +75,7 @@ If a tool needs meaningful values, such as a real ID, set them in `TOOL_ARGS`.
 | `CONNECT_P95_MS` | `1500` | `mcp_connect_duration` p95 budget |
 | `CHECKS_MIN` | `0.99` | minimum pass rate over all checks (`connect ok`, `tools/list returned tools`, `tool mix matched`, `tools/call no transport error`, …) |
 | `CONNECT_BACKOFF_MS` | `1000` | how long to sleep after a failed `connect()`, or when `TOOL_MIX` matches no listed tool, so the target isn't hot-looped |
+| `SAMPLING`, `ELICITATION`, `ROOTS` | off | answer the server's `sampling/createMessage`, `elicitation/create` or `roots/list` requests (stateful servers) and declare the capability: `1` for the default mock answer, or the client option as JSON, e.g. `SAMPLING={"delayMs":200}`, `ELICITATION={"action":"decline"}`. See [xk6-mcpload](../xk6-mcpload/README.md#server-to-client-requests). The demo mix never calls the TS demo tools that need them, so name them in `TOOL_MIX`: `--env SAMPLING=1 --env ELICITATION=1 --env TOOL_MIX={"sample_llm":1,"elicit_input":1,"fast":1}` |
 
 Each script also has its own knobs, documented in its header comment. Examples: `VUS`, `DURATION`, `BURST_VUS`, `FLOOD_RATE`, `SOAK_MIN`, `WARMUP_MIN`, `COOLDOWN_MIN`, `RATE`, `TIME_UNIT`, `PRE_VUS`, `MAX_VUS`, `STEPS`, `REFRESH_P95_MS`.
 
@@ -101,8 +103,63 @@ Each scenario adds its own thresholds on top:
 - `lb-check` adds `mcp_errors{error_type:session_not_found}: count<1`, `mcp_errors{error_type:header_mismatch}: count<1` and `checks{check:lb request ok}: rate>=LB_MIN_OK`. The last one requires every request to succeed whichever replica serves it, which is the meaningful check for stateless servers since they have no session to lose.
 - `isolation` adds `checks{check:slow tools in mix}: rate>0.999`, so a `SLOW_TOOLS` name that isn't in the tool mix fails the run instead of comparing two identical phases. `SLOW_TOOLS` (comma-separated, default `slow`) names your slow tools; `DURATION` is per phase.
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
+- `agent-workflow` adds per-tool thresholds for every tool its plan calls, plus `mcp_workflow_duration: p(95)<WORKFLOW_P95_MS` (and `p(99)<WORKFLOW_P99_MS` when set), `mcp_workflow_complete: rate>=WORKFLOW_MIN_COMPLETE`, and `mcp_workflow_step_duration{step:<name>}: p(95)<STEP_P95_MS` for each step (`STEP_BUDGETS` overrides per step). See [Agent workflows](#agent-workflows).
 
 If any threshold fails, k6 exits with code 99, which gates CI.
+
+## Agent workflows
+
+`agent-workflow.js` models an agent working through a plan: it fires independent tool calls together, pauses to reason, then makes calls that depend on what came back. Each step is one parallel batch (`callParallel`), so a step takes as long as its slowest call. That is the latency an agent actually waits for.
+
+```sh
+./mcpload run --url http://localhost:3001/mcp --scenario agent-workflow
+./mcpload run --url http://localhost:3008/mcp --scenario agent-workflow --env STEP_P95_MS=100 \
+  --env 'STEP_BUDGETS={"inspect":{"p95":300}}'   # ts-pooled: steps queue behind `slow`, expected FAIL
+```
+
+The plan is the `WORKFLOW` env var: JSON, either `{"steps": [...]}` or the steps array itself. The full format is documented at the top of `lib/workflow.js`.
+
+```jsonc
+{ "steps": [
+  { "name": "gather", "calls": [                                   // step 1: parallel fan-out
+    { "tool": "search", "args": { "query": "overdue invoices", "limit": 5 }, "as": "invoices" },
+    { "tool": "search", "args": { "query": "customer accounts", "limit": 3 }, "as": "accounts" },
+    { "tool": "fast" } ] },
+  { "name": "inspect", "calls": [                                  // step 2: one call per step-1 result
+    { "tool": "search", "forEach": { "$from": "invoices", "path": "results", "max": 3 },
+      "args": { "query": { "$from": "$item", "path": "title" }, "limit": 2 }, "as": "details" },
+    { "tool": "slow", "args": { "ms": 200 } } ] },
+  { "name": "act", "calls": [                                      // step 3: args from step 2
+    { "tool": "search", "args": { "query": { "$from": "details", "path": "0.results.0.title" }, "limit": 1 }, "as": "record" },
+    { "tool": "big" }, { "tool": "flaky" } ] },
+  { "name": "report", "calls": [                                   // step 4: an id pulled out with a regex
+    { "tool": "search", "args": { "query": { "$from": "record", "path": "results.0.url", "match": "/search/([^/]+)/" }, "limit": 1 } } ] } ] }
+```
+
+That is the default plan. It works on every demo server: 4 steps, 11 calls and 3 think pauses per workflow.
+
+- **Step**: `{name?, thinkMs?, calls}`. The name (`[A-Za-z0-9_.-]`, default `stepN`) tags the step's metrics. Before every step except the first, the VU pauses for an exponential time with mean `thinkMs`, or `THINK_MS` when the step doesn't set it.
+- **Call**: `{tool, args?, as?, repeat?, forEach?}`. `args` are shallow-merged over the tool's usual args: `TOOL_ARGS`, else the demo args on a demo server, else placeholders from its `inputSchema`. `repeat: N` sends N identical calls in the step. `forEach` sends one call per element of a list from an earlier result, up to `max` (default 5). `as` names the result for later steps. With `repeat` or `forEach`, the name holds the list of successful results.
+- **Reference**: any arg value (at any depth) can be `{"$from": "<as name>", "path"?, "match"?}`. The named result is read as its `structuredContent` when present, else as its first text content parsed as JSON, else as that text. `path` walks into it (`results.0.title` or `results[0].title`). `match` is a regex whose first capture group (or whole match) becomes the value. Inside a `forEach` call, `$from: "$item"` is the current element. A reference can only use names from **earlier** steps, because calls within a step run in parallel. The plan is checked when k6 starts, and a bad plan stops the run with the location of the problem.
+
+When the plan doesn't fit the server, the scenario handles it like an unknown `TOOL_MIX` name. If the server doesn't list a tool the plan needs, the VU warns once (listing the missing tools and the server's tools), records a failed `workflow tools listed` check and sleeps `CONNECT_BACKOFF_MS`. If a reference path is missing from a *successful* result, it records a failed `workflow dependency resolved` check and warns once. If a reference points at a call that *failed* (for example `isError`), the workflow just ends early, the way an agent would stop. In all of these cases the workflow counts as not complete.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `mcp_workflow_step_duration{step}` | Trend (ms) | wall time of one step's batch |
+| `mcp_workflow_duration` | Trend (ms) | one complete workflow, from `connect()` to the end of the last step, think pauses included |
+| `mcp_workflow_complete` | Rate | workflows that ran every step |
+
+mcpload writes them to `report.json` as `workflow` (per-step and end-to-end p50/p95/p99/max, plus the completion rate), and the HTML report shows them in a "Workflow steps" table.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `WORKFLOW` | the plan above | the plan, as JSON |
+| `WORKFLOW_P95_MS` | `5000` | p95 budget for `mcp_workflow_duration`. It includes think time: with the default plan and `THINK_MS=500`, a healthy server's p95 is about 3 s. |
+| `WORKFLOW_P99_MS` | unset | optional p99 budget for `mcp_workflow_duration` |
+| `STEP_P95_MS`, `STEP_P99_MS` | `1000`, unset | budget for every step's `mcp_workflow_step_duration{step:<name>}` |
+| `STEP_BUDGETS` | `{}` | per-step overrides, e.g. `{"inspect":{"p95":300,"p99":500}}` |
+| `WORKFLOW_MIN_COMPLETE` | `0.95` | minimum `mcp_workflow_complete` rate |
 
 ## Soak phases
 
@@ -125,8 +182,9 @@ For leak detection, run at least 10 minutes of load (`SOAK_MIN>=10`; the default
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
+node scenarios/lib/workflow.test.mjs
 ```

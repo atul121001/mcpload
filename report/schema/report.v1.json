@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "isolation", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "burst", "lb-check", "isolation", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -179,12 +179,45 @@
     "payloadsIncluded": {
       "type": "boolean",
       "description": "True only when the CLI ran with --include-payloads. Tool arguments/results are otherwise absent from the report."
+    },
+    "workflow": {
+      "type": "object",
+      "description": "Multi-step agent workflows (scenario agent-workflow), from the k6 custom metrics mcp_workflow_complete, mcp_workflow_duration and mcp_workflow_step_duration{step}. Absent when the run emitted none.",
+      "required": ["runs", "completed", "completionRate", "durationMs", "steps"],
+      "properties": {
+        "runs": { "type": "integer", "minimum": 0, "description": "Workflows started (samples of mcp_workflow_complete)." },
+        "completed": { "type": "integer", "minimum": 0, "description": "Workflows that ran every step." },
+        "completionRate": { "$ref": "#/$defs/rate" },
+        "durationMs": { "$ref": "#/$defs/latency", "description": "End-to-end duration of complete workflows: connect to the end of the last step, think pauses included." },
+        "steps": {
+          "type": "array",
+          "description": "Per step, in plan order: wall time of the step's parallel batch of calls (its slowest call).",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/latency" }],
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
     }
   },
   "$defs": {
     "ms": { "type": "number", "minimum": 0 },
     "rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "series": { "type": "array", "items": { "type": ["number", "null"] } },
+    "latency": {
+      "type": "object",
+      "description": "Latency of a set of durations in milliseconds; all zero when count is 0.",
+      "required": ["count", "p50", "p95", "p99", "max"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "p50": { "$ref": "#/$defs/ms" },
+        "p95": { "$ref": "#/$defs/ms" },
+        "p99": { "$ref": "#/$defs/ms" },
+        "max": { "$ref": "#/$defs/ms" }
+      }
+    },
     "load": {
       "type": "object",
       "description": "Load shape configuration as passed to k6.",

@@ -91,6 +91,35 @@ func TestCheckCatchesErrors(t *testing.T) {
 	}
 }
 
+func TestCheckWorkflow(t *testing.T) {
+	r, err := ReadJSON(examplePath("healthy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Workflow = &Workflow{Runs: 4, Completed: 3, CompletionRate: 0.75, DurationMs: Latency{Count: 3, P50: 900, P95: 1400, P99: 1490, Max: 1500}}
+	r.Normalize()
+	if r.Workflow.Steps == nil {
+		t.Fatal("Normalize left workflow.steps nil")
+	}
+	r.Workflow.Steps = append(r.Workflow.Steps, WorkflowStep{Name: "gather", Latency: Latency{Count: 4, P50: 5, P95: 9, P99: 9, Max: 9}})
+	if err := r.Check(); err != nil {
+		t.Fatalf("valid workflow: %v", err)
+	}
+	b, _ := Marshal(r)
+	if !bytes.Contains(b, []byte(`"name": "gather",`)) || !bytes.Contains(b, []byte(`"count": 4,`)) {
+		t.Errorf("step latency not flattened into the step object:\n%s", b)
+	}
+
+	r.Workflow.Completed = 5
+	r.Workflow.Steps = append(r.Workflow.Steps, WorkflowStep{Name: "gather", Latency: Latency{Count: 1, P50: 9, P95: 5, P99: 5, Max: 5}})
+	err = r.Check()
+	for _, want := range []string{"workflow.completed > workflow.runs", "duplicate workflow step", "workflow.steps[gather] percentiles"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
 func TestNormalizeEmptyReportValidates(t *testing.T) {
 	r := &Report{
 		Tool:   ToolInfo{Name: "mcpload", Version: "0.0.0"},

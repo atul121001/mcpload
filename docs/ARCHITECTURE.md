@@ -33,7 +33,7 @@ So the extension has its own small client in `client/`, and uses plain structs f
 | Per request | JSON-RPC body | JSON-RPC body plus `_meta.io.modelcontextprotocol/{protocolVersion, clientInfo, clientCapabilities}` |
 | Headers | `MCP-Protocol-Version` | `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` (for `tools/call`, `resources/read`, `prompts/get`); `Mcp-Param-*` for parameters marked `x-mcp-header` (planned) |
 | Streams | SSE responses to POST (standalone GET stream and `Last-Event-ID` resume are not used) | no GET or DELETE (they return 405); `subscriptions/listen` (planned); MRTR (`InputRequiredResult`) (planned) |
-| Server-to-client requests over SSE (sampling, elicitation) | (planned) | (planned) |
+| Server-to-client requests over SSE (sampling, elicitation) | answered while the response stream is read: each request is answered by a POST of the JSON-RPC response (with `Mcp-Session-Id`) from static responders configured on the Client, with an optional delay; unknown methods get `-32601` | forbidden by the spec (MRTR `InputRequiredResult` instead, planned): counted as `unsupported_request`, not answered |
 | Errors of interest | 404 session not found | 400 `-32020 HeaderMismatch` |
 
 `protocol: "auto"` follows the spec's fallback: send a modern request first, and fall back to `initialize` only on a 400 whose body isn't a recognised modern JSON-RPC error.
@@ -50,7 +50,7 @@ xk6-mcpload/            Go module → JS import "k6/x/mcpload"
   client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
-scenarios/              JS library: agent-session, burst, soak, lb-check, oauth-refresh
+scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, oauth-refresh
 cmd/mcpload/            Go CLI: run → sample → analyse → report.json + report.html
 demo-servers/           docker compose test targets (§7)
 action/                 GitHub Action (composite): build binary, run scenario, gate, upload
@@ -100,6 +100,8 @@ Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_t
 | `mcp_errors` | Counter | `error_type` is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`, `session_not_found`, `header_mismatch`, `auth` |
 | `mcp_tool_error_rate` | Rate | counts `isError: true` results as failures |
 | `mcp_sessions_open` | Gauge | client-side open sessions |
+| `mcp_server_requests` | Counter | server-to-client requests read from response streams (`method` = the server's method) |
+| `mcp_server_request_duration` | Trend | time to answer a server-to-client request |
 
 CI budgets use standard k6 thresholds:
 ```js

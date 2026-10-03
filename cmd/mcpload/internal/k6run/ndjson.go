@@ -22,6 +22,11 @@ const (
 	MetricConnectDuration = "mcp_connect_duration"
 	methodToolsCall       = "tools/call"
 
+	// Custom metrics of scenarios/agent-workflow.js.
+	MetricWorkflowDuration     = "mcp_workflow_duration"
+	MetricWorkflowStepDuration = "mcp_workflow_step_duration"
+	MetricWorkflowComplete     = "mcp_workflow_complete"
+
 	// k6 built-in metrics.
 	MetricIterations        = "iterations"
 	MetricDroppedIterations = "dropped_iterations"
@@ -142,6 +147,7 @@ type Aggregator struct {
 	// scenarioTools holds successful tools/call durations per k6 scenario
 	// (the 'scenario' system tag) and tool, for phase comparisons.
 	scenarioTools map[string]map[string][]float64
+	wf            workflowAgg
 	first, last   time.Time
 	points        int
 }
@@ -278,6 +284,15 @@ func (a *Aggregator) add(l *line) error {
 		if tags["method"] == methodToolsCall && tags["tool"] != "" {
 			a.tool(tags["tool"]).errors += v
 		}
+	case MetricWorkflowDuration:
+		a.wf.durations = append(a.wf.durations, v)
+	case MetricWorkflowStepDuration:
+		a.wf.addStep(tags["step"], v)
+	case MetricWorkflowComplete:
+		a.wf.runs++
+		if v != 0 {
+			a.wf.completed++
+		}
 	case MetricConnectDuration:
 		if p := tags["protocol"]; p != "" && tags["error_type"] == "" && strings.HasPrefix(tags["status"], "2") {
 			a.protoOK[p]++
@@ -376,6 +391,71 @@ func (a *Aggregator) ScenarioTools(scenario string) map[string]PhaseTool {
 		out[name] = PhaseTool{Calls: len(s), P50: Percentile(s, 0.50), P95: Percentile(s, 0.95)}
 	}
 	return out
+}
+
+// workflowAgg collects the agent-workflow scenario's custom metrics.
+type workflowAgg struct {
+	runs, completed float64
+	durations       []float64
+	stepOrder       []string // first-seen order, which is plan order
+	steps           map[string][]float64
+}
+
+func (w *workflowAgg) addStep(name string, v float64) {
+	if name == "" {
+		name = "unnamed"
+	}
+	if w.steps == nil {
+		w.steps = map[string][]float64{}
+	}
+	if _, ok := w.steps[name]; !ok {
+		w.stepOrder = append(w.stepOrder, name)
+	}
+	w.steps[name] = append(w.steps[name], v)
+}
+
+// Latency summarises a set of durations (ms); all zero when Count is 0.
+type Latency struct {
+	Count              int64
+	P50, P95, P99, Max float64
+}
+
+func latencyOf(d []float64) Latency {
+	if len(d) == 0 {
+		return Latency{}
+	}
+	s := append([]float64(nil), d...)
+	sort.Float64s(s)
+	return Latency{Count: int64(len(s)), P50: Percentile(s, 0.50), P95: Percentile(s, 0.95), P99: Percentile(s, 0.99), Max: s[len(s)-1]}
+}
+
+// WorkflowStep is the wall time of one plan step (its slowest parallel call).
+type WorkflowStep struct {
+	Name string
+	Latency
+}
+
+// WorkflowStats is report.workflow: Runs and Completed count
+// mcp_workflow_complete samples, Duration is mcp_workflow_duration (complete
+// workflows) and Steps is mcp_workflow_step_duration by its step tag.
+type WorkflowStats struct {
+	Runs, Completed int64
+	Duration        Latency
+	Steps           []WorkflowStep
+}
+
+// Workflow returns the workflow metrics, or nil when the run emitted none
+// (any scenario other than agent-workflow).
+func (a *Aggregator) Workflow() *WorkflowStats {
+	w := a.wf
+	if w.runs == 0 && len(w.durations) == 0 && len(w.steps) == 0 {
+		return nil
+	}
+	ws := &WorkflowStats{Runs: round(w.runs), Completed: round(w.completed), Duration: latencyOf(w.durations)}
+	for _, n := range w.stepOrder {
+		ws.Steps = append(ws.Steps, WorkflowStep{Name: n, Latency: latencyOf(w.steps[n])})
+	}
+	return ws
 }
 
 // ClientSeries is report.series.client; each slice has n entries.

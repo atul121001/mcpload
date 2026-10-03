@@ -9,9 +9,9 @@ What mcpload can do today, and what's planned next. Design details are in [ARCHI
 - **Report format:** versioned schema v1 with a validator.
 - **Demo servers:** known-good and known-bad targets for calibration, bound to 127.0.0.1 ([results](CALIBRATION.md)).
 - **GitHub Action:** gates PRs on per-tool budgets and leak verdicts.
+- **Server-to-client requests:** sampling, elicitation, roots and ping requests inside SSE response streams are answered with static, optionally delayed responses (stateful protocols); metrics `mcp_server_requests` and `mcp_server_request_duration`.
 
 ## Next
-- Answer server-to-client requests inside SSE streams (sampling, elicitation).
 - `Mcp-Param-*` headers, MRTR (`InputRequiredResult`) and `subscriptions/listen` from the 2026-07-28 spec.
 - A step-load scenario that finds the breaking point automatically.
 - Payloads in reports: the extension accepts `includePayloads` and the CLI has `--include-payloads`, but tool arguments and results are not stored yet.
