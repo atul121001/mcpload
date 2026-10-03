@@ -384,6 +384,7 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | Scenario | What it simulates |
 |---|---|
 | `agent-session.js` | Agents opening a session, listing tools and calling several in parallel, with pauses in between. |
+| `agent-workflow.js` | Agents working through a multi-step plan: parallel calls, a pause to decide, then calls built from the earlier results. Reports each step's time and the whole workflow's time. Set your own plan with `--env WORKFLOW=...`. |
 | `burst.js` | A sudden rush of new agents, including a flood of session starts. |
 | `soak.js` | Steady traffic for a long time, then a quiet period, to find leaks. |
 | `lb-check.js` | Session handling behind a load balancer. |

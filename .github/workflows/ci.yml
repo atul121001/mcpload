@@ -84,6 +84,7 @@ jobs:
       # (--check only parses; the k6/x/mcpload import is not resolved.)
       - run: for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f" || exit 1; echo "ok $f"; done
       - run: node scenarios/lib/schema-args.test.mjs
+      - run: node scenarios/lib/workflow.test.mjs
 
   cli:
     name: cli (cmd/mcpload vet, test, build)

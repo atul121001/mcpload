@@ -508,6 +508,13 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		r.Tools = append(r.Tools, report.ToolStats{Name: t.Name, Reqs: t.Reqs, Errors: t.Errors, ErrorRate: t.ErrorRate,
 			P50: round3(t.P50), P95: round3(t.P95), P99: round3(t.P99), Max: round3(t.Max)})
 	}
+	if wf := agg.Workflow(); wf != nil {
+		r.Workflow = &report.Workflow{Runs: wf.Runs, Completed: wf.Completed, CompletionRate: round6(ratio(wf.Completed, wf.Runs)),
+			DurationMs: toLatency(wf.Duration), Steps: []report.WorkflowStep{}}
+		for _, st := range wf.Steps {
+			r.Workflow.Steps = append(r.Workflow.Steps, report.WorkflowStep{Name: st.Name, Latency: toLatency(st.Latency)})
+		}
+	}
 	for _, th := range agg.Thresholds(defs, sum, durationS) {
 		var obs *float64
 		if th.Observed != nil {
@@ -632,6 +639,18 @@ func printVerdicts(w io.Writer, r *report.Report) {
 
 func toLoad(l k6run.Load) report.Load {
 	return report.Load{Executor: l.Executor, VUs: l.VUs, MaxVUs: l.MaxVUs, ArrivalRate: l.ArrivalRate, ArrivalTimeUnitS: l.ArrivalTimeUnitS}
+}
+
+func toLatency(l k6run.Latency) report.Latency {
+	return report.Latency{Count: l.Count, P50: round3(l.P50), P95: round3(l.P95), P99: round3(l.P99), Max: round3(l.Max)}
+}
+
+// ratio is a/b, or 0 when b is 0.
+func ratio(a, b int64) float64 {
+	if b <= 0 {
+		return 0
+	}
+	return float64(a) / float64(b)
 }
 
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }

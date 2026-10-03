@@ -50,7 +50,7 @@ xk6-mcpload/            Go module → JS import "k6/x/mcpload"
   client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
-scenarios/              JS library: agent-session, burst, soak, lb-check, oauth-refresh
+scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, oauth-refresh
 cmd/mcpload/            Go CLI: run → sample → analyse → report.json + report.html
 demo-servers/           docker compose test targets (§7)
 action/                 GitHub Action (composite): build binary, run scenario, gate, upload
