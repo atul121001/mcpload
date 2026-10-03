@@ -123,7 +123,7 @@ func compareCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "mcpload compare: current: %v\n", err)
 		return ExitError
 	}
-	c := analysis.Compare(base, cur, pos[0], cc, analysis.DefaultConfig())
+	c := analysis.Compare(base, cur, redactURL(pos[0]), cc, analysis.DefaultConfig())
 	switch *format {
 	case "json":
 		cr := &report.Report{Comparison: c}

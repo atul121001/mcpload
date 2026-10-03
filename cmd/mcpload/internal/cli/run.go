@@ -364,7 +364,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		if baseline, err = loadReport(o.baseline); err != nil {
 			return 0, fmt.Errorf("--baseline: %w", err)
 		}
-		logf("baseline: %s (run %s, %s)", o.baseline, baseline.Run.ID, describeRun(baseline))
+		logf("baseline: %s (run %s, %s)", redactURL(o.baseline), baseline.Run.ID, describeRun(baseline))
 	}
 
 	bin, err := k6run.FindBinary(o.k6)
@@ -509,7 +509,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 
 	var cpuMon *sampler.CPUMonitor
 	var stopChaos func() chaosRun
-	logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
+	logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, redactURL(o.url), smp.Kind(), o.interval)
 	res, err := k6run.Run(k6run.RunConfig{
 		Bin: bin, Script: o.scenario, Env: env,
 		NDJSONPath: ndjson, SummaryPath: summaryPath,
@@ -635,7 +635,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			DurationS: round3(durationS),
 			Scenario:  scenario,
 			Protocol:  protocol,
-			Target:    report.Target{URL: o.url, Label: o.label},
+			Target:    report.Target{URL: redactURL(o.url), Label: o.label},
 			K6Version: k6Version,
 			Load:      toLoad(opts.LoadShape()),
 			Generator: gen,
@@ -752,7 +752,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			if fetchErr = ferr; ferr != nil {
 				logf("warning: could not read executed call ids from %s: %v", o.callsURL, ferr)
 			} else {
-				r.CallIntegrity = analysis.CallIntegrity(analysis.IntegrityInput{Source: o.callsURL, Tagged: tagged, Attempts: attempts, Executions: execs})
+				r.CallIntegrity = analysis.CallIntegrity(analysis.IntegrityInput{Source: redactURL(o.callsURL), Tagged: tagged, Attempts: attempts, Executions: execs})
 			}
 		}
 		ciV := analysis.CallIntegrityVerdict(tagged, r.CallIntegrity)
@@ -812,7 +812,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	}
 	if baseline != nil {
 		// Compare once every verdict is in: the comparison reads memory_leak and generator.
-		r.Comparison = analysis.Compare(baseline, r, o.baseline, o.cmp, cfg)
+		r.Comparison = analysis.Compare(baseline, r, redactURL(o.baseline), o.cmp, cfg)
 		r.Verdicts = append(r.Verdicts, analysis.RegressionVerdict(r.Comparison, o.failOnRegression))
 	}
 
