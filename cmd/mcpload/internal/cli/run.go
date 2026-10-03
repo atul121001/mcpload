@@ -57,10 +57,14 @@ const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [fl
 
 func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs := newFlagSet("run", runSynopsis, stderr)
-	fs.StringVar(&o.scenario, "scenario", "", "k6 scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload (default agent-session)")
-	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to k6 as MCP_URL (required)")
+	fs.StringVar(&o.scenario, "scenario", "", "scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload, then among the scenarios built into mcpload (default agent-session)")
+	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to the scenario as MCP_URL (required)")
 	fs.StringVar(&o.protocol, "protocol", "auto", "MCP protocol version or 'auto' (MCP_PROTOCOL)")
-	fs.StringVar(&o.k6, "k6", "", "k6 binary built with xk6-mcpload (default: ./k6 in the current folder, then next to mcpload, then k6 on PATH)")
+	// Advanced, hidden from -h: run a different engine (a k6 built with
+	// xk6-mcpload) instead of the one embedded in mcpload. Also $MCPLOAD_ENGINE.
+	fs.StringVar(&o.k6, "engine", "", "engine binary: a k6 built with xk6-mcpload (default: the engine embedded in mcpload)")
+	fs.StringVar(&o.k6, "k6", "", "same as --engine")
+	hideFlags(fs, "engine", "k6")
 	fs.StringVar(&o.samplerKind, "sampler", "none", "server sampler: none | docker | prometheus")
 	fs.StringVar(&o.container, "container", "", "container name or id for --sampler docker")
 	fs.StringVar(&o.promURL, "prom-url", "", "Prometheus text endpoint (e.g. http://host:3001/metrics) for --sampler prometheus")
@@ -68,10 +72,10 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.soakMin, "soak-min", 30, "soak: constant-load minutes (SOAK_MIN)")
 	fs.Float64Var(&o.warmupMin, "warmup-min", 0, "soak: warm-up minutes (WARMUP_MIN; default 10% of soak, min 1)")
 	fs.Float64Var(&o.cooldownMin, "cooldown-min", 5, "soak: cool-down minutes (COOLDOWN_MIN)")
-	fs.IntVar(&o.vus, "vus", 0, "VUs, passed to the script as VUS (scenario knob, not k6 --vus)")
-	fs.StringVar(&o.duration, "duration", "", "duration, passed to the script as DURATION (scenario knob, not k6 --duration)")
+	fs.IntVar(&o.vus, "vus", 0, "VUs, passed to the script as VUS (a scenario knob)")
+	fs.StringVar(&o.duration, "duration", "", "duration, passed to the script as DURATION (a scenario knob)")
 	fs.IntVar(&o.minAgents, "min-agents", 0, "step-load: concurrency the server must hold within budgets for the capacity verdict to pass (MIN_AGENTS)")
-	fs.Var(&o.env, "env", "extra K=V passed to k6 with -e (repeatable)")
+	fs.Var(&o.env, "env", "extra K=V setting passed to the scenario (repeatable)")
 	fs.StringVar(&o.label, "label", "", "short display name of the target")
 	fs.StringVar(&o.gitSHA, "git-sha", "", "git sha of the system under test (default $GITHUB_SHA)")
 	fs.StringVar(&o.gitRef, "git-ref", "", "git ref of the system under test (default $GITHUB_REF)")
@@ -82,9 +86,9 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.leakSlope, "leak-slope-mb-per-min", 1, "memory_leak RSS slope limit in MiB/min (1 MiB = 1048576 bytes)")
 	fs.Float64Var(&o.minR2, "min-r2", 0.7, "minimum R² for a leak slope to count")
 	fs.BoolVar(&o.includePayloads, "include-payloads", false, "keep tool arguments/results (INCLUDE_PAYLOADS=1)")
-	fs.StringVar(&o.k6Out, "k6-out", "", "keep k6's raw outputs (metrics.ndjson, summary.json) in this directory")
+	fs.StringVar(&o.k6Out, "k6-out", "", "keep the engine's raw outputs (metrics.ndjson, summary.json) in this directory")
 	fs.DurationVar(&o.waitReady, "wait-ready", 0, "before starting, wait up to this long (e.g. 2m) for the server to answer an MCP handshake (0 = don't wait)")
-	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after k6 starts (e.g. 30s); only on servers you own (0 = off)")
+	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after the load starts (e.g. 30s); only on servers you own (0 = off)")
 	fs.StringVar(&o.chaosContainer, "chaos-container", "", "container to restart for --chaos-restart (default: --container)")
 	fs.StringVar(&o.callsURL, "calls-url", "", "server endpoint listing executed call ids (GET ?prefix=, answers {\"executions\": {id: count}}), e.g. http://localhost:3019/calls, for the call_integrity verdict")
 	return fs
@@ -448,7 +452,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 
 	var cpuMon *sampler.CPUMonitor
 	var stopChaos func() chaosRun
-	logf("k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
+	logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
 	res, err := k6run.Run(k6run.RunConfig{
 		Bin: bin, Script: o.scenario, Env: env,
 		NDJSONPath: ndjson, SummaryPath: summaryPath,

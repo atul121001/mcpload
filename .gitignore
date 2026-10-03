@@ -4,6 +4,8 @@ dist/
 *.exe
 k6
 k6.exe
+# release-build payload embedded with -tags embedengine (see release.yml)
+cmd/mcpload/internal/engine/bin/
 __pycache__/
 .venv/
 report*.json
