@@ -301,6 +301,48 @@ func TestCallParallel(t *testing.T) {
 	}
 }
 
+func TestCallToolMeta(t *testing.T) {
+	for _, stateless := range []bool{false, true} {
+		f, srv := newFake(t, stateless)
+		proto := "2025-06-18"
+		if stateless {
+			proto = ProtocolStateless
+		}
+		s := connect(t, srv.URL, proto, nil)
+		meta := map[string]any{"io.mcpload/callId": "run-1-7"}
+		for _, r := range []ToolResult{
+			s.CallToolMeta(context.Background(), "echo", map[string]any{"msg": "x"}, meta),
+			s.CallParallel(context.Background(), []ToolCall{{Name: "echo", Args: map[string]any{"msg": "x"}, Meta: meta}})[0],
+		} {
+			if r.Err != nil {
+				t.Fatal(r.Err)
+			}
+			f.mu.Lock()
+			got, _ := f.lastBody["_meta"].(map[string]any)
+			f.mu.Unlock()
+			if got["io.mcpload/callId"] != "run-1-7" {
+				t.Errorf("stateless=%v: _meta = %v", stateless, got)
+			}
+			if stateless && got[MetaProtocolVersion] != ProtocolStateless {
+				t.Errorf("stateless _meta lost the protocol keys: %v", got)
+			}
+		}
+		if len(meta) != 1 {
+			t.Errorf("caller's meta map was modified: %v", meta)
+		}
+		// Without meta, a stateful call sends no _meta at all.
+		if !stateless {
+			s.CallTool(context.Background(), "echo", map[string]any{"msg": "x"})
+			f.mu.Lock()
+			_, has := f.lastBody["_meta"]
+			f.mu.Unlock()
+			if has {
+				t.Error("CallTool without meta sent params._meta")
+			}
+		}
+	}
+}
+
 func TestAuthErrors(t *testing.T) {
 	f, srv := newFake(t, false)
 	f.token = "good"

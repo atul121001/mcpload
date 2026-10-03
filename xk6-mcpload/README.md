@@ -44,6 +44,7 @@ const client = new mcp.Client({
   //       failureBackoff?: '1s',  // negative cache for failed token fetches; 0 disables
   //       timeout?: '10s' }       // per token fetch; default: the client's `timeout`
   timeout: '30s',            // per HTTP exchange, and per token wait/fetch; string or milliseconds
+  cancelWait: '2s',          // how long a cancelled call's stream is still read for a late response (stateful)
   includePayloads: false,    // reserved; payloads are never attached to metric samples
   // answer server-to-client requests (stateful protocols; see below); each one set is declared in initialize
   sampling: { response: { role: 'assistant', content: { type: 'text', text: 'ok' }, model: 'mcpload-mock', stopReason: 'endTurn' },
@@ -51,23 +52,30 @@ const client = new mcp.Client({
   elicitation: { action: 'accept', content: { confirm: true }, delayMs: 100 },  // action: 'accept' | 'decline' | 'cancel'
   roots: { roots: [{ uri: 'file:///work', name: 'work' }] },
   // advanced: fallbackVersion ('2025-11-25'), discover (true), rememberProtocol (true),
-  //           clientInfo {name, version}, capabilities {}
+  //           clientInfo {name, version}, capabilities {}, servedByHeader ('X-Served-By')
 });
 
 export default function () {
-  const s = client.connect();     // throws on failure (Error with .type, .status, .code)
+  const s = client.connect();     // throws on failure (Error with .type, .status, .code, .servedBy)
   s.protocol; s.sessionId;        // sessionId is '' in stateless mode
+  s.servedBy;                     // servedByHeader of the handshake response ('' if absent or nothing was sent)
   const tools = s.listTools();    // follows nextCursor; [{name, description, inputSchema}]; throws on failure
   const r = s.callTool('search', { q: 'x' });
-  // never throws: { isError, content, structuredContent?, durationMs, error?: {type, message, status?, code?} }
+  // never throws: { isError, content, structuredContent?, durationMs, servedBy?, cancelled?, error?: {type, message, status?, code?, servedBy?} }
+  const c = s.callTool('slow', { ms: 2000 }, { cancelAfterMs: 150 }); // cancel if no response within 150 ms:
+  // returns at once with { cancelled: true, isError: true, error: { type: 'cancelled' } } (see Cancellation)
   const rs = s.callParallel([{ name: 'a', args: {} }, { name: 'b', args: {} }]); // goroutines, input order
+  s.callParallel([{ name: 'slow', args: {}, cancelAfterMs: 150 }, { name: 'fast' }]);  // per-item cancelAfterMs
+  // optional params._meta, e.g. a call id the server can record (scenarios/reconnect-storm.js):
+  s.callTool('search', { q: 'x' }, { meta: { 'io.mcpload/callId': 'r1-3-17' } }); // callParallel: {name, args, meta}
+  // per-call options are { meta?, cancelAfterMs? } (both may be combined); unknown keys throw
   s.ping();                       // throws on failure
   s.close();                      // DELETE in stateful mode; no-op on the wire in stateless mode
 }
 ```
 
 `error.type` (and the `error_type` tag) is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`,
-`session_not_found`, `header_mismatch`, `auth`. A result with `isError: true` has `isError: true` **and**
+`session_not_found`, `header_mismatch`, `auth`, `cancelled`. A result with `isError: true` has `isError: true` **and**
 `error.type === 'tool_iserror'`. `mcp_errors` can also carry `unsupported_request` (see below).
 
 ### Server-to-client requests
@@ -99,6 +107,27 @@ supported. `mcp_req_duration` of the call includes the time spent answering. Exa
 [examples/client-requests.js](examples/client-requests.js) against the TS demo server's `sample_llm` and
 `elicit_input` tools.
 
+### Cancellation
+
+`callTool(name, args, { cancelAfterMs })` (and `cancelAfterMs` on a `callParallel` item; milliseconds or a duration
+string) cancels a call that has no response that long after it was sent. The call returns at once with `cancelled: true`
+and `error.type === 'cancelled'`; its `mcp_reqs`/`mcp_req_duration` samples carry `error_type: cancelled` (duration = time
+until the cancel), and it is **not** counted in `mcp_errors` or `mcp_tool_error_rate`: the script chose to cancel.
+
+- **Stateful** (`2025-xx`): a `notifications/cancelled` `{requestId, reason}` is POSTed with `Mcp-Session-Id` and
+  `MCP-Protocol-Version` (recorded as a `notifications/cancelled` request; a failure counts in `mcp_errors`). The
+  call's response stream is then still read for `cancelWait` (default `2s`): a response for the cancelled id that
+  arrives is ignored, as the spec says, but counted as `late_response` (a server that honours the cancel sends none).
+  The stream is then closed. The outcome is emitted once known, after the call has returned.
+- **Stateless** (`2026-07-28`): closing the response stream *is* the cancellation and no notification is expected,
+  so the stream is closed at once; late responses cannot be observed.
+- **Timeouts**: both revisions say a sender SHOULD cancel a request that timed out. A stateful request (other than
+  `initialize`) that hits `timeout` gets a `notifications/cancelled` in the background (`reason: timeout`); in
+  stateless mode the timeout already closed the stream. Its `error_type` stays `timeout`.
+
+Server-side effects (does the server stop the work?) cannot be seen from the client; mcpload reads them from the
+server's Prometheus metrics for the `cancellation` verdict.
+
 ### Protocol behaviour
 
 - **Stateful** (`2025-xx`): `initialize` → `Mcp-Session-Id` → `notifications/initialized`; later requests
@@ -118,7 +147,13 @@ supported. `mcp_req_duration` of the call includes the time spent answering. Exa
   `error.data.supported` lists a stateless version (`>= 2026-07-28`) is a modern server: `server/discover` is
   retried once with the newest such version, and only if none is offered does it fall back to `initialize`. A probe
   answered with a fallback-triggering (or retry-triggering) error is recorded in `mcp_reqs`/`mcp_req_duration`
-  (with its real `status` tag) but not in `mcp_errors`.
+  (with its real `status` tag) but not in `mcp_errors`. If the fallback `initialize` is itself rejected with a `-32022`
+  that offers a stateless version (replicas on different builds behind one load balancer: the probe reached an old
+  build, the handshake a new one), `server/discover` is tried once more with that version; the rejected `initialize`
+  stays counted as an error.
+- **servedBy**: the value of the `servedByHeader` response header (default `X-Served-By`; e.g. nginx's
+  `X-Upstream`) on the session (handshake), on each tool result and its `error`, and on thrown errors. Empty when
+  the header is absent or no response arrived (timeout). It is not a metric tag. `scenarios/version-skew.js` uses it.
 - **rememberProtocol** (default `true`, only affects `auto`): the protocol resolved by the first *successful* auto
   connect is cached process-wide, keyed by `url` + `protocol` + `fallbackVersion`, and shared by every VU and
   Client in the k6 process. Later connects skip the `server/discover` probe: a stateless (`2026-07-28`) server
@@ -162,6 +197,9 @@ A successful request has **no** `error_type` tag; a failed one carries it on all
 | `mcp_sessions_open` | Gauge | process-wide open sessions (see below) |
 | `mcp_server_requests` | Counter | server-to-client requests read from response streams; `method` is the server's method (`sampling/createMessage`, ...), `tool` the call whose stream carried it, `status` the answer POST's status. Not counted in `mcp_reqs` |
 | `mcp_server_request_duration` | Trend (time) | request read off the stream → answer POST completed (includes `delayMs`); not emitted when nothing was sent |
+| `mcp_cancellations` | Counter | one per call made with `cancelAfterMs` and per timed-out request the client cancels; `reason` = `client` / `timeout`, `outcome` = `cancelled` / `late_response` / `send_failed` / `completed` (the call finished first; nothing sent), `status` = the notification POST's status, `error_type` on `send_failed` |
+| `mcp_cancel_duration` | Trend (time) | time to send a cancel: decision to cancel → `notifications/cancelled` answered (stateful) or stream closed (2026-07-28) |
+| `mcp_cancel_late_response` | Trend (time) | cancel sent → a response for the cancelled request arrived anyway (stateful only) |
 
 `mcp_sessions_open` is the number of sessions currently open in this k6 process — every VU, Client and scenario
 together: +1 on a successful `connect()`, −1 on the first `close()` (stateless sessions count too). Each change is

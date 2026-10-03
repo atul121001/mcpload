@@ -7,16 +7,36 @@
 //                                     given RFC 7662 introspection endpoint reports as active
 //   ts-pooled    POOL_SIZE=N          every tool call holds one of N shared slots (like one small DB
 //                                     connection pool for all tools): fast tools queue behind slow ones
+//   skew-hang-old HANG_UNKNOWN=1      a request this build can't serve (no session and not initialize, e.g. a
+//                                     2026-07-28 stateless request; an unknown session id; a tools/call for a
+//                                     tool it doesn't have) is accepted and never answered, instead of a 400/404
+//                                     or a "tool not found" error: the hang of a rolling deploy gone wrong
+//   ts-ignore-cancel IGNORE_CANCEL=1  notifications/cancelled is recorded but ignored: cancelled calls keep
+//                                     running and still send their (late) response
+//
+// Cancellation (all personalities): `slow` stops sleeping when its request is cancelled (the SDK aborts the
+// handler's signal on notifications/cancelled and then sends no response). /metrics counts cancels
+// (mcp_cancelled_total), how long each cancelled call still ran (mcp_work_after_cancel_seconds) and cancelled
+// calls still running (mcp_cancelled_inflight).
 //
 // Other env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), LEAK_BYTES (1048576),
 //            SESSION_IDLE_MS (300000; 0 disables idle reaping), SERVER_NAME.
+//
+// Call tracking (TRACK_CALLS=1, off by default): every tools/call that carries params._meta["io.mcpload/callId"]
+// is recorded when its handler starts (the point where a non-idempotent tool would act), appended to CALL_LOG
+// (default /tmp/mcpload-calls.log; the container's own filesystem survives `docker restart`) and reloaded on
+// start. GET /calls?prefix=<p> returns {executions: {callId: count}}; /metrics adds mcp_tool_executions_total and
+// mcp_tool_duplicate_executions_total. DEDUPE=atomic skips a call id that already ran (an idempotency key);
+// DEDUPE=racy does the same check but records the id only after an await (DEDUPE_RACE_MS, 20), so two concurrent
+// calls with one id can both pass it: the non-atomic duplicate check.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID, randomFillSync } from 'node:crypto';
 import express from 'express';
 import client from 'prom-client';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest, CancelledNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const LEAK = process.env.LEAK === '1';
@@ -25,9 +45,18 @@ const FLAKY_RATE = Number(process.env.FLAKY_RATE ?? 0.1);
 const BIG_BYTES = Number(process.env.BIG_BYTES ?? 200_000);
 const LEAK_BYTES = Number(process.env.LEAK_BYTES ?? 1024 * 1024);
 const POOL_SIZE = Number(process.env.POOL_SIZE ?? 0); // 0: no shared pool
+const HANG_UNKNOWN = process.env.HANG_UNKNOWN === '1';
+const IGNORE_CANCEL = process.env.IGNORE_CANCEL === '1';
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
-const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : 'ts-healthy');
+const SERVER_NAME =
+  process.env.SERVER_NAME ??
+  (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : IGNORE_CANCEL ? 'ts-ignore-cancel' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
+const TRACK_CALLS = process.env.TRACK_CALLS === '1';
+const CALL_LOG = process.env.CALL_LOG ?? '/tmp/mcpload-calls.log';
+const DEDUPE = process.env.DEDUPE ?? 'off'; // off | atomic | racy
+const DEDUPE_RACE_MS = Number(process.env.DEDUPE_RACE_MS ?? 20);
+const CALL_ID_KEY = 'io.mcpload/callId';
 
 const BIG_TEXT = makeBigText(BIG_BYTES);
 
@@ -37,6 +66,14 @@ function makeBigText(n) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** sleep that rejects as soon as `signal` aborts (the request was cancelled). */
+const abortableSleep = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('cancelled'));
+    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    function onAbort() { clearTimeout(t); reject(new Error('cancelled')); }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const toolError = (t) => ({ isError: true, content: [{ type: 'text', text: t }] });
 
@@ -55,11 +92,101 @@ async function pooled(fn) {
   }
 }
 
+const knownTools = new Set(); // filled by registerTool
+
+// HANG_UNKNOWN=1: keep the request open without ever answering (the client's timeout ends it).
+let hanging = 0;
+function hang(req, why) {
+  hanging++;
+  if (hanging <= 5 || hanging % 100 === 0) console.warn(`HANG_UNKNOWN: not answering ${why} (${hanging} so far)`);
+}
+
+// ---- call tracking (TRACK_CALLS=1) ----
+/** @type {Map<string, number>} callId -> times its handler started (this run of the process and earlier ones) */
+const executions = new Map();
+if (TRACK_CALLS && existsSync(CALL_LOG)) {
+  for (const id of readFileSync(CALL_LOG, 'utf8').split('\n')) if (id) executions.set(id, (executions.get(id) ?? 0) + 1);
+}
+
+function recordCall(id) {
+  const n = (executions.get(id) ?? 0) + 1;
+  executions.set(id, n);
+  appendFileSync(CALL_LOG, id + '\n'); // synchronous: the record survives an immediate exit
+  callExecutions.inc();
+  if (n > 1) duplicateExecutions.inc();
+}
+
+async function tracked(extra, fn) {
+  const id = TRACK_CALLS ? extra?._meta?.[CALL_ID_KEY] : undefined;
+  if (typeof id !== 'string' || !id) return fn();
+  if (DEDUPE !== 'off' && executions.has(id)) {
+    callsDeduplicated.inc();
+    return text(`call ${id} already ran; skipped`);
+  }
+  if (DEDUPE === 'racy') await sleep(DEDUPE_RACE_MS); // deliberate bug: check, then act after an await
+  recordCall(id);
+  return fn();
+}
+
+// ---- cancellation accounting ----
+const cancelledTotal = new client.Counter({
+  name: 'mcp_cancelled_total', help: 'tools/call requests cancelled by the client while running.', labelNames: ['tool'],
+});
+const workAfterCancel = new client.Histogram({
+  name: 'mcp_work_after_cancel_seconds',
+  help: 'How long a cancelled tools/call kept running after its cancellation arrived.',
+  labelNames: ['tool'],
+  buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 5, 10, 30, 60],
+});
+const cancelledInflight = new client.Gauge({ name: 'mcp_cancelled_inflight', help: 'Cancelled tools/call handlers still running.' });
+
+/**
+ * Run one tool call, noting when it is cancelled (its abort signal fires, or onCancel calls back under
+ * IGNORE_CANCEL) and how long it keeps running afterwards.
+ */
+async function cancellable(tool, extra, onCancel, fn) {
+  let cancelledAt = 0;
+  const cancelled = () => {
+    if (cancelledAt) return;
+    cancelledAt = performance.now();
+    cancelledTotal.inc({ tool });
+    cancelledInflight.inc();
+  };
+  const id = extra?.requestId;
+  if (id !== undefined) onCancel.set(id, cancelled);
+  extra?.signal?.addEventListener('abort', cancelled, { once: true });
+  try {
+    return await fn();
+  } finally {
+    if (id !== undefined) onCancel.delete(id);
+    extra?.signal?.removeEventListener('abort', cancelled);
+    if (cancelledAt) {
+      workAfterCancel.observe({ tool }, (performance.now() - cancelledAt) / 1000);
+      cancelledInflight.dec();
+    }
+  }
+}
+
 // ---- MCP server factory (one McpServer per session, as in the SDK examples) ----
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: '0.1.0' });
+  const onCancel = new Map(); // requestId -> cancellable()'s callback
+  if (IGNORE_CANCEL) {
+    // Deliberate bug: replace the SDK's handler (which aborts the request's signal and drops its response)
+    // with one that only records the cancel. The call keeps running and still answers.
+    server.server.setNotificationHandler(CancelledNotificationSchema, (n) => onCancel.get(n.params.requestId)?.());
+  }
   const register = server.registerTool.bind(server);
-  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => handler(...a)));
+  // The handler's last argument is the request's `extra` (params._meta, abort signal, requestId).
+  // cancellable() covers the whole call (pool wait included); tracked() records the call id once the
+  // handler holds its pool slot (where a non-idempotent tool would act).
+  server.registerTool = (name, meta, handler) => {
+    knownTools.add(name);
+    return register(name, meta, (...a) => {
+      const extra = a[a.length - 1];
+      return cancellable(name, extra, onCancel, () => pooled(() => tracked(extra, () => handler(...a))));
+    });
+  };
 
   server.registerTool('fast', { description: 'Returns immediately.', inputSchema: {} }, async () => text('ok'));
 
@@ -69,9 +196,10 @@ function createMcpServer() {
       description: 'Sleeps for `ms` milliseconds (default 300) before returning.',
       inputSchema: { ms: z.number().int().min(0).max(120_000).optional() },
     },
-    async ({ ms }) => {
+    async ({ ms }, extra) => {
       const d = ms ?? 300;
-      await sleep(d);
+      // Stops when cancelled; IGNORE_CANCEL ignores the abort signal altogether (also when the session closes).
+      await (IGNORE_CANCEL ? sleep(d) : abortableSleep(d, extra.signal));
       return text(`slept ${d}ms`);
     },
   );
@@ -197,6 +325,9 @@ new client.Gauge({ name: 'mcp_leaked_bytes', help: 'Bytes deliberately retained 
 const sessionsCreated = new client.Counter({ name: 'mcp_sessions_created_total', help: 'Sessions created.' });
 const sessionNotFound = new client.Counter({ name: 'mcp_session_not_found_total', help: 'Requests carrying an unknown Mcp-Session-Id.' });
 const authRejected = new client.Counter({ name: 'mcp_auth_rejected_total', help: 'Requests rejected with 401.' });
+const callExecutions = new client.Counter({ name: 'mcp_tool_executions_total', help: 'Tool calls with a call id whose handler started (TRACK_CALLS=1).' });
+const duplicateExecutions = new client.Counter({ name: 'mcp_tool_duplicate_executions_total', help: 'Executions of a call id that had already run (TRACK_CALLS=1).' });
+const callsDeduplicated = new client.Counter({ name: 'mcp_tool_deduplicated_total', help: 'Calls skipped because their call id had already run (DEDUPE).' });
 
 // ---- HTTP ----
 const app = express();
@@ -207,6 +338,14 @@ app.get('/healthz', (_req, res) => res.json({ ok: true, name: SERVER_NAME, repli
 app.get('/metrics', async (_req, res) => {
   res.setHeader('Content-Type', register.contentType);
   res.end(await register.metrics());
+});
+// Executed call ids (TRACK_CALLS=1), optionally only those starting with ?prefix= (one mcpload run).
+app.get('/calls', (req, res) => {
+  if (!TRACK_CALLS) return res.status(404).json({ error: 'call tracking is off (TRACK_CALLS=1)' });
+  const prefix = String(req.query.prefix ?? '');
+  const out = {};
+  for (const [id, n] of executions) if (id.startsWith(prefix)) out[id] = n;
+  res.json({ executions: out });
 });
 
 function rpcError(res, status, code, message, headers = {}) {
@@ -239,11 +378,20 @@ app.post('/mcp', express.json({ limit: '4mb' }), async (req, res) => {
   try {
     if (sid) {
       const s = sessions.get(sid);
-      if (!s) { sessionNotFound.inc(); return rpcError(res, 404, -32001, 'Session not found'); }
+      if (!s) {
+        sessionNotFound.inc();
+        if (HANG_UNKNOWN) return hang(req, 'a request for an unknown session');
+        return rpcError(res, 404, -32001, 'Session not found');
+      }
       s.lastSeen = Date.now();
+      const b = req.body;
+      if (HANG_UNKNOWN && b && b.method === 'tools/call' && !knownTools.has(b.params?.name)) {
+        return hang(req, `tools/call ${b.params?.name}`);
+      }
       return await s.transport.handleRequest(req, res, req.body);
     }
     if (!isInitializeRequest(req.body)) {
+      if (HANG_UNKNOWN) return hang(req, `${req.body?.method ?? 'a request'} without a session (protocol ${req.headers['mcp-protocol-version'] ?? 'unset'})`);
       return rpcError(res, 400, -32000, 'Bad Request: no Mcp-Session-Id header and body is not an initialize request');
     }
     const server = createMcpServer();
@@ -281,7 +429,8 @@ app.get('/mcp', sessionRequest);
 app.delete('/mcp', sessionRequest);
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms)`);
+  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms, ignoreCancel=${IGNORE_CANCEL}` +
+    (TRACK_CALLS ? `, tracking calls in ${CALL_LOG} (${executions.size} known), dedupe=${DEDUPE}` : '') + ')');
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));

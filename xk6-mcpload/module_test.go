@@ -272,3 +272,66 @@ func TestParseAuthFailureBackoff(t *testing.T) {
 		t.Error("expected error for bad failureBackoff")
 	}
 }
+
+// servedBy on the session, tool results and thrown errors comes from the
+// response header named by the servedByHeader option.
+func TestJSServedBy(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		k := n
+		mu.Unlock()
+		w.Header().Set("X-Replica", map[bool]string{true: "a", false: "b"}[k%2 == 1])
+		b, _ := io.ReadAll(r.Body)
+		var m struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(b, &m)
+		var result any
+		switch {
+		case m.Method == "initialize":
+			w.Header().Set("Mcp-Session-Id", "s1")
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		case m.Method == "notifications/initialized":
+			w.WriteHeader(202)
+			return
+		case k > 4: // the other replica: it doesn't know the session
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"Session not found"}}`))
+			return
+		default:
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "ok"}}}
+		}
+		out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	}))
+	t.Cleanup(srv.Close)
+	rt := modulestest.NewRuntime(t)
+	m := New().NewModuleInstance(rt.VU).(*ModuleInstance)
+	_ = rt.VU.Runtime().Set("mcp", m.Exports().Named)
+	if _, err := rt.RunOnEventLoop(`var client = new mcp.Client({url: "` + srv.URL + `", protocol: "2025-06-18", servedByHeader: "X-Replica", timeout: "5s"});`); err != nil {
+		t.Fatal(err)
+	}
+	rt.MoveToVUContext(&lib.State{
+		Samples:   make(chan metrics.SampleContainer, 1000),
+		Tags:      lib.NewVUStateTags(metrics.NewRegistry().RootTagSet()),
+		Transport: http.DefaultTransport,
+	})
+	// requests: 1 initialize (a), 2 notifications/initialized (b), 3 call (a), 4 call (b), 5 call -> 404 (a), 6 ping -> 404 (b)
+	v, err := rt.RunOnEventLoop(`
+		const s = client.connect();
+		const r = [s.callTool("echo"), s.callTool("echo"), s.callTool("echo")];
+		let pe; try { s.ping(); } catch (e) { pe = e.type + ":" + e.servedBy; }
+		JSON.stringify([s.servedBy, r[0].servedBy, r[1].servedBy, r[2].servedBy, r[2].error.type, r[2].error.servedBy, pe]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `["a","a","b","a","session_not_found","a","session_not_found:b"]`; v.String() != want {
+		t.Fatalf("got  %s\nwant %s", v, want)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -123,9 +124,20 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 				return fmt.Errorf("timeout: %w", err)
 			}
 			o.Timeout = d
+		case "cancelWait":
+			d, err := parseDuration(val)
+			if err != nil {
+				return fmt.Errorf("cancelWait: %w", err)
+			}
+			if d < 0 {
+				return errors.New("cancelWait must not be negative")
+			}
+			o.CancelWait = d
 		case "includePayloads":
 			b, _ := val.(bool)
 			c.includePayloads = b
+		case "servedByHeader":
+			o.ServedByHeader = fmt.Sprint(val)
 		case "rememberProtocol":
 			if b, ok := val.(bool); ok {
 				c.rememberProtocol = b
@@ -421,6 +433,7 @@ func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool) *
 	must(rt, obj.Set("protocol", s.Protocol()))
 	must(rt, obj.Set("sessionId", s.SessionID()))
 	must(rt, obj.Set("stateless", s.Stateless()))
+	must(rt, obj.Set("servedBy", s.ServedBy()))
 	must(rt, obj.Set("listTools", js.listTools))
 	must(rt, obj.Set("callTool", js.callTool))
 	must(rt, obj.Set("callParallel", js.callParallel))
@@ -445,12 +458,80 @@ func (js *jsSession) listTools() sobek.Value {
 	return toJS(rt, out)
 }
 
-func (js *jsSession) callTool(name string, args sobek.Value) sobek.Value {
+// callTool(name, args?, opts?): opts.meta is sent as params._meta;
+// opts.cancelAfterMs cancels the call when no response arrived within it.
+func (js *jsSession) callTool(name string, args sobek.Value, opts sobek.Value) sobek.Value {
 	rt := js.mi.vu.Runtime()
 	a := exportArgs(args)
+	var meta map[string]any
+	var co client.CallOptions
+	if !common.IsNullish(opts) {
+		m, ok := opts.Export().(map[string]any)
+		if !ok {
+			common.Throw(rt, errors.New("callTool: options must be an object like {meta, cancelAfterMs}"))
+		}
+		var err error
+		if err = checkCallKeys(m, "options"); err != nil {
+			common.Throw(rt, fmt.Errorf("callTool: %w", err))
+		}
+		if meta, err = exportMeta(m["meta"]); err != nil {
+			common.Throw(rt, fmt.Errorf("callTool: %w", err))
+		}
+		if co, err = parseCallOptions(m, "options"); err != nil {
+			common.Throw(rt, fmt.Errorf("callTool: %w", err))
+		}
+	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
-	r := js.s.CallTool(ctx, name, a)
+	r := js.s.CallToolMetaWith(ctx, name, a, meta, co)
 	return toJS(rt, toolResultJSON(r, js.includePayloads))
+}
+
+// exportMeta checks a JS meta value: absent or an object.
+func exportMeta(v any) (map[string]any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("meta must be an object")
+	}
+	return m, nil
+}
+
+// callKeys are the per-call option keys of callTool's third argument and of
+// callParallel items (which also hold name and args).
+var callKeys = map[string]bool{"meta": true, "cancelAfterMs": true}
+
+// checkCallKeys rejects keys of per-call options that are not callKeys (or
+// one of extra), like unknown client options are rejected.
+func checkCallKeys(m map[string]any, what string, extra ...string) error {
+	for k := range m {
+		if callKeys[k] || slices.Contains(extra, k) {
+			continue
+		}
+		return fmt.Errorf("%s: unknown option %q", what, k)
+	}
+	return nil
+}
+
+// parseCallOptions reads the per-call options of callTool's third argument
+// and of callParallel items: cancelAfterMs (milliseconds or a duration
+// string; 0 or absent = never cancel). Keys of m it does not know are left
+// to the caller (meta is read by exportMeta; callParallel items also hold
+// name and args).
+func parseCallOptions(m map[string]any, what string) (client.CallOptions, error) {
+	var co client.CallOptions
+	if v, ok := m["cancelAfterMs"]; ok && v != nil {
+		d, err := parseDuration(v)
+		if err != nil {
+			return co, fmt.Errorf("%s.cancelAfterMs: %w", what, err)
+		}
+		if d < 0 {
+			return co, fmt.Errorf("%s.cancelAfterMs must not be negative", what)
+		}
+		co.CancelAfter = d
+	}
+	return co, nil
 }
 
 func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
@@ -470,7 +551,19 @@ func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 		if !ok || str(m["name"]) == "" {
 			common.Throw(rt, fmt.Errorf("callParallel: element %d must be {name, args}", i))
 		}
-		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"]}
+		what := fmt.Sprintf("element %d", i)
+		if err := checkCallKeys(m, what, "name", "args"); err != nil {
+			common.Throw(rt, fmt.Errorf("callParallel: %w", err))
+		}
+		meta, err := exportMeta(m["meta"])
+		if err != nil {
+			common.Throw(rt, fmt.Errorf("callParallel: %s: %w", what, err))
+		}
+		co, err := parseCallOptions(m, what)
+		if err != nil {
+			common.Throw(rt, fmt.Errorf("callParallel: %w", err))
+		}
+		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"], Meta: meta, CallOptions: co}
 	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
 	results := js.s.CallParallel(ctx, calls) // returns after all goroutines finish
@@ -512,8 +605,14 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 		"content":    content,
 		"durationMs": float64(r.Duration) / float64(time.Millisecond),
 	}
+	if r.ServedBy != "" {
+		out["servedBy"] = r.ServedBy
+	}
 	if len(r.StructuredContent) > 0 {
 		out["structuredContent"] = r.StructuredContent
+	}
+	if r.Cancelled {
+		out["cancelled"] = true
 	}
 	if r.Err != nil {
 		e := map[string]any{"type": r.Err.Type, "message": r.Err.Message}
@@ -522,6 +621,9 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 		}
 		if r.Err.Code != 0 {
 			e["code"] = r.Err.Code
+		}
+		if r.Err.ServedBy != "" {
+			e["servedBy"] = r.Err.ServedBy
 		}
 		out["error"] = e
 	}
@@ -561,6 +663,9 @@ func throwMCP(rt *sobek.Runtime, e *client.Error) {
 	_ = obj.Set("status", e.HTTPStatus)
 	if e.Code != 0 {
 		_ = obj.Set("code", e.Code)
+	}
+	if e.ServedBy != "" {
+		_ = obj.Set("servedBy", e.ServedBy)
 	}
 	panic(obj)
 }

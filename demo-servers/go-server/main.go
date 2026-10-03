@@ -5,13 +5,22 @@
 // server/discover) and also serve legacy clients (initialize handshake is accepted but
 // no Mcp-Session-Id is issued or checked). GET/DELETE /mcp return 405.
 //
-// Env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), JSON_RESPONSE (0).
+// Env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), JSON_RESPONSE (0), SERVER_NAME (stateless-2026).
+//
+// Version-skew targets (demo-servers/README.md, scenarios/version-skew.js) use this image as the newer build:
+//
+//	NEW_TOOL=1        also list `new_tool`, a tool the older build doesn't have
+//	STATELESS_ONLY=1  the build dropped the stateful protocol: a request that is not 2026-07-28 or later
+//	                  (initialize, or a Mcp-Protocol-Version older than 2026-07-28) gets HTTP 400 with
+//	                  JSON-RPC -32022 UnsupportedProtocolVersion, data {supported: ["2026-07-28"], requested}
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
@@ -30,7 +39,18 @@ var (
 	bigBytes   = envInt("BIG_BYTES", 200000)
 	bigText    = makeBigText(bigBytes)
 	replica, _ = os.Hostname()
+
+	serverName    = envStr("SERVER_NAME", "stateless-2026")
+	newTool       = os.Getenv("NEW_TOOL") == "1"
+	statelessOnly = os.Getenv("STATELESS_ONLY") == "1"
 )
+
+func envStr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
 
 func envFloat(k string, d float64) float64 {
 	if v, err := strconv.ParseFloat(os.Getenv(k), 64); err == nil {
@@ -75,7 +95,12 @@ type searchArgs struct {
 }
 
 func newServer() *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "stateless-2026", Version: "0.1.0"}, nil)
+	var opts *mcp.ServerOptions
+	if statelessOnly {
+		// server/discover advertises only what this build still speaks.
+		opts = &mcp.ServerOptions{SupportedProtocolVersions: []string{"2026-07-28"}}
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: "0.1.0"}, opts)
 
 	mcp.AddTool(s, &mcp.Tool{Name: "fast", Description: "Returns immediately."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
@@ -140,7 +165,58 @@ func newServer() *mcp.Server {
 			b, _ := json.Marshal(map[string]any{"query": a.Query, "results": res})
 			return text(string(b)), nil, nil
 		})
+
+	if newTool {
+		mcp.AddTool(s, &mcp.Tool{Name: "new_tool", Description: "Only on the newer build (NEW_TOOL=1)."},
+			func(ctx context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
+				return text("new_tool: ok from " + replica), nil, nil
+			})
+	}
 	return s
+}
+
+// rejectLegacy (STATELESS_ONLY=1) answers every POST that does not use the 2026-07-28 (or later) protocol
+// with a typed UnsupportedProtocolVersion error, as a build that dropped the stateful protocol would.
+func rejectLegacy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		if err != nil {
+			http.Error(w, "reading body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var msg struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal(body, &msg)
+		v := r.Header.Get("Mcp-Protocol-Version")
+		if msg.Method == "initialize" {
+			v = msg.Params.ProtocolVersion
+		} else if v >= "2026-07-28" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		id := msg.ID
+		if len(id) == 0 {
+			id = json.RawMessage("null")
+		}
+		resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{
+			"code":    -32022,
+			"message": fmt.Sprintf("Unsupported protocol version %q: this build only speaks 2026-07-28", v),
+			"data":    map[string]any{"supported": []string{"2026-07-28"}, "requested": v},
+		}})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(resp)
+	})
 }
 
 func rssBytes() int64 {
@@ -174,15 +250,19 @@ func main() {
 	})
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	if statelessOnly {
+		mux.Handle("/mcp", rejectLegacy(handler))
+	} else {
+		mux.Handle("/mcp", handler)
+	}
 	mux.HandleFunc("GET /metrics", metrics)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"name":"stateless-2026","replica":%q,"protocols":%q}`, replica, mcp.SupportedProtocolVersions())
+		fmt.Fprintf(w, `{"ok":true,"name":%q,"replica":%q,"protocols":%q}`, serverName, replica, mcp.SupportedProtocolVersions())
 	})
 
 	addr := ":" + strconv.Itoa(envInt("PORT", 3000))
-	log.Printf("stateless-2026 (go-sdk) listening on %s, protocols %v", addr, mcp.SupportedProtocolVersions())
+	log.Printf("%s (go-sdk) listening on %s, protocols %v, new_tool %v, stateless only %v", serverName, addr, mcp.SupportedProtocolVersions(), newTool, statelessOnly)
 	withReplica := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Served-By", replica)
 		mux.ServeHTTP(w, r)

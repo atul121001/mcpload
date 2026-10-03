@@ -262,6 +262,67 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 			r.Capacity = sampleCapacity()
 			r.Capacity.BreakingVUs = I(0)
 		}},
+		{"resilience blocks valid", "", func(r *Report) {
+			r.Sessions, r.Chaos, r.CallIntegrity = sampleSessions(), sampleChaos(), sampleIntegrity()
+			r.Verdicts = append(r.Verdicts,
+				Verdict{ID: VerdictSessionSurvival, Status: StatusFail, Signal: "mcp_session_lifetime", Message: "x"},
+				Verdict{ID: VerdictRecovery, Status: StatusPass, Signal: "chaos.recovery", Message: "x"},
+				Verdict{ID: VerdictCallIntegrity, Status: StatusWarn, Signal: "callIntegrity", Message: "x"})
+		}},
+		{"chaos not run valid", "", func(r *Report) { r.Chaos = &Chaos{Action: "restart", Container: "c"} }},
+		{"sessions do not add up", "sessions.survived + sessions.died", func(r *Report) {
+			r.Sessions = sampleSessions()
+			r.Sessions.Survived++
+		}},
+		{"sessions bad cause key", "diedByCause", func(r *Report) {
+			r.Sessions = sampleSessions()
+			r.Sessions.DiedByCause = map[string]int64{"Not Found": 2}
+		}},
+		{"chaos bad action", "chaos.action", func(r *Report) {
+			r.Chaos = sampleChaos()
+			r.Chaos.Action = "kill"
+		}},
+		{"chaos recovered without time", "recoveryS must be set exactly when recovered", func(r *Report) {
+			r.Chaos = sampleChaos()
+			r.Chaos.Recovery.RecoveryS = nil
+		}},
+		{"chaos failures > attempts", "connectFailures <= connectAttempts", func(r *Report) {
+			r.Chaos = sampleChaos()
+			r.Chaos.Recovery.ConnectFailures = 100
+		}},
+		{"integrity does not add up", "failedButExecuted + neverRan", func(r *Report) {
+			r.CallIntegrity = sampleIntegrity()
+			r.CallIntegrity.NeverRan++
+		}},
+		{"integrity negative", "callIntegrity.tagged", func(r *Report) {
+			r.CallIntegrity = sampleIntegrity()
+			r.CallIntegrity.Tagged = -1
+		}},
+		{"capacity byErrorType valid", "", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].ByErrorType = map[string]int64{"timeout": 4, "http": 1}
+			r.Capacity.Steps[1].Tools[0].ByErrorType = map[string]int64{"timeout": 4}
+		}},
+		{"capacity bad byErrorType key", "byErrorType key", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].Tools[0].ByErrorType = map[string]int64{"Time-Out": 4}
+		}},
+		{"cancellation valid", "", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Verdicts = append(r.Verdicts, Verdict{ID: VerdictCancellation, Status: StatusWarn, Signal: "mcp_cancellations", Message: "x"})
+		}},
+		{"cancellation unmeasured valid", "", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.Server = nil
+		}},
+		{"cancellation late > cancels", "lateResponses", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.LateResponses = 99
+		}},
+		{"cancellation server percentiles", "p50<=p95", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.Server.WorkAfterCancelP95Ms = F(1)
+		}},
 	}
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -293,6 +354,12 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 	}
 }
 
+func sampleCancellation() *Cancellation {
+	return &Cancellation{Cancels: 10, ByOutcome: map[string]int64{"cancelled": 2, "late_response": 8, "completed": 3}, ByReason: map[string]int64{"client": 10},
+		ByTool: map[string]int64{"slow": 10}, LateResponses: 8, SendMs: &Latency{Count: 10, P50: 1, P95: 2, P99: 2, Max: 3},
+		Server: &CancelServer{Cancelled: 10, Observed: 10, WorkAfterCancelP50Ms: F(1800), WorkAfterCancelP95Ms: F(2400), WorkAfterCancelTotalS: 18}}
+}
+
 func sampleCapacity() *Capacity {
 	return &Capacity{
 		PlannedVUs: []int{10, 20, 40}, MinAgents: I(10), MaxSustainableVUs: I(10), BreakingVUs: I(20),
@@ -304,6 +371,22 @@ func sampleCapacity() *Capacity {
 				Breaches: []string{"`slow` p95 1.9 s > 800 ms"}, Tools: []StepTool{{Name: "slow", Reqs: 100, P95: F(1900), P99: F(2100), Breached: []string{"p95", "p99"}}}},
 		},
 	}
+}
+
+func sampleSessions() *Sessions {
+	return &Sessions{Total: 10, Survived: 8, Died: 2, DiedByCause: map[string]int64{"session_not_found": 2}, DiedAfterS: F(302.5), LifetimeP50S: 600,
+		Reconnects: 2, DriftTool: "search", EarlyP95Ms: F(40), LateP95Ms: F(44)}
+}
+
+func sampleChaos() *Chaos {
+	return &Chaos{Action: "restart", Container: "mcpload-chaos-ts", Ran: true, AtS: 30.2, DurationS: 0.8, Recovery: &Recovery{
+		Recovered: true, RecoveryS: F(2), ServerBackS: F(1.3), LastReconnectS: F(2), BudgetS: 30, WindowS: 5, ErrorRate: 0.01, ConnectP95Ms: 1500,
+		Reconnects: 10, ConnectAttempts: 42, ConnectFailures: 32, ErrorsByType: map[string]int64{"http": 57, "session_not_found": 3}}}
+}
+
+func sampleIntegrity() *CallIntegrity {
+	return &CallIntegrity{Source: "http://localhost:3019/calls", Tagged: 2280, Retried: 26, ClientFailed: 3, Executed: 2280, Executions: 2285,
+		FailedButExecuted: 2, NeverRan: 1, Duplicated: 5, DuplicateExecutions: 5, DuplicatedAfterRetry: 5}
 }
 
 // A '$' in the label must be copied literally into <title> by both renderers.

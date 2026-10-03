@@ -8,6 +8,7 @@ import { check, sleep } from 'k6';
 import { config, clientOptions, randInt, thinkSeconds } from './config.js';
 import { planTools, pick } from './tools.js';
 import { argsFromSchema } from './schema-args.js';
+import { cancelOptions } from './cancel.js';
 
 export { argsFromSchema, pick };
 
@@ -63,10 +64,15 @@ function runGroup(s, batch, idx, results, tagDefault) {
   const tags = exec.vu.metrics.tags;
   if (tagDefault) tags.budget = 'default';
   try {
+    // Per-call options: meta (params._meta) and, with CANCEL_RATE, { cancelAfterMs } (lib/cancel.js).
+    const co = idx.map((i) => {
+      const c = cancelOptions(batch[i].name, config.cancel);
+      return batch[i].meta ? Object.assign({ meta: batch[i].meta }, c || {}) : c;
+    });
     const rs =
       idx.length === 1
-        ? [s.callTool(batch[idx[0]].name, batch[idx[0]].args)]
-        : s.callParallel(idx.map((i) => ({ name: batch[i].name, args: batch[i].args })));
+        ? [s.callTool(batch[idx[0]].name, batch[idx[0]].args, co[0])]
+        : s.callParallel(idx.map((i, j) => Object.assign({ name: batch[i].name, args: batch[i].args }, co[j] || {})));
     for (let j = 0; j < idx.length; j++) results[idx[j]] = rs[j];
   } finally {
     if (tagDefault) delete tags.budget;
@@ -74,7 +80,8 @@ function runGroup(s, batch, idx, results, tagDefault) {
 }
 
 /**
- * Call a batch of [{name, args, ownBudget}] (entries from toolTable()/pick()). Calls to tools without their own
+ * Call a batch of [{name, args, ownBudget, meta?}] (entries from toolTable()/pick(); meta is sent as params._meta).
+ * Calls to tools without their own
  * threshold run as a separate callParallel group with the VU tag budget=default, so the catch-all thresholds
  * mcp_req_duration{budget:default} / mcp_tool_error_rate{budget:default} cover them (and only them).
  * Returns results in input order.
@@ -95,13 +102,13 @@ export function callTools(s, batch) {
  *         onSession?: (s) => void  called after connect (e.g. to add pings),
  *         tableFilter?: (tt) => tt  adjusts the session's tool table before any call (e.g. drop tools),
  *         beforeRound?: (r) => void  called before each round of calls (e.g. to retag the VU) }
- * Returns { ok, protocol, sessionId, calls, toolErrors }.
+ * Returns { ok, protocol, sessionId, calls, toolErrors, cancelled }.
  */
 export function agentSession(client, opts) {
   const o = opts || {};
   const rounds = o.rounds !== undefined ? o.rounds : randInt(config.rounds.min, config.rounds.max);
   const parallel = o.parallel !== undefined ? o.parallel : config.parallel;
-  const out = { ok: false, protocol: undefined, sessionId: undefined, calls: 0, toolErrors: 0 };
+  const out = { ok: false, protocol: undefined, sessionId: undefined, calls: 0, toolErrors: 0, cancelled: 0 };
 
   let s;
   try {
@@ -135,12 +142,17 @@ export function agentSession(client, opts) {
       out.calls += results.length;
       for (let i = 0; i < results.length; i++) {
         const res = results[i];
+        // Calls cancelled on purpose (CANCEL_RATE) are counted apart and are not errors.
+        if (res.cancelled) {
+          out.cancelled++;
+          continue;
+        }
         // isError results are expected (e.g. `flaky`): counted in mcp_tool_error_rate, not logged.
         if (res.error && res.error.type !== 'tool_iserror') logError(`${batch[i].name}: ${res.error.type}: ${res.error.message}`);
         if (res.error || res.isError) out.toolErrors++;
       }
       check(results, {
-        'tools/call no transport error': (rs) => rs.every((x) => !x.error || x.error.type === 'tool_iserror'),
+        'tools/call no transport error': (rs) => rs.every((x) => !x.error || x.error.type === 'tool_iserror' || x.cancelled),
       });
       if (o.think !== false && r < rounds - 1) sleep(thinkSeconds());
     }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -46,6 +48,8 @@ type runOpts struct {
 	includePayloads                 bool
 	k6Out                           string
 	waitReady                       time.Duration
+	chaosRestart                    time.Duration
+	chaosContainer, callsURL        string
 	set                             map[string]bool
 }
 
@@ -80,6 +84,9 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.BoolVar(&o.includePayloads, "include-payloads", false, "keep tool arguments/results (INCLUDE_PAYLOADS=1)")
 	fs.StringVar(&o.k6Out, "k6-out", "", "keep k6's raw outputs (metrics.ndjson, summary.json) in this directory")
 	fs.DurationVar(&o.waitReady, "wait-ready", 0, "before starting, wait up to this long (e.g. 2m) for the server to answer an MCP handshake (0 = don't wait)")
+	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after k6 starts (e.g. 30s); only on servers you own (0 = off)")
+	fs.StringVar(&o.chaosContainer, "chaos-container", "", "container to restart for --chaos-restart (default: --container)")
+	fs.StringVar(&o.callsURL, "calls-url", "", "server endpoint listing executed call ids (GET ?prefix=, answers {\"executions\": {id: count}}), e.g. http://localhost:3019/calls, for the call_integrity verdict")
 	return fs
 }
 
@@ -137,6 +144,24 @@ func (o *runOpts) validate(pos []string) error {
 	}
 	if o.interval < time.Second {
 		return errors.New("--interval must be at least 1s")
+	}
+	if o.chaosRestart < 0 {
+		return errors.New("--chaos-restart must not be negative")
+	}
+	if o.chaosRestart > 0 && o.chaosContainer == "" {
+		// Never restart something that was not named: only an explicit container.
+		if o.container == "" {
+			return errors.New("--chaos-restart needs --chaos-container (or --container)")
+		}
+		o.chaosContainer = o.container
+	}
+	if o.chaosContainer != "" && o.chaosRestart == 0 {
+		return errors.New("--chaos-container needs --chaos-restart")
+	}
+	if o.callsURL != "" {
+		if u, err := url.Parse(o.callsURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("--calls-url %q must be an http(s) URL", o.callsURL)
+		}
 	}
 	for _, kv := range o.env {
 		if k, _, ok := strings.Cut(kv, "="); !ok || k == "" {
@@ -318,12 +343,33 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			return 0, err
 		}
 	}
+	longLived := scenario == longLivedScenario
+	if longLived {
+		if soakPh, err = longLivedPhases(envMap); err != nil {
+			return 0, err
+		}
+	}
 	stepLoad := scenario == stepLoadScenario
 	var capCfg analysis.CapacityConfig
 	if stepLoad {
 		if capCfg, err = capacityConfig(envMap); err != nil {
 			return 0, err
 		}
+	}
+	var recCfg analysis.RecoveryConfig
+	if o.chaosRestart > 0 {
+		if recCfg, err = recoveryConfig(envMap); err != nil {
+			return 0, err
+		}
+		logf("chaos: will run `docker restart %s` %s after k6 starts. Only do this to servers you own.", o.chaosContainer, o.chaosRestart)
+	}
+	runID := newRunID()
+	// Call ids ("<prefix>-<vu>-<n>") get a per-run prefix, so the server's record
+	// of executed ids (--calls-url) can be narrowed to this run.
+	callPrefix := envMap["CALL_ID_PREFIX"]
+	if callPrefix == "" && (scenario == reconnectStormScenario || o.callsURL != "") {
+		callPrefix = strings.ReplaceAll(runID, "-", "")[:8]
+		env = append(env, "CALL_ID_PREFIX="+callPrefix)
 	}
 
 	if o.waitReady > 0 {
@@ -352,6 +398,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		if perr != nil {
 			return 0, fmt.Errorf("%s sampler probe failed: %w", o.samplerKind, perr)
 		}
+	}
+	// Server-side cancellation counters before the run (cancellation verdict).
+	var cancelStart *sampler.CancelSnapshot
+	if o.samplerKind == "prometheus" {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if snap, err := sampler.ScrapeCancel(pctx, o.promURL); err == nil && snap.Present {
+			cancelStart = &snap
+		}
+		cancel()
 	}
 
 	dir := o.k6Out
@@ -392,6 +447,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	defer signal.Stop(sig)
 
 	var cpuMon *sampler.CPUMonitor
+	var stopChaos func() chaosRun
 	logf("k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
 	res, err := k6run.Run(k6run.RunConfig{
 		Bin: bin, Script: o.scenario, Env: env,
@@ -400,6 +456,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		OnStart: func(pid int) {
 			cpuMon = sampler.NewCPUMonitor(pid, o.interval)
 			cpuMon.Start()
+			if o.chaosRestart > 0 {
+				stopChaos = scheduleRestart(o.chaosRestart, o.chaosContainer, execRunner, logf)
+			}
 		},
 		Signals: sig,
 		OnSignal: func(s os.Signal, forced bool) {
@@ -414,6 +473,13 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		},
 	})
 	end := time.Now()
+	var chaosRes chaosRun
+	if stopChaos != nil {
+		chaosRes = stopChaos()
+		if !chaosRes.Ran {
+			logf("warning: chaos: k6 finished before the restart of %s was due (%s); nothing was restarted", o.chaosContainer, o.chaosRestart)
+		}
+	}
 	stopSampler()
 	wg.Wait()
 	var gen *report.Generator
@@ -486,7 +552,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	n, trimmed := k6run.KeepBuckets(durationS, o.interval)
 
 	phases := report.Phases{WarmupEndS: 0, LoadEndS: round3(durationS), CooldownEndS: round3(durationS)}
-	if soak {
+	if soak || longLived {
 		phases = soakPh
 	}
 
@@ -502,7 +568,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		SchemaVersion: report.SchemaVersion,
 		Tool:          report.ToolInfo{Name: "mcpload", Version: Version},
 		Run: report.Run{
-			ID:        newRunID(),
+			ID:        runID,
 			StartedAt: report.FormatTime(origin),
 			EndedAt:   report.FormatTime(end),
 			DurationS: round3(durationS),
@@ -586,12 +652,54 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	cfg.LeakSlopeMBPerMin = o.leakSlope
 	cfg.MinR2 = o.minR2
 	r.Verdicts = analysis.Verdicts(r, cfg)
-	r.Verdicts = append(r.Verdicts,
-		analysis.SessionNotFoundVerdict(float64(s.ByErrorType["session_not_found"]), float64(s.Reqs)),
+	if o.chaosRestart > 0 {
+		r.Chaos = chaosReport(o.chaosContainer, chaosRes, origin, agg, recCfg)
+	}
+	snf := s.ByErrorType["session_not_found"]
+	var snfOutage int64
+	if r.Chaos != nil && r.Chaos.Recovery != nil {
+		// Sessions lost to the restart are expected; recovery judges them.
+		snfOutage = min(snf, r.Chaos.Recovery.ErrorsByType["session_not_found"])
+	}
+	snfV := analysis.SessionNotFoundVerdict(float64(snf-snfOutage), float64(s.Reqs))
+	if snfOutage > 0 {
+		if snf == snfOutage {
+			snfV.Message = "No 404 session-not-found responses outside the chaos restart."
+		}
+		snfV.Message += fmt.Sprintf(" %d came right after the restart, as expected (the server lost its sessions); the recovery verdict judges those.", snfOutage)
+	}
+	r.Verdicts = append(r.Verdicts, snfV,
 		analysis.ThresholdVerdict(r.Thresholds),
 		analysis.GeneratorVerdict(r))
+	if r.Sessions = longSessions(agg); r.Sessions != nil || longLived {
+		r.Verdicts = append(r.Verdicts, analysis.SessionSurvivalVerdict(r.Sessions))
+	}
+	if r.Chaos != nil || scenario == reconnectStormScenario {
+		r.Verdicts = append(r.Verdicts, analysis.RecoveryVerdict(r.Chaos))
+	}
+	if tagged, attempts := agg.CallAttempts(); tagged > 0 || o.callsURL != "" {
+		var fetchErr error
+		if o.callsURL != "" {
+			fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			execs, ferr := fetchExecutions(fctx, http.DefaultClient, o.callsURL, callPrefix+"-")
+			cancel()
+			if fetchErr = ferr; ferr != nil {
+				logf("warning: could not read executed call ids from %s: %v", o.callsURL, ferr)
+			} else {
+				r.CallIntegrity = analysis.CallIntegrity(analysis.IntegrityInput{Source: o.callsURL, Tagged: tagged, Attempts: attempts, Executions: execs})
+			}
+		}
+		ciV := analysis.CallIntegrityVerdict(tagged, r.CallIntegrity)
+		if fetchErr != nil && tagged > 0 {
+			ciV.Message = fmt.Sprintf("Skipped: could not read the server's executed call ids from %s: %v.", o.callsURL, fetchErr)
+		}
+		r.Verdicts = append(r.Verdicts, ciV)
+	}
 	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
 		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
+	}
+	if sk := agg.Skew(); sk != nil || scenario == versionSkewScenario {
+		r.Verdicts = append(r.Verdicts, analysis.VersionSkewVerdict(skewInput(sk)))
 	}
 	if steps := agg.Steps(); len(steps) > 0 || stepLoad {
 		if !stepLoad {
@@ -606,6 +714,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			r.Capacity = cp
 		}
 		r.Verdicts = append(analysis.SkipDriftForSteps(r.Verdicts), v)
+	}
+	if cs := agg.Cancellations(); cs != nil {
+		c := toCancellation(cs)
+		var worst *analysis.CancelTool
+		if cancelStart != nil && cs.Cancels > 0 {
+			c.Server, worst = serverCancellation(o.promURL, *cancelStart, logf)
+		}
+		r.Cancellation = c
+		r.Verdicts = append(r.Verdicts, analysis.CancellationVerdict(c, worst))
 	}
 
 	r.Normalize()
@@ -702,6 +819,22 @@ func roundSeries(s []*float64, d int) []*float64 {
 		}
 	}
 	return s
+}
+
+// versionSkewScenario is the options.tags.scenario_name of scenarios/version-skew.js.
+const versionSkewScenario = "version-skew"
+
+// skewInput converts the version-skew metrics for the version_skew verdict (nil: no requests).
+func skewInput(s *k6run.SkewStats) analysis.SkewInput {
+	if s == nil {
+		return analysis.SkewInput{}
+	}
+	in := analysis.SkewInput{Requests: s.Requests, Failures: s.Failures, Replicas: s.Replicas,
+		Negotiated: s.Negotiated, FailureMedianMs: map[string]float64{}}
+	for k, l := range s.FailureMs {
+		in.FailureMedianMs[k] = l.P50
+	}
+	return in
 }
 
 // phaseP95 converts one k6 scenario's per-tool latency for the tool_isolation verdict.

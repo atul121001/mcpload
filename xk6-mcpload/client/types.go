@@ -59,6 +59,9 @@ const (
 	// that the client has no answer for (answered with -32601), or any
 	// request on a stateless (2026-07-28) stream (not answered).
 	ErrUnsupportedRequest = "unsupported_request"
+	// ErrCancelled: the client cancelled the call itself (CallOptions.CancelAfter).
+	// It is not a server error: such calls are not counted in mcp_errors.
+	ErrCancelled = "cancelled"
 )
 
 // IsStateless reports whether a protocol version uses the stateless
@@ -105,6 +108,7 @@ type Error struct {
 	HTTPStatus int             // 0 when no HTTP response was received
 	Code       int             // JSON-RPC error code, when there is one
 	Data       json.RawMessage // JSON-RPC error data, when there is one
+	ServedBy   string          // Options.ServedByHeader of the response; "" when absent or no response
 }
 
 func (e *Error) Error() string {
@@ -131,10 +135,20 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
-// ToolCall is one element of a parallel call batch.
+// ToolCall is one element of a parallel call batch. Meta, when set, is sent
+// as the request's params._meta (e.g. a call id the server can record).
 type ToolCall struct {
 	Name string
 	Args any
+	Meta map[string]any
+	CallOptions
+}
+
+// CallOptions are per-call options of CallToolWith and CallToolMetaWith.
+type CallOptions struct {
+	// CancelAfter > 0 cancels the call when no response arrived within it:
+	// see Session.CallToolWith.
+	CancelAfter time.Duration
 }
 
 // ToolResult is the outcome of a tools/call. Err is set on any failure,
@@ -144,7 +158,11 @@ type ToolResult struct {
 	Content           json.RawMessage
 	StructuredContent json.RawMessage
 	Duration          time.Duration
+	ServedBy          string // Options.ServedByHeader of the response; "" when absent or no response
 	Err               *Error
+	// Cancelled is set when CallOptions.CancelAfter cancelled the call
+	// (Err.Type == ErrCancelled).
+	Cancelled bool
 }
 
 // RequestStats describes one HTTP exchange performed by the client.

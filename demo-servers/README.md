@@ -15,7 +15,7 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | Tool | Arguments | Behaviour |
 |---|---|---|
 | `fast` | none | returns `ok` immediately |
-| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns |
+| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns. TS servers stop sleeping when the call is cancelled (`notifications/cancelled`), except `ts-ignore-cancel` |
 | `flaky` | `rate` (0..1, default `FLAKY_RATE` = 0.1) | returns `isError: true` with probability `rate` |
 | `big` | `bytes` (default `BIG_BYTES` = 200000) | returns a ~200 KB text block |
 | `search` | `query` (string, required), `limit` (default 5) | echoes the query with a fake result list (JSON text) |
@@ -37,14 +37,17 @@ only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
 | 3005 | `stateless-2026` | nginx round-robin over 2 × Go server, `github.com/modelcontextprotocol/go-sdk` v1.8.0, `StreamableHTTPOptions{Stateless: true}` | 2026-07-28 (stateless, `server/discover`, `Mcp-Method`/`Mcp-Name`) and legacy | **pass** (requests spread 50/50, no errors) |
 | 3006 | `mock-oauth` | dependency-free Node token server: `POST /token` (client_credentials, form-encoded, Basic or body creds `mcpload:secret`), `POST /introspect` (RFC 7662). Tokens are opaque and expire after **30 s** | OAuth 2.0 | n/a (auth server) |
 | 3008 | `ts-pooled` | same image, `POOL_SIZE=2`: every tool call must hold one of 2 process-wide slots (like one small DB connection pool shared by all tools), so `fast` and `search` queue behind `slow` | 2025-11-25 (stateful) | **`tool_isolation` flagged** with `--scenario isolation` (ts-healthy passes it) |
+| 3009 | `skew` | nginx round-robin over two replicas on **different builds** (a rolling deploy caught halfway): `skew-old` = the TS image (stateful 2025-11-25 only), `skew-new` = the Go image with `STATELESS_ONLY=1` (2026-07-28 only: `initialize` or an older `Mcp-Protocol-Version` gets HTTP 400 `-32022` Unsupported protocol version, `data.supported: ["2026-07-28"]`) and `NEW_TOOL=1` (also lists `new_tool`) | mixed | **`version_skew` warns** with `--scenario version-skew` (every mismatch fails fast: HTTP 400 from the old build, -32022 from the new one, `Tool new_tool not found` with `TOOLS_CACHE_TTL`) |
+| 3010 | `skew-hang` | the same, but the old replica is `skew-hang-old` (`HANG_UNKNOWN=1`): a request it can't serve (no session and not `initialize`, e.g. a 2026-07-28 request; an unknown session; a `tools/call` for a tool it doesn't have) is accepted and never answered | mixed | **`version_skew` fails** (requests hang until the client timeout) |
 | 3007 | `ts-oauth` | `ts-healthy` with `REQUIRE_AUTH_URL=http://mock-oauth:3000/introspect`: every `/mcp` request must carry a Bearer token that introspects as active, otherwise **401** | 2025-11-25 (stateful) | **refresh storm measured** (clients must refresh every 30 s) |
+| 3011 | `ts-ignore-cancel` | same image, `IGNORE_CANCEL=1`: `notifications/cancelled` is recorded but ignored, so a cancelled call keeps running and still sends its (late) response | 2025-11-25 (stateful) | **`cancellation` flagged** with `CANCEL_RATE` set and `--sampler prometheus` (ts-healthy passes it) |
 
 Side endpoints:
-- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, mock-oauth (3006) and each Go replica.
-  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, plus prom-client default metrics.
+- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, 3008, 3011, mock-oauth (3006) and each Go replica.
+  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, `mcp_cancelled_total{tool}` (calls cancelled while running), `mcp_work_after_cancel_seconds{tool}` (histogram: how long a cancelled call kept running after its cancel arrived; ~0 when honoured), `mcp_cancelled_inflight` (cancelled calls still running), plus prom-client default metrics.
   - Python / Go: `process_resident_memory_bytes`, `mcp_active_sessions` (always 0); Go also `go_memstats_heap_alloc_bytes`, `go_goroutines`.
   - mock-oauth: `oauth_tokens_issued_total`, `oauth_introspect_total{active}`, `oauth_live_tokens`.
-  - Behind the two nginx LBs (3004, 3005), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
+  - Behind the nginx LBs (3004, 3005, 3009, 3010), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
 - `GET /healthz` on every server.
 - Responses carry `X-Served-By: <replica hostname>`; the LBs also add `X-Upstream: <ip:port>`.
 
@@ -54,7 +57,7 @@ Memory limits (`docker stats` shows them): TS / Python 256 MiB, **ts-leaky 512 M
 
 ```bash
 cd demo-servers
-docker compose up -d --build      # builds 4 images: ts-server, py-server, go-server, mock-oauth
+docker compose up -d --build      # builds ts-server, py-server, go-server, mock-oauth (+ the :skew tags of ts-server and go-server)
 docker compose ps
 ./smoke.sh                        # asserting smoke test of every target, exits non-zero on failure (or: ./smoke.sh lb-stateful)
 docker compose restart ts-leaky   # reset the leak between runs
@@ -66,8 +69,26 @@ No local Node, Python or Go is needed: everything builds inside Docker (`node:22
 (module `github.com/atul121001/mcpload/demo-servers/go-server`) are committed; the image only runs `go mod download`.
 
 Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK_BYTES` (1 MiB),
-`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
-`JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE).
+`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `IGNORE_CANCEL=1` (TS), `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
+`JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE), `SERVER_NAME`, `NEW_TOOL=1` and `STATELESS_ONLY=1` (Go),
+`HANG_UNKNOWN=1` (TS).
+
+The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcpload-demo/go-server:skew`), so
+`docker compose up -d --build skew skew-hang` never rebuilds the images the other targets run.
+
+### Call tracking and chaos restarts (TS image, off in compose)
+
+`TRACK_CALLS=1` makes the TS server record every `tools/call` that carries a call id in `params._meta["io.mcpload/callId"]` (sent by `scenarios/reconnect-storm.js`). The id is recorded when the tool's handler starts, the point where a non-idempotent tool would act. Records are appended to `CALL_LOG` (default `/tmp/mcpload-calls.log`, inside the container, which survives `docker restart`) and reloaded on start. `GET /calls?prefix=<p>` returns `{"executions": {"<call id>": <times run>}}`, and `/metrics` adds `mcp_tool_executions_total` and `mcp_tool_duplicate_executions_total`. `DEDUPE=atomic` skips a call id that already ran (an idempotency key); `DEDUPE=racy` makes the same check but records the id only after an `await` (`DEDUPE_RACE_MS`, 20), so two concurrent calls with one id both pass it: the non-atomic duplicate check.
+
+None of the compose services set these, and `mcpload run --chaos-restart` restarts a container, so run a private copy for chaos tests rather than a shared target:
+
+```sh
+docker build -t mcpload-chaos/ts-server:local demo-servers/ts-server
+docker run -d --rm --name mcpload-chaos-ts -p 127.0.0.1:3019:3000 -e TRACK_CALLS=1 mcpload-chaos/ts-server:local
+./mcpload run --scenario reconnect-storm --url http://localhost:3019/mcp --vus 10 --duration 60s \
+  --chaos-restart 20s --chaos-container mcpload-chaos-ts --calls-url http://localhost:3019/calls
+docker stop mcpload-chaos-ts
+```
 
 ## curl examples
 
@@ -146,6 +167,9 @@ On 3003, `server/discover` advertises only `2026-07-28`, but legacy stateless ca
   | ts-leaky (`docker stats`) | 30.2 MiB | **351 MiB** | **301** (`mcp_leaked_bytes` 315621376) |
 - `ts-oauth`: no token → 401; fresh token → 200; the same token after 31 s → 401; a refreshed token → 200.
 - `flaky` at the default 0.1: 12/100 errors (Python), 7/100 (TS). `big` is ~202 KB on the wire. `slow` takes ~0.31 s.
+
+- `skew` (3 Oct 2026): `server/discover` alternates between `skew-old` (400 `-32000` "no Mcp-Session-Id header") and `skew-new` (200, `supportedVersions: ["2026-07-28"]`); `initialize` alternates between `skew-old` (200, session id) and `skew-new` (400 `-32022`); in a `skew-old` session, `tools/call new_tool` returns `isError: true` "MCP error -32602: Tool new_tool not found".
+- `skew-hang`: `server/discover` on `skew-hang-old` gets no answer (curl `-m 3` gives up after 3.0 s); on `skew-new` it returns 200 in 0.2 s.
 
 ## Implementation notes
 

@@ -29,7 +29,12 @@
 //   SAMPLING, ELICITATION, ROOTS  answer the server's sampling/createMessage, elicitation/create or roots/list
 //                  requests (stateful servers only) and declare the capability: "1" for the default mock answer,
 //                  or the client option as JSON, e.g. {"delayMs":200} or {"action":"decline"} (default off)
+//   CANCEL_RATE    share of tools/call to cancel (0..1, default 0): such a call is cancelled when it has no response
+//                  CANCEL_AFTER_MS (default 150) after it was sent. CANCEL_TOOLS: comma-separated tools eligible
+//                  (default all). CANCEL_WAIT: how long a cancelled call's stream is still read for a late response
+//                  (client option cancelWait, default 2s). See lib/cancel.js.
 import { thresholdToolNames } from './tools.js';
+import { parseCancelConfig } from './cancel.js';
 
 function env(name, def) {
   const v = __ENV[name];
@@ -108,6 +113,8 @@ export const config = {
   sampling: envResponder('SAMPLING'),
   elicitation: envResponder('ELICITATION'),
   roots: envResponder('ROOTS'),
+  cancel: parseCancelConfig((name) => env(name, undefined)),
+  cancelWait: env('CANCEL_WAIT', undefined),
 
   // Explicit TOOL_MIX, or null: demo mix on a demo server, else uniform over listed tools (lib/tools.js).
   toolMix: envObject('TOOL_MIX') || null,
@@ -148,6 +155,7 @@ export function clientOptions(overrides) {
     includePayloads: config.includePayloads,
   };
   if (config.auth) o.auth = config.auth;
+  if (config.cancelWait !== undefined) o.cancelWait = config.cancelWait;
   for (const k of ['sampling', 'elicitation', 'roots']) if (config[k] !== undefined) o[k] = config[k];
   return Object.assign(o, overrides || {});
 }

@@ -34,6 +34,7 @@ So the extension has its own small client in `client/`, and uses plain structs f
 | Headers | `MCP-Protocol-Version` | `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` (for `tools/call`, `resources/read`, `prompts/get`); `Mcp-Param-*` for parameters marked `x-mcp-header` (planned) |
 | Streams | SSE responses to POST (standalone GET stream and `Last-Event-ID` resume are not used) | no GET or DELETE (they return 405); `subscriptions/listen` (planned); MRTR (`InputRequiredResult`) (planned) |
 | Server-to-client requests over SSE (sampling, elicitation) | answered while the response stream is read: each request is answered by a POST of the JSON-RPC response (with `Mcp-Session-Id`) from static responders configured on the Client, with an optional delay; unknown methods get `-32601` | forbidden by the spec (MRTR `InputRequiredResult` instead, planned): counted as `unsupported_request`, not answered |
+| Cancellation (`cancelAfterMs`, timeouts) | POST `notifications/cancelled {requestId, reason}` with the session headers; the response stream is still read for `cancelWait` to count late responses, then closed | closing the response stream is the cancellation (no notification); late responses cannot be seen |
 | Errors of interest | 404 session not found | 400 `-32020 HeaderMismatch` |
 
 `protocol: "auto"` follows the spec's fallback: send a modern request first, and fall back to `initialize` only on a 400 whose body isn't a recognised modern JSON-RPC error.
@@ -50,7 +51,7 @@ xk6-mcpload/            Go module → JS import "k6/x/mcpload"
   client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
-scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, oauth-refresh
+scenarios/              JS library: agent-session, agent-workflow, burst, soak, long-lived, reconnect-storm, lb-check, isolation, step-load, version-skew, oauth-refresh
 cmd/mcpload/            Go CLI: run → sample → analyse → report.json + report.html
 demo-servers/           docker compose test targets (§7)
 action/                 GitHub Action (composite): build binary, run scenario, gate, upload
@@ -102,6 +103,9 @@ Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_t
 | `mcp_sessions_open` | Gauge | client-side open sessions |
 | `mcp_server_requests` | Counter | server-to-client requests read from response streams (`method` = the server's method) |
 | `mcp_server_request_duration` | Trend | time to answer a server-to-client request |
+| `mcp_cancellations` | Counter | cancelled calls, tagged `reason` and `outcome` |
+| `mcp_cancel_duration` | Trend | time to send a cancel |
+| `mcp_cancel_late_response` | Trend | cancel to a late response (stateful) |
 
 CI budgets use standard k6 thresholds:
 ```js
@@ -116,7 +120,10 @@ thresholds: {
 - **burst:** VUs ramp quickly to simulate many agents starting at once, including an `initialize` flood.
 - **soak:** agent-session at constant arrival rate for 30–60 minutes (§6).
 - **lb-check:** a session-based flow against more than one replica; checks for `session_not_found` and `header_mismatch`.
+- **version-skew:** agent sessions against a load balancer whose replicas run different builds (a rolling deploy halfway through). Every failed request is classified as a fast typed error or a hang; verdict `version_skew`.
 - **oauth-refresh:** short-lived tokens with many VUs; measures refresh storms and the 401 rate.
+- **long-lived:** one session per agent held for `SESSION_MIN` minutes with think time and pings; sessions that die early (`session_not_found`) and late-vs-early latency within a session (verdict `session_survival`). Soak-style phases, so the leak verdicts apply.
+- **reconnect-storm:** agents that reconnect as soon as their session breaks; with `mcpload run --chaos-restart` the CLI restarts the server container mid-run (`docker restart`) and measures recovery (verdict `recovery`). Calls carry a call id in `params._meta["io.mcpload/callId"]`, so a server that records executions (`--calls-url`) shows calls lost or run twice (verdict `call_integrity`).
 
 ## 6. Soak and leak method (CLI)
 **Samplers** (set with `--sampler`):

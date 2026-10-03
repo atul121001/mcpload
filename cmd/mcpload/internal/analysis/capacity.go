@@ -23,6 +23,9 @@ import (
 //     failed connects against ERR_RATE;
 //   - a step without any tools/call is a breach (sessions never got going).
 //
+// An error-rate breach names the tool's dominant error class (error_type),
+// e.g. "`slow` error rate 12% > 1%, mostly `timeout` (14 of 17)".
+//
 // The breaking point is the first step with a breach; the max sustainable
 // concurrency is the step before it (the highest step when none broke). When
 // k6 itself was saturated at the breaking step (busiest sampling interval
@@ -87,6 +90,69 @@ func ratioOf(v, budget float64) float64 {
 	return v / budget
 }
 
+// errorClass is one error_type and its count.
+type errorClass struct {
+	name string
+	n    int64
+}
+
+// sortedClasses returns the error types of m, most frequent first (ties by
+// name), without zero counts.
+func sortedClasses(m map[string]int64) []errorClass {
+	var cs []errorClass
+	for k, v := range m {
+		if v > 0 {
+			cs = append(cs, errorClass{k, v})
+		}
+	}
+	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].n != cs[j].n {
+			return cs[i].n > cs[j].n
+		}
+		return cs[i].name < cs[j].name
+	})
+	return cs
+}
+
+// TopErrorTypes formats the n most frequent error types of m, e.g.
+// "timeout 14, http 3" (with "+k more" when there are more); "-" when empty.
+func TopErrorTypes(m map[string]int64, n int) string {
+	cs := sortedClasses(m)
+	if len(cs) == 0 {
+		return "-"
+	}
+	var parts []string
+	for i, c := range cs {
+		if i == n {
+			parts = append(parts, fmt.Sprintf("+%d more", len(cs)-n))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s %d", c.name, c.n))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// dominantClass names the error class behind an error-rate breach:
+// ", all `timeout`", ", mostly `timeout` (14 of 17)", or "" when unknown.
+func dominantClass(m map[string]int64) string {
+	cs := sortedClasses(m)
+	if len(cs) == 0 {
+		return ""
+	}
+	if len(cs) == 1 {
+		return fmt.Sprintf(", all `%s`", cs[0].name)
+	}
+	var total int64
+	for _, c := range cs {
+		total += c.n
+	}
+	word := "mostly"
+	if 2*cs[0].n <= total {
+		word = "mainly"
+	}
+	return fmt.Sprintf(", %s `%s` (%d of %d)", word, cs[0].name, cs[0].n, total)
+}
+
 // judgeStep sets Passed, Breached, Breaches and GeneratorSaturated of st and
 // returns its breaches, worst first.
 func judgeStep(st *report.Step, cfg CapacityConfig) []breach {
@@ -119,7 +185,7 @@ func judgeStep(st *report.Step, cfg CapacityConfig) []breach {
 		}
 		if t.ErrorRate >= b.ErrorRate {
 			t.Breached = append(t.Breached, "errorRate")
-			bs = append(bs, breach{ratioOf(t.ErrorRate, b.ErrorRate), fmt.Sprintf("`%s` error rate %s > %s", t.Name, fmtPct(t.ErrorRate), fmtPct(b.ErrorRate))})
+			bs = append(bs, breach{ratioOf(t.ErrorRate, b.ErrorRate), fmt.Sprintf("`%s` error rate %s > %s%s", t.Name, fmtPct(t.ErrorRate), fmtPct(b.ErrorRate), dominantClass(t.ByErrorType))})
 		}
 	}
 	if calls == 0 {

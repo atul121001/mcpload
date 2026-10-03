@@ -27,7 +27,10 @@ type Options struct {
 	Headers         map[string]string
 	Auth            Auth
 	// Timeout bounds every HTTP exchange (0 = no timeout).
-	Timeout    time.Duration
+	Timeout time.Duration
+	// CancelWait is how long the response stream of a cancelled stateful
+	// call is still read to detect a late response (0 = DefaultCancelWait).
+	CancelWait time.Duration
 	HTTPClient *http.Client
 	ClientInfo Implementation
 	// Capabilities sent as client capabilities. nil means {}.
@@ -49,9 +52,16 @@ type Options struct {
 	// a stateless server, sends nothing on connect). A successful auto
 	// negotiation is stored in it; failed connects are never cached.
 	ProtocolCache *ProtocolCache
+	// ServedByHeader names the response header that identifies the replica
+	// that answered (Error.ServedBy, ToolResult.ServedBy, Session.ServedBy).
+	// Empty means DefaultServedByHeader.
+	ServedByHeader string
 	// Observer receives timings; nil means NopObserver.
 	Observer Observer
 }
+
+// DefaultServedByHeader is the default Options.ServedByHeader.
+const DefaultServedByHeader = "X-Served-By"
 
 // Session is a connected MCP session. All methods are safe for concurrent
 // use.
@@ -61,6 +71,7 @@ type Session struct {
 	protocol  string
 	stateless bool
 	sessionID string
+	servedBy  string // replica that answered the handshake
 
 	ServerInfo   json.RawMessage
 	Capabilities json.RawMessage
@@ -96,6 +107,11 @@ func (s *Session) SessionID() string { return s.sessionID }
 
 // Stateless reports whether the session uses the stateless protocol.
 func (s *Session) Stateless() bool { return s.stateless }
+
+// ServedBy returns the ServedByHeader value of the response that completed
+// the handshake (server/discover or initialize), or "" (header absent, or a
+// cached stateless resolution that sent nothing).
+func (s *Session) ServedBy() string { return s.servedBy }
 
 func (s *Session) protocolTag(ex exchange) string {
 	if s.protocol != "" {
@@ -137,6 +153,9 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 	}
 	if opts.ClientInfo.Name == "" {
 		opts.ClientInfo = Implementation{Name: "mcpload", Version: Version}
+	}
+	if opts.ServedByHeader == "" {
+		opts.ServedByHeader = DefaultServedByHeader
 	}
 	s := &Session{opts: opts, hc: opts.HTTPClient}
 	obs := s.obs(ctx)
@@ -193,7 +212,9 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 // answers -32022 (UnsupportedProtocolVersion) listing a newer stateless
 // version in error.data.supported is probed once more with that version; the
 // stateful handshake is used only when the server doesn't speak any stateless
-// protocol revision we can use.
+// protocol revision we can use. If initialize is in turn rejected with -32022
+// offering a stateless version (replicas on different builds), that version
+// is probed once more.
 func (s *Session) connectAuto(ctx context.Context, cs *ConnectStats) (int, *Error) {
 	cs.Method = "server/discover"
 	obs := s.obs(ctx)
@@ -229,7 +250,21 @@ func (s *Session) connectAuto(ctx context.Context, cs *ConnectStats) (int, *Erro
 	}
 	s.protocol, s.stateless = "", false
 	cs.Method = "initialize"
-	return s.initialize(ctx, s.opts.FallbackVersion)
+	status, err = s.initialize(ctx, s.opts.FallbackVersion)
+	if err != nil {
+		// Behind a load balancer in the middle of a rolling deploy, the probe
+		// and the handshake can reach different builds: an old one that
+		// answers the probe like a legacy server, then a new one that rejects
+		// initialize with -32022 and offers a stateless version. Retry once
+		// with that version (the rejected initialize stays counted as an
+		// error: it is what a client sees during the skew).
+		if v := newestStateless(supportedVersions(err), ""); v != "" {
+			cs.Method = "server/discover"
+			s.protocol, s.stateless = v, true
+			return s.discover(ctx, v)
+		}
+	}
+	return status, err
 }
 
 // supportedVersions returns error.data.supported of an
@@ -370,6 +405,7 @@ func (s *Session) discover(ctx context.Context, version string) (int, *Error) {
 	s.protocol = version
 	s.Capabilities = dr.Capabilities
 	s.ServerInfo = dr.Meta["io.modelcontextprotocol/serverInfo"]
+	s.servedBy = r.servedBy
 	return r.stats.Status, nil
 }
 
@@ -400,6 +436,7 @@ func (s *Session) initialize(ctx context.Context, version string) (int, *Error) 
 	}
 	s.sessionID = r.sessionID
 	s.Capabilities, s.ServerInfo = ir.Capabilities, ir.ServerInfo
+	s.servedBy = r.servedBy
 	status := r.stats.Status
 
 	n := s.post(ctx, exchange{
@@ -438,13 +475,13 @@ const abandonTimeout = 5 * time.Second
 // name is the Mcp-Name header value (stateless) and the tool metric tag for
 // tools/call.
 func (s *Session) Request(ctx context.Context, method, name string, params map[string]any) (json.RawMessage, *Error) {
-	r := s.request(ctx, method, name, params, false)
+	r := s.request(ctx, method, name, params, false, CallOptions{})
 	return r.result, r.err
 }
 
-func (s *Session) request(ctx context.Context, method, name string, params map[string]any, toolCall bool) exchangeResult {
+func (s *Session) request(ctx context.Context, method, name string, params map[string]any, toolCall bool, co CallOptions) exchangeResult {
 	id := s.nextID.Add(1)
-	ex := exchange{method: method, id: &id, protoHdr: s.protocol}
+	ex := exchange{method: method, id: &id, protoHdr: s.protocol, cancelAfter: co.CancelAfter}
 	if toolCall {
 		ex.tool = name
 	}
@@ -513,6 +550,8 @@ func (s *Session) postTool(ctx context.Context, ex exchange) exchangeResult {
 // recordingObserver holds back the request event of one exchange (so the
 // caller can adjust its error type) and forwards token fetches to next right
 // away: a background token refresh may report after the exchange is over.
+// Only the first request event is held back; later ones (the
+// notifications/cancelled of a cancelled call) are forwarded.
 type recordingObserver struct {
 	NopObserver
 	next Observer
@@ -522,11 +561,23 @@ type recordingObserver struct {
 
 func (o *recordingObserver) OnRequest(st RequestStats) {
 	o.mu.Lock()
-	o.req = &st
+	if o.req == nil {
+		o.req = &st
+		o.mu.Unlock()
+		return
+	}
 	o.mu.Unlock()
+	o.next.OnRequest(st)
 }
 
 func (o *recordingObserver) OnTokenFetch(st TokenStats) { o.next.OnTokenFetch(st) }
+
+// OnCancel is forwarded right away: it may come after the call returned.
+func (o *recordingObserver) OnCancel(st CancelStats) {
+	if n, ok := o.next.(CancelObserver); ok {
+		n.OnCancel(st)
+	}
+}
 
 // OnServerRequest is forwarded right away too: answers are never held back.
 func (o *recordingObserver) OnServerRequest(st ServerRequestStats) {
@@ -575,17 +626,40 @@ func (s *Session) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes tools/call. MCP-level failures are reported in the
 // result's Err, never as a Go error.
 func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResult {
+	return s.CallToolMetaWith(ctx, name, args, nil, CallOptions{})
+}
+
+// CallToolMeta is CallTool with params._meta set to meta when it is not
+// empty. In stateless mode the protocol's own _meta keys are added to it.
+func (s *Session) CallToolMeta(ctx context.Context, name string, args any, meta map[string]any) ToolResult {
+	return s.CallToolMetaWith(ctx, name, args, meta, CallOptions{})
+}
+
+// CallToolWith is CallTool with per-call options. With CancelAfter > 0 a
+// call that has no response within that time returns at once with Cancelled
+// set (Err.Type ErrCancelled) and is cancelled on the wire (see cancel.go).
+func (s *Session) CallToolWith(ctx context.Context, name string, args any, co CallOptions) ToolResult {
+	return s.CallToolMetaWith(ctx, name, args, nil, co)
+}
+
+// CallToolMetaWith combines CallToolMeta and CallToolWith: params._meta set
+// to meta (when not empty) and the per-call options co.
+func (s *Session) CallToolMetaWith(ctx context.Context, name string, args any, meta map[string]any, co CallOptions) ToolResult {
 	params := map[string]any{"name": name}
 	if args != nil {
 		params["arguments"] = args
 	} else {
 		params["arguments"] = map[string]any{}
 	}
-	r := s.request(ctx, "tools/call", name, params, true)
-	out := ToolResult{Duration: r.stats.Duration}
+	if len(meta) > 0 {
+		params["_meta"] = meta
+	}
+	r := s.request(ctx, "tools/call", name, params, true, co)
+	out := ToolResult{Duration: r.stats.Duration, ServedBy: r.servedBy}
 	if r.err != nil {
 		out.IsError = true
 		out.Err = r.err
+		out.Cancelled = r.err.Type == ErrCancelled
 		return out
 	}
 	var cr struct {
@@ -595,12 +669,12 @@ func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResul
 	}
 	if err := json.Unmarshal(r.result, &cr); err != nil {
 		out.IsError = true
-		out.Err = &Error{Type: ErrJSONRPC, HTTPStatus: r.stats.Status, Message: "decoding tools/call result: " + err.Error()}
+		out.Err = &Error{Type: ErrJSONRPC, HTTPStatus: r.stats.Status, Message: "decoding tools/call result: " + err.Error(), ServedBy: r.servedBy}
 		return out
 	}
 	out.Content, out.StructuredContent, out.IsError = cr.Content, cr.StructuredContent, cr.IsError
 	if cr.IsError {
-		out.Err = &Error{Type: ErrToolIsError, HTTPStatus: r.stats.Status, Message: firstText(cr.Content)}
+		out.Err = &Error{Type: ErrToolIsError, HTTPStatus: r.stats.Status, Message: firstText(cr.Content), ServedBy: r.servedBy}
 	}
 	return out
 }
@@ -629,7 +703,7 @@ func (s *Session) CallParallel(ctx context.Context, calls []ToolCall) []ToolResu
 		wg.Add(1)
 		go func(i int, c ToolCall) {
 			defer wg.Done()
-			out[i] = s.CallTool(ctx, c.Name, c.Args)
+			out[i] = s.CallToolMetaWith(ctx, c.Name, c.Args, c.Meta, c.CallOptions)
 		}(i, c)
 	}
 	wg.Wait()

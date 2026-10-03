@@ -120,8 +120,11 @@ func buildSteps(in []k6run.StepStats, origin time.Time, cpu []sampler.CPUWindow)
 			st.ConnectErrorRate = report.F(round6(float64(s.ConnectErrors) / float64(s.Connects)))
 		}
 		st.GeneratorCPUMaxPct = stepCPU(cpu, s.First, s.Last)
+		if len(s.ByErrorType) > 0 {
+			st.ByErrorType = s.ByErrorType
+		}
 		for _, t := range s.Tools {
-			tool := report.StepTool{Name: t.Name, Reqs: t.Reqs, Errors: t.Errors, ErrorRate: round6(t.ErrorRate)}
+			tool := report.StepTool{Name: t.Name, Reqs: t.Reqs, Errors: t.Errors, ErrorRate: round6(t.ErrorRate), ByErrorType: t.ByErrorType}
 			if t.Errors < t.Reqs { // at least one successful call
 				tool.P95, tool.P99 = report.F(round3(t.P95)), report.F(round3(t.P99))
 			}
@@ -156,21 +159,24 @@ func printSteps(w io.Writer, c *report.Capacity) {
 	if c == nil || len(c.Steps) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\nmcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95, k6 CPU):\n")
+	fmt.Fprintf(w, "\nmcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95 / p99, errors, k6 CPU):\n")
 	for _, st := range c.Steps {
 		res := "PASS"
 		if !st.Passed {
 			res = "BREACH"
 		}
-		worst, worstName := -1.0, ""
-		for _, t := range st.Tools {
-			if t.P95 != nil && *t.P95 > worst {
-				worst, worstName = *t.P95, t.Name
+		var worst *report.StepTool
+		for i, t := range st.Tools {
+			if t.P95 != nil && (worst == nil || *t.P95 > *worst.P95) {
+				worst = &st.Tools[i]
 			}
 		}
 		slowest := "-"
-		if worstName != "" {
-			slowest = worstName + " " + analysis.FormatMs(worst)
+		if worst != nil {
+			slowest = worst.Name + " " + analysis.FormatMs(*worst.P95)
+			if worst.P99 != nil {
+				slowest += " / " + analysis.FormatMs(*worst.P99)
+			}
 		}
 		conn := "-"
 		if st.ConnectP95Ms != nil {
@@ -183,7 +189,8 @@ func printSteps(w io.Writer, c *report.Capacity) {
 				cpu += " (saturated)"
 			}
 		}
-		fmt.Fprintf(w, "  %6d  %-6s  %8.1f  %7.2f%%  %9s  %-22s  %s\n", st.VUs, res, st.RPS, 100*st.ErrorRate, conn, slowest, cpu)
+		fmt.Fprintf(w, "  %6d  %-6s  %8.1f  %7.2f%%  %9s  %-28s  %-30s  %s\n", st.VUs, res, st.RPS, 100*st.ErrorRate, conn, slowest,
+			analysis.TopErrorTypes(st.ByErrorType, 2), cpu)
 		if !st.Passed {
 			fmt.Fprintf(w, "          %s\n", strings.Join(st.Breaches, "; "))
 		}
