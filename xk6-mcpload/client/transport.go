@@ -14,6 +14,7 @@ import (
 	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -87,6 +88,20 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 		res.stats.NotSent = true
 		s.obs(ctx).OnRequest(res.stats)
 		return res
+	}
+
+	// Server-to-client requests on the response stream are answered in
+	// goroutines with the caller's context (each answer POST has its own
+	// timeout); post returns only after every answer has finished.
+	parent := ctx
+	var answers sync.WaitGroup
+	defer answers.Wait()
+	onRequest := func(m *rpcMessage) {
+		answers.Add(1)
+		go func() {
+			defer answers.Done()
+			s.answer(parent, ex, m)
+		}()
 	}
 
 	ctx, cancel := s.withTimeout(ctx)
@@ -170,7 +185,7 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 	var perr *Error
 	if mt == "text/event-stream" {
 		res.stats.Streamed = true
-		msg, perr = readSSE(resp.Body, wantID)
+		msg, perr = readSSE(resp.Body, wantID, onRequest)
 		res.stats.Stream = time.Since(headersAt)
 		// Drain the rest of the stream in the background so the connection
 		// can be reused, without holding up the caller or its timings.
@@ -294,7 +309,7 @@ func (s *Session) classifyStatus(resp *http.Response, body []byte, hadSession bo
 func parseErrorBody(contentType string, body []byte) *rpcError {
 	mt, _, _ := mime.ParseMediaType(contentType)
 	if mt == "text/event-stream" {
-		msg, err := readSSE(bytes.NewReader(body), "")
+		msg, err := readSSE(bytes.NewReader(body), "", nil)
 		if err != nil || msg == nil {
 			return nil
 		}
@@ -348,9 +363,10 @@ func findResponse(body []byte, wantID string) (*rpcMessage, *Error) {
 
 // readSSE reads server-sent events until one carries a JSON-RPC response
 // whose id equals wantID. With wantID == "" the first response or error
-// message is returned. Notifications and server-to-client requests on the
-// stream are skipped.
-func readSSE(r io.Reader, wantID string) (*rpcMessage, *Error) {
+// message is returned. Notifications on the stream are skipped;
+// server-to-client requests (a method and a non-null id) are passed to
+// onRequest, which must not block, or skipped when it is nil.
+func readSSE(r io.Reader, wantID string, onRequest func(*rpcMessage)) (*rpcMessage, *Error) {
 	br := bufio.NewReaderSize(r, 32<<10)
 	var data strings.Builder
 	hasData := false
@@ -364,6 +380,9 @@ func readSSE(r io.Reader, wantID string) (*rpcMessage, *Error) {
 			return nil
 		}
 		if m.Method != "" { // notification or server request
+			if onRequest != nil && hasID(m.ID) {
+				onRequest(&m)
+			}
 			return nil
 		}
 		if wantID == "" || idMatches(m.ID, wantID) || (m.Error != nil && (len(m.ID) == 0 || string(m.ID) == "null")) {

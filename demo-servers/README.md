@@ -10,7 +10,7 @@
 Known-good and known-bad MCP targets for calibrating mcpload verdicts
 (see `docs/ARCHITECTURE.md` §7: every verdict must fire on the bad target and stay quiet on the good one).
 
-Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All servers expose the same tools:
+Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All servers expose the same five tools; the TypeScript servers add two that send server-to-client requests:
 
 | Tool | Arguments | Behaviour |
 |---|---|---|
@@ -19,6 +19,12 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | `flaky` | `rate` (0..1, default `FLAKY_RATE` = 0.1) | returns `isError: true` with probability `rate` |
 | `big` | `bytes` (default `BIG_BYTES` = 200000) | returns a ~200 KB text block |
 | `search` | `query` (string, required), `limit` (default 5) | echoes the query with a fake result list (JSON text) |
+| `sample_llm` | `prompt` (string), `maxTokens` (default 100) | TS servers only. Sends `sampling/createMessage` to the client on the call's SSE stream and returns the reply; `isError: true` when the client did not declare `sampling` |
+| `elicit_input` | `message` (string) | TS servers only. Sends `elicitation/create` (form: optional `confirm` boolean, `note` string) and returns the action and content; `isError: true` when the client did not declare `elicitation` |
+
+The default tool mix (`scenarios/lib/tools.js`) only calls the first five, so `sample_llm` and `elicit_input` run
+only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
+[`xk6-mcpload/examples/client-requests.js`](../xk6-mcpload/examples/client-requests.js).
 
 ## Targets
 

@@ -222,7 +222,14 @@ type collector struct {
 	reqs     []RequestStats
 	connects []ConnectStats
 	tokens   []TokenStats
+	srvReqs  []ServerRequestStats
 	open     int
+}
+
+func (c *collector) OnServerRequest(s ServerRequestStats) {
+	c.mu.Lock()
+	c.srvReqs = append(c.srvReqs, s)
+	c.mu.Unlock()
 }
 
 func (c *collector) OnRequest(s RequestStats) { c.mu.Lock(); c.reqs = append(c.reqs, s); c.mu.Unlock() }

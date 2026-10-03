@@ -45,6 +45,11 @@ const client = new mcp.Client({
   //       timeout?: '10s' }       // per token fetch; default: the client's `timeout`
   timeout: '30s',            // per HTTP exchange, and per token wait/fetch; string or milliseconds
   includePayloads: false,    // reserved; payloads are never attached to metric samples
+  // answer server-to-client requests (stateful protocols; see below); each one set is declared in initialize
+  sampling: { response: { role: 'assistant', content: { type: 'text', text: 'ok' }, model: 'mcpload-mock', stopReason: 'endTurn' },
+              delayMs: 200 },                                   // or `true` for this default answer
+  elicitation: { action: 'accept', content: { confirm: true }, delayMs: 100 },  // action: 'accept' | 'decline' | 'cancel'
+  roots: { roots: [{ uri: 'file:///work', name: 'work' }] },
   // advanced: fallbackVersion ('2025-11-25'), discover (true), rememberProtocol (true),
   //           clientInfo {name, version}, capabilities {}
 });
@@ -63,7 +68,36 @@ export default function () {
 
 `error.type` (and the `error_type` tag) is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`,
 `session_not_found`, `header_mismatch`, `auth`. A result with `isError: true` has `isError: true` **and**
-`error.type === 'tool_iserror'`.
+`error.type === 'tool_iserror'`. `mcp_errors` can also carry `unsupported_request` (see below).
+
+### Server-to-client requests
+
+A stateful server (`2025-xx`) may send JSON-RPC requests on the SSE stream of a client request, typically a
+`tools/call` whose tool needs an LLM completion or user input. While reading the stream the client answers each one by
+POSTing a JSON-RPC response to the MCP endpoint (with `Mcp-Session-Id` and `MCP-Protocol-Version`; the server
+replies `202`), then keeps reading until the original response arrives. Answers run in goroutines, so several
+requests on one stream (or across `callParallel`) are answered concurrently; the call returns only after its answers
+are done.
+
+- `sampling/createMessage`, `elicitation/create`, `roots/list`: answered with the configured `sampling`,
+  `elicitation` or `roots` option after its `delayMs` (simulated LLM or human time; a duration string also works).
+  Each option that is set declares the capability (`sampling: {}`, `elicitation: {}` = form mode, `roots: {}`) in
+  `initialize`, unless `capabilities` already has that key. `error: {code, message}` answers with a JSON-RPC error
+  instead (e.g. `{code: -1, message: 'User rejected sampling request'}`). Defaults for `true`: a mock text reply
+  from model `mcpload-mock`; `{action: 'accept', content: {}}`; `{roots: []}`.
+- `ping`: always answered with `{}`.
+- anything else, or one of the above without its option: answered with `-32601` (method not found) and counted as
+  `unsupported_request`.
+- **Stateless** (`2026-07-28`): the spec forbids servers to send requests on response streams and clients to POST
+  responses (sampling, elicitation and roots go through MRTR `InputRequiredResult`, not implemented yet). A request
+  seen there is not answered, is counted as `unsupported_request`, and the client keeps waiting for the response.
+  The capabilities are not declared in `_meta` either.
+
+Answers are static, fixed when the Client is constructed: they are sent from Go goroutines while a call or
+`callParallel` is in flight, where the VU's JS runtime must not be touched, so JS callback responders are not
+supported. `mcp_req_duration` of the call includes the time spent answering. Example:
+[examples/client-requests.js](examples/client-requests.js) against the TS demo server's `sample_llm` and
+`elicit_input` tools.
 
 ### Protocol behaviour
 
@@ -123,9 +157,11 @@ A successful request has **no** `error_type` tag; a failed one carries it on all
 | `mcp_connect_duration` | Trend (time) | whole `connect()` (`method` = `initialize` or `server/discover`) |
 | `mcp_oauth_refresh_duration` | Trend (time) | token fetch (`method=oauth/token`) |
 | `mcp_reqs` | Counter | |
-| `mcp_errors` | Counter | tagged with `error_type` |
+| `mcp_errors` | Counter | tagged with `error_type` (server-to-client requests add `unsupported_request`, or the answer POST's error type) |
 | `mcp_tool_error_rate` | Rate | per `tools/call`; any failure (including `isError`) counts |
 | `mcp_sessions_open` | Gauge | process-wide open sessions (see below) |
+| `mcp_server_requests` | Counter | server-to-client requests read from response streams; `method` is the server's method (`sampling/createMessage`, ...), `tool` the call whose stream carried it, `status` the answer POST's status. Not counted in `mcp_reqs` |
+| `mcp_server_request_duration` | Trend (time) | request read off the stream → answer POST completed (includes `delayMs`); not emitted when nothing was sent |
 
 `mcp_sessions_open` is the number of sessions currently open in this k6 process — every VU, Client and scenario
 together: +1 on a successful `connect()`, −1 on the first `close()` (stateless sessions count too). Each change is

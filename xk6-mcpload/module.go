@@ -142,6 +142,19 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 			if m, ok := val.(map[string]any); ok {
 				o.Capabilities = m
 			}
+		case "sampling", "elicitation", "roots":
+			r, err := parseResponder(k, val)
+			if err != nil {
+				return fmt.Errorf("%s: %w", k, err)
+			}
+			switch k {
+			case "sampling":
+				o.Sampling = r
+			case "elicitation":
+				o.Elicitation = r
+			default:
+				o.Roots = r
+			}
 		case "auth":
 			a, err := parseAuth(val)
 			if err != nil {
@@ -237,6 +250,119 @@ func parseAuth(v any) (client.Auth, error) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("unsupported auth type %q", m["type"])
+}
+
+// Default answers for `sampling: true` / `elicitation: true` / `roots: true`.
+var defaultResponses = map[string]map[string]any{
+	"sampling": {
+		"role":       "assistant",
+		"content":    map[string]any{"type": "text", "text": "mcpload mock response"},
+		"model":      "mcpload-mock",
+		"stopReason": "endTurn",
+	},
+	"elicitation": {"action": "accept", "content": map[string]any{}},
+	"roots":       {"roots": []any{}},
+}
+
+// parseResponder turns a sampling / elicitation / roots option into a static
+// client.Responder. Answers are fixed when the Client is constructed: they
+// are sent from Go goroutines while a call (or callParallel) is in flight,
+// where the VU's JS runtime must not be touched, so JS callbacks are not
+// supported.
+//
+//	true | {}                                    default answer
+//	{ delayMs, error: {code, message} }          answer with a JSON-RPC error
+//	sampling:    { response: {role, content, model, stopReason}, delayMs }
+//	elicitation: { action: 'accept'|'decline'|'cancel', content: {...}, delayMs }
+//	roots:       { roots: [{uri, name}], delayMs }
+func parseResponder(kind string, v any) (*client.Responder, error) {
+	var m map[string]any
+	switch t := v.(type) {
+	case nil:
+		return nil, nil
+	case bool:
+		if !t {
+			return nil, nil
+		}
+		m = map[string]any{}
+	case map[string]any:
+		m = t
+	default:
+		return nil, errors.New("must be true or an object")
+	}
+	r := &client.Responder{}
+	result := map[string]any{}
+	for k, val := range defaultResponses[kind] {
+		result[k] = val
+	}
+	for k, val := range m {
+		switch {
+		case k == "delayMs":
+			d, err := parseDuration(val)
+			if err != nil {
+				return nil, fmt.Errorf("delayMs: %w", err)
+			}
+			if d < 0 {
+				return nil, errors.New("delayMs must not be negative")
+			}
+			r.Delay = d
+		case k == "error":
+			em, ok := val.(map[string]any)
+			if !ok {
+				return nil, errors.New("error must be {code, message}")
+			}
+			code, ok := toInt(em["code"])
+			if !ok {
+				return nil, errors.New("error.code must be an integer")
+			}
+			r.Error = &client.ResponderError{Code: code, Message: str(em["message"])}
+		case kind == "sampling" && k == "response":
+			rm, ok := val.(map[string]any)
+			if !ok {
+				return nil, errors.New("response must be an object")
+			}
+			result = rm
+		case kind == "elicitation" && k == "action":
+			a := str(val)
+			if a != "accept" && a != "decline" && a != "cancel" {
+				return nil, fmt.Errorf("action must be 'accept', 'decline' or 'cancel', got %q", a)
+			}
+			result["action"] = a
+		case kind == "elicitation" && k == "content":
+			if _, ok := val.(map[string]any); !ok {
+				return nil, errors.New("content must be an object")
+			}
+			result["content"] = val
+		case kind == "roots" && k == "roots":
+			if _, ok := val.([]any); !ok {
+				return nil, errors.New("roots must be an array of {uri, name}")
+			}
+			result["roots"] = val
+		default:
+			return nil, fmt.Errorf("unknown option %q", k)
+		}
+	}
+	if kind == "elicitation" && result["action"] != "accept" {
+		delete(result, "content") // content is only sent with accept
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	r.Result = b
+	return r, nil
+}
+
+func toInt(v any) (int, bool) {
+	switch t := v.(type) {
+	case int64:
+		return int(t), true
+	case float64:
+		if t == float64(int(t)) {
+			return int(t), true
+		}
+	}
+	return 0, false
 }
 
 // emitter captures the VU's current tags on the JS thread.
