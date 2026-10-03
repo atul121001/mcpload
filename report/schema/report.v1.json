@@ -231,10 +231,42 @@
         },
         "steps": { "type": "array", "items": { "$ref": "#/$defs/step" }, "description": "One entry per step that produced requests, sorted by vus." }
       }
+    },
+    "cancellation": {
+      "type": "object",
+      "description": "Runs that cancelled calls (mcp_cancellations: CANCEL_RATE, or client timeouts, which the client cancels too) and, when measured, what the server did about it (verdict 'cancellation').",
+      "required": ["cancels", "byOutcome", "byReason", "byTool", "lateResponses", "server"],
+      "properties": {
+        "cancels": { "type": "integer", "minimum": 0, "description": "Cancellations sent: every outcome except 'completed' (a call that finished before its cancel deadline)." },
+        "byOutcome": { "$ref": "#/$defs/counts", "description": "mcp_cancellations by outcome: cancelled, late_response, completed, send_failed." },
+        "byReason": { "$ref": "#/$defs/counts", "description": "Cancellations sent by reason: client (cancelAfterMs) or timeout." },
+        "byTool": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 }, "description": "Cancellations sent per tool." },
+        "lateResponses": { "type": "integer", "minimum": 0, "description": "Cancelled calls whose response still arrived after the cancel (stateful sessions only; ignored by the client)." },
+        "sendMs": { "$ref": "#/$defs/latency", "description": "Time to send a cancel (mcp_cancel_duration): until the notifications/cancelled POST completed, or the stream was closed (2026-07-28)." },
+        "lateAfterMs": { "$ref": "#/$defs/latency", "description": "Time from a cancel to its late response (mcp_cancel_late_response)." },
+        "server": {
+          "type": ["object", "null"],
+          "description": "Server-side cancellation activity over the run, from the server's mcp_cancelled_total and mcp_work_after_cancel_seconds (Prometheus sampler); null when not measured.",
+          "required": ["cancelled", "observed", "workAfterCancelP50Ms", "workAfterCancelP95Ms", "workAfterCancelTotalS"],
+          "properties": {
+            "cancelled": { "type": "integer", "minimum": 0, "description": "Calls the server saw cancelled while running." },
+            "observed": { "type": "integer", "minimum": 0, "description": "Cancelled calls whose remaining run time the server recorded." },
+            "workAfterCancelP50Ms": { "type": ["number", "null"], "minimum": 0, "description": "Median time a cancelled call kept running after its cancel arrived, estimated from histogram buckets; null without observations." },
+            "workAfterCancelP95Ms": { "type": ["number", "null"], "minimum": 0 },
+            "workAfterCancelTotalS": { "type": "number", "minimum": 0, "description": "Total handler time spent on cancelled calls after their cancel, seconds." }
+          }
+        }
+      }
     }
   },
   "$defs": {
     "ms": { "type": "number", "minimum": 0 },
+    "counts": {
+      "type": "object",
+      "description": "Counts keyed like summary.byErrorType.",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
     "rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "series": { "type": "array", "items": { "type": ["number", "null"] } },
     "latency": {
@@ -282,6 +314,7 @@
         "passed": { "type": "boolean" },
         "breached": { "type": "array", "items": { "enum": ["connectP95Ms", "connectErrorRate", "toolCalls"] }, "description": "Step-level fields over budget." },
         "breaches": { "type": "array", "items": { "type": "string" }, "description": "Every breach in words, worst first." },
+        "byErrorType": { "$ref": "#/$defs/counts", "description": "The step's errors (mcp_errors) by error_type, like summary.byErrorType (omitted without errors)." },
         "tools": {
           "type": "array",
           "items": {
@@ -294,7 +327,8 @@
               "errorRate": { "$ref": "#/$defs/rate" },
               "p95": { "type": ["number", "null"], "minimum": 0, "description": "Successful calls only; null without one." },
               "p99": { "type": ["number", "null"], "minimum": 0 },
-              "breached": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } }
+              "breached": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } },
+              "byErrorType": { "$ref": "#/$defs/counts", "description": "The tool's errors in the step by error_type (omitted without errors)." }
             }
           }
         }
@@ -304,7 +338,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "cancellation"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

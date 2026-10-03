@@ -7,6 +7,13 @@
 //                                     given RFC 7662 introspection endpoint reports as active
 //   ts-pooled    POOL_SIZE=N          every tool call holds one of N shared slots (like one small DB
 //                                     connection pool for all tools): fast tools queue behind slow ones
+//   ts-ignore-cancel IGNORE_CANCEL=1  notifications/cancelled is recorded but ignored: cancelled calls keep
+//                                     running and still send their (late) response
+//
+// Cancellation (all personalities): `slow` stops sleeping when its request is cancelled (the SDK aborts the
+// handler's signal on notifications/cancelled and then sends no response). /metrics counts cancels
+// (mcp_cancelled_total), how long each cancelled call still ran (mcp_work_after_cancel_seconds) and cancelled
+// calls still running (mcp_cancelled_inflight).
 //
 // Other env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), LEAK_BYTES (1048576),
 //            SESSION_IDLE_MS (300000; 0 disables idle reaping), SERVER_NAME.
@@ -16,7 +23,7 @@ import client from 'prom-client';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest, CancelledNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const LEAK = process.env.LEAK === '1';
@@ -25,8 +32,11 @@ const FLAKY_RATE = Number(process.env.FLAKY_RATE ?? 0.1);
 const BIG_BYTES = Number(process.env.BIG_BYTES ?? 200_000);
 const LEAK_BYTES = Number(process.env.LEAK_BYTES ?? 1024 * 1024);
 const POOL_SIZE = Number(process.env.POOL_SIZE ?? 0); // 0: no shared pool
+const IGNORE_CANCEL = process.env.IGNORE_CANCEL === '1';
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
-const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : 'ts-healthy');
+const SERVER_NAME =
+  process.env.SERVER_NAME ??
+  (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : IGNORE_CANCEL ? 'ts-ignore-cancel' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
 
 const BIG_TEXT = makeBigText(BIG_BYTES);
@@ -37,6 +47,14 @@ function makeBigText(n) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** sleep that rejects as soon as `signal` aborts (the request was cancelled). */
+const abortableSleep = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('cancelled'));
+    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    function onAbort() { clearTimeout(t); reject(new Error('cancelled')); }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const toolError = (t) => ({ isError: true, content: [{ type: 'text', text: t }] });
 
@@ -55,11 +73,57 @@ async function pooled(fn) {
   }
 }
 
+// ---- cancellation accounting ----
+const cancelledTotal = new client.Counter({
+  name: 'mcp_cancelled_total', help: 'tools/call requests cancelled by the client while running.', labelNames: ['tool'],
+});
+const workAfterCancel = new client.Histogram({
+  name: 'mcp_work_after_cancel_seconds',
+  help: 'How long a cancelled tools/call kept running after its cancellation arrived.',
+  labelNames: ['tool'],
+  buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 5, 10, 30, 60],
+});
+const cancelledInflight = new client.Gauge({ name: 'mcp_cancelled_inflight', help: 'Cancelled tools/call handlers still running.' });
+
+/**
+ * Run one tool call, noting when it is cancelled (its abort signal fires, or onCancel calls back under
+ * IGNORE_CANCEL) and how long it keeps running afterwards.
+ */
+async function tracked(tool, extra, onCancel, fn) {
+  let cancelledAt = 0;
+  const cancelled = () => {
+    if (cancelledAt) return;
+    cancelledAt = performance.now();
+    cancelledTotal.inc({ tool });
+    cancelledInflight.inc();
+  };
+  const id = extra?.requestId;
+  if (id !== undefined) onCancel.set(id, cancelled);
+  extra?.signal?.addEventListener('abort', cancelled, { once: true });
+  try {
+    return await fn();
+  } finally {
+    if (id !== undefined) onCancel.delete(id);
+    extra?.signal?.removeEventListener('abort', cancelled);
+    if (cancelledAt) {
+      workAfterCancel.observe({ tool }, (performance.now() - cancelledAt) / 1000);
+      cancelledInflight.dec();
+    }
+  }
+}
+
 // ---- MCP server factory (one McpServer per session, as in the SDK examples) ----
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: '0.1.0' });
+  const onCancel = new Map(); // requestId -> tracked()'s callback
+  if (IGNORE_CANCEL) {
+    // Deliberate bug: replace the SDK's handler (which aborts the request's signal and drops its response)
+    // with one that only records the cancel. The call keeps running and still answers.
+    server.server.setNotificationHandler(CancelledNotificationSchema, (n) => onCancel.get(n.params.requestId)?.());
+  }
   const register = server.registerTool.bind(server);
-  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => handler(...a)));
+  server.registerTool = (name, meta, handler) =>
+    register(name, meta, (...a) => tracked(name, a[a.length - 1], onCancel, () => pooled(() => handler(...a))));
 
   server.registerTool('fast', { description: 'Returns immediately.', inputSchema: {} }, async () => text('ok'));
 
@@ -69,9 +133,10 @@ function createMcpServer() {
       description: 'Sleeps for `ms` milliseconds (default 300) before returning.',
       inputSchema: { ms: z.number().int().min(0).max(120_000).optional() },
     },
-    async ({ ms }) => {
+    async ({ ms }, extra) => {
       const d = ms ?? 300;
-      await sleep(d);
+      // Stops when cancelled; IGNORE_CANCEL ignores the abort signal altogether (also when the session closes).
+      await (IGNORE_CANCEL ? sleep(d) : abortableSleep(d, extra.signal));
       return text(`slept ${d}ms`);
     },
   );
@@ -281,7 +346,7 @@ app.get('/mcp', sessionRequest);
 app.delete('/mcp', sessionRequest);
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms)`);
+  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms, ignoreCancel=${IGNORE_CANCEL})`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));

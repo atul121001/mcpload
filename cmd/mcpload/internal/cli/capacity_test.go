@@ -52,7 +52,8 @@ func TestBuildStepsAndPrint(t *testing.T) {
 		{VUs: 5, First: at(5), Last: at(25), Reqs: 400, Errors: 4, Connects: 40, ConnectP95: ptrF(12),
 			Tools: []k6run.ToolStats{{Name: "slow", Reqs: 100, ErrorRate: 0, P95: 320, P99: 400}}},
 		{VUs: 10, First: at(30), Last: at(50), Reqs: 600, Errors: 300, Connects: 60, ConnectErrors: 30,
-			Tools: []k6run.ToolStats{{Name: "slow", Reqs: 100, Errors: 100, ErrorRate: 1}}},
+			Tools: []k6run.ToolStats{{Name: "slow", Reqs: 100, Errors: 100, ErrorRate: 1, ByErrorType: map[string]int64{"timeout": 90, "http": 10}}},
+			ByErrorType: map[string]int64{"timeout": 260, "http": 30, "session_not_found": 10}},
 	}
 	cpu := []sampler.CPUWindow{
 		{Start: at(0), End: at(8), Pct: 99}, // mostly ramp: midpoint before step 5
@@ -79,7 +80,7 @@ func TestBuildStepsAndPrint(t *testing.T) {
 	var buf bytes.Buffer
 	printSteps(&buf, cp)
 	out := buf.String()
-	for _, want := range []string{"     5  PASS", "    10  BREACH", "95% (saturated)", "max sustainable concurrency: 5 agents (budgets broke at 10)"} {
+	for _, want := range []string{"     5  PASS", "    10  BREACH", "95% (saturated)", "timeout 260, http 30, +1 more", "slow 320 ms / 400 ms", "mostly `timeout` (90 of 100)", "max sustainable concurrency: 5 agents (budgets broke at 10)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

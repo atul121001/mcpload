@@ -123,6 +123,15 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 				return fmt.Errorf("timeout: %w", err)
 			}
 			o.Timeout = d
+		case "cancelWait":
+			d, err := parseDuration(val)
+			if err != nil {
+				return fmt.Errorf("cancelWait: %w", err)
+			}
+			if d < 0 {
+				return errors.New("cancelWait must not be negative")
+			}
+			o.CancelWait = d
 		case "includePayloads":
 			b, _ := val.(bool)
 			c.includePayloads = b
@@ -445,12 +454,42 @@ func (js *jsSession) listTools() sobek.Value {
 	return toJS(rt, out)
 }
 
-func (js *jsSession) callTool(name string, args sobek.Value) sobek.Value {
+func (js *jsSession) callTool(name string, args sobek.Value, opts sobek.Value) sobek.Value {
 	rt := js.mi.vu.Runtime()
 	a := exportArgs(args)
+	var co client.CallOptions
+	if !common.IsNullish(opts) {
+		m, ok := opts.Export().(map[string]any)
+		if !ok {
+			common.Throw(rt, errors.New("callTool: options must be an object"))
+		}
+		var err error
+		if co, err = parseCallOptions(m, "options"); err != nil {
+			common.Throw(rt, fmt.Errorf("callTool: %w", err))
+		}
+	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
-	r := js.s.CallTool(ctx, name, a)
+	r := js.s.CallToolWith(ctx, name, a, co)
 	return toJS(rt, toolResultJSON(r, js.includePayloads))
+}
+
+// parseCallOptions reads the per-call options of callTool's third argument
+// and of callParallel items: cancelAfterMs (milliseconds or a duration
+// string; 0 or absent = never cancel). Keys of m it does not know are left
+// to the caller (callParallel items also hold name and args).
+func parseCallOptions(m map[string]any, what string) (client.CallOptions, error) {
+	var co client.CallOptions
+	if v, ok := m["cancelAfterMs"]; ok && v != nil {
+		d, err := parseDuration(v)
+		if err != nil {
+			return co, fmt.Errorf("%s.cancelAfterMs: %w", what, err)
+		}
+		if d < 0 {
+			return co, fmt.Errorf("%s.cancelAfterMs must not be negative", what)
+		}
+		co.CancelAfter = d
+	}
+	return co, nil
 }
 
 func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
@@ -470,7 +509,11 @@ func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 		if !ok || str(m["name"]) == "" {
 			common.Throw(rt, fmt.Errorf("callParallel: element %d must be {name, args}", i))
 		}
-		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"]}
+		co, err := parseCallOptions(m, fmt.Sprintf("element %d", i))
+		if err != nil {
+			common.Throw(rt, fmt.Errorf("callParallel: %w", err))
+		}
+		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"], CallOptions: co}
 	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
 	results := js.s.CallParallel(ctx, calls) // returns after all goroutines finish
@@ -514,6 +557,9 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 	}
 	if len(r.StructuredContent) > 0 {
 		out["structuredContent"] = r.StructuredContent
+	}
+	if r.Cancelled {
+		out["cancelled"] = true
 	}
 	if r.Err != nil {
 		e := map[string]any{"type": r.Err.Type, "message": r.Err.Message}

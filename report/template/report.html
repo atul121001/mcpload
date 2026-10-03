@@ -255,6 +255,14 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   });
   h.push('</section>');
 
+  // "timeout 14, http 3": the n most frequent keys of a byErrorType map.
+  function topErr(m, n) {
+    var ks = Object.keys(m || {}).filter(function (k) { return m[k] > 0; }).sort(function (a, b) { return m[b] - m[a] || (a < b ? -1 : 1); });
+    var out = ks.slice(0, n).map(function (k) { return k + ' ' + num(m[k]); });
+    if (ks.length > n) out.push('+' + (ks.length - n) + ' more');
+    return out.join(', ') || '–';
+  }
+
   // ---------- capacity (step-load runs) ----------
   var cap = R.capacity && R.capacity.steps && R.capacity.steps.length ? R.capacity : null;
   var capTools = [];
@@ -273,7 +281,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     if (cap.stoppedEarly) capLine += ' <span class="muted">The run stopped early (ABORT_ERR_RATE).</span>';
     h.push('<h2>Capacity (step load)</h2><section class="card"><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
       '<th>Agents</th><th>Result</th><th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
-      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
+      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
     cap.steps.forEach(function (st) {
       var res = st.passed ? 'pass' : 'fail';
       var sb = st.breached || [];
@@ -284,14 +292,31 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
         capTools.map(function (n) {
           var t = byName[n]; if (!t) return '<td class="muted">–</td>';
           var bt = t.breached || [];
-          return '<td' + (bt.length ? ' class="breach"' : '') + ' title="' + esc(num(t.reqs) + ' calls · p99 ' + ms(t.p99) + ' · errors ' + pct(t.errorRate) + (bt.length ? ' · over budget: ' + bt.join(', ') : '')) + '">' + ms(t.p95) + '</td>';
+          return '<td' + (bt.length ? ' class="breach"' : '') + ' title="' + esc(num(t.reqs) + ' calls · p99 ' + ms(t.p99) + ' · errors ' + pct(t.errorRate) + (t.byErrorType ? ' (' + topErr(t.byErrorType, 3) + ')' : '') + (bt.length ? ' · over budget: ' + bt.join(', ') : '')) + '">' + ms(t.p95) + '</td>';
         }).join('') +
+        '<td class="small mono" style="white-space:nowrap">' + (st.byErrorType ? esc(topErr(st.byErrorType, 2)) : '<span class="muted">–</span>') + '</td>' +
         '<td>' + (st.generatorCpuMaxPct != null ? num(st.generatorCpuMaxPct, 0) + '%' + (st.generatorSaturated ? ' <span class="badge warn">saturated</span>' : '') : '–') + '</td>' +
         '<td style="white-space:normal;text-align:left;min-width:200px" class="small" title="' + esc(st.breaches.join('\n')) + '">' +
         esc(st.breaches[0] || '') + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : '') + '</td></tr>');
     });
-    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99 and error rate.</div></section>');
+    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes. Errors lists the most frequent <code>error_type</code>s of the step.</div></section>');
     h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-steps"></section></div>');
+  }
+
+  // ---------- cancellation (runs that cancelled calls) ----------
+  var CX = R.cancellation;
+  if (CX && CX.cancels > 0) {
+    var cs = CX.server, cRows = [
+      ['Cancels sent', num(CX.cancels) + ' <span class="muted small">(' + esc(topErr(CX.byReason, 3)) + ')</span>'],
+      ['Outcomes', esc(topErr(CX.byOutcome, 4))],
+      ['Time to send a cancel', CX.sendMs ? 'p50 ' + ms(CX.sendMs.p50) + ' · p95 ' + ms(CX.sendMs.p95) : '–'],
+      ['Late responses', num(CX.lateResponses) + (CX.lateAfterMs ? ' <span class="muted small">(p50 ' + ms(CX.lateAfterMs.p50) + ' after the cancel)</span>' : '')],
+      ['Server: work after cancel', cs ? (cs.workAfterCancelP50Ms != null ? 'p50 ' + ms(cs.workAfterCancelP50Ms) + ' · p95 ' + ms(cs.workAfterCancelP95Ms) + ' · ' + num(cs.workAfterCancelTotalS, 1) + ' s in total' : '–') +
+        ' <span class="muted small">(' + num(cs.cancelled) + ' cancels seen)</span>' : '<span class="muted">not measured</span>']
+    ];
+    h.push('<h2>Cancellation</h2><section class="card tablewrap"><table><tbody>' +
+      cRows.map(function (r) { return '<tr><th style="text-align:left">' + r[0] + '</th><td style="text-align:left">' + r[1] + '</td></tr>'; }).join('') +
+      '</tbody></table><div class="muted small" style="margin-top:8px">Calls cancelled by the client (<code>CANCEL_RATE</code>, or a timeout). A late response arrived after the cancel was sent; work after cancel is how long the server kept running a cancelled call (its <code>mcp_work_after_cancel_seconds</code>, with <code>--sampler prometheus</code>).</div></section>');
   }
 
   // ---------- per-tool table ----------

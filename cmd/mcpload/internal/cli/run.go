@@ -353,6 +353,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			return 0, fmt.Errorf("%s sampler probe failed: %w", o.samplerKind, perr)
 		}
 	}
+	// Server-side cancellation counters before the run (cancellation verdict).
+	var cancelStart *sampler.CancelSnapshot
+	if o.samplerKind == "prometheus" {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if snap, err := sampler.ScrapeCancel(pctx, o.promURL); err == nil && snap.Present {
+			cancelStart = &snap
+		}
+		cancel()
+	}
 
 	dir := o.k6Out
 	if dir == "" {
@@ -606,6 +615,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			r.Capacity = cp
 		}
 		r.Verdicts = append(analysis.SkipDriftForSteps(r.Verdicts), v)
+	}
+	if cs := agg.Cancellations(); cs != nil {
+		c := toCancellation(cs)
+		var worst *analysis.CancelTool
+		if cancelStart != nil && cs.Cancels > 0 {
+			c.Server, worst = serverCancellation(o.promURL, *cancelStart, logf)
+		}
+		r.Cancellation = c
+		r.Verdicts = append(r.Verdicts, analysis.CancellationVerdict(c, worst))
 	}
 
 	r.Normalize()

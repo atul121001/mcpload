@@ -107,3 +107,12 @@ services:
       <<: *ts-env
       POOL_SIZE: "2"
     ports: ["127.0.0.1:3008:3000"]
+
+  # 8. same image, IGNORE_CANCEL=1: notifications/cancelled is ignored, so cancelled calls keep running and
+  #    still answer -> expected: cancellation warns/fails (agent-session with CANCEL_RATE); ts-healthy passes it
+  ts-ignore-cancel:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      IGNORE_CANCEL: "1"
+    ports: ["127.0.0.1:3011:3000"]

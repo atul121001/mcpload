@@ -15,7 +15,7 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | Tool | Arguments | Behaviour |
 |---|---|---|
 | `fast` | none | returns `ok` immediately |
-| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns |
+| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns. TS servers stop sleeping when the call is cancelled (`notifications/cancelled`), except `ts-ignore-cancel` |
 | `flaky` | `rate` (0..1, default `FLAKY_RATE` = 0.1) | returns `isError: true` with probability `rate` |
 | `big` | `bytes` (default `BIG_BYTES` = 200000) | returns a ~200 KB text block |
 | `search` | `query` (string, required), `limit` (default 5) | echoes the query with a fake result list (JSON text) |
@@ -38,10 +38,11 @@ only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
 | 3006 | `mock-oauth` | dependency-free Node token server: `POST /token` (client_credentials, form-encoded, Basic or body creds `mcpload:secret`), `POST /introspect` (RFC 7662). Tokens are opaque and expire after **30 s** | OAuth 2.0 | n/a (auth server) |
 | 3008 | `ts-pooled` | same image, `POOL_SIZE=2`: every tool call must hold one of 2 process-wide slots (like one small DB connection pool shared by all tools), so `fast` and `search` queue behind `slow` | 2025-11-25 (stateful) | **`tool_isolation` flagged** with `--scenario isolation` (ts-healthy passes it) |
 | 3007 | `ts-oauth` | `ts-healthy` with `REQUIRE_AUTH_URL=http://mock-oauth:3000/introspect`: every `/mcp` request must carry a Bearer token that introspects as active, otherwise **401** | 2025-11-25 (stateful) | **refresh storm measured** (clients must refresh every 30 s) |
+| 3011 | `ts-ignore-cancel` | same image, `IGNORE_CANCEL=1`: `notifications/cancelled` is recorded but ignored, so a cancelled call keeps running and still sends its (late) response | 2025-11-25 (stateful) | **`cancellation` flagged** with `CANCEL_RATE` set and `--sampler prometheus` (ts-healthy passes it) |
 
 Side endpoints:
-- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, mock-oauth (3006) and each Go replica.
-  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, plus prom-client default metrics.
+- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, 3008, 3011, mock-oauth (3006) and each Go replica.
+  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, `mcp_cancelled_total{tool}` (calls cancelled while running), `mcp_work_after_cancel_seconds{tool}` (histogram: how long a cancelled call kept running after its cancel arrived; ~0 when honoured), `mcp_cancelled_inflight` (cancelled calls still running), plus prom-client default metrics.
   - Python / Go: `process_resident_memory_bytes`, `mcp_active_sessions` (always 0); Go also `go_memstats_heap_alloc_bytes`, `go_goroutines`.
   - mock-oauth: `oauth_tokens_issued_total`, `oauth_introspect_total{active}`, `oauth_live_tokens`.
   - Behind the two nginx LBs (3004, 3005), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
@@ -66,7 +67,7 @@ No local Node, Python or Go is needed: everything builds inside Docker (`node:22
 (module `github.com/atul121001/mcpload/demo-servers/go-server`) are committed; the image only runs `go mod download`.
 
 Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK_BYTES` (1 MiB),
-`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
+`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `IGNORE_CANCEL=1` (TS), `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
 `JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE).
 
 ## curl examples

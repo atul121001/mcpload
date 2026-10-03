@@ -34,6 +34,7 @@ So the extension has its own small client in `client/`, and uses plain structs f
 | Headers | `MCP-Protocol-Version` | `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` (for `tools/call`, `resources/read`, `prompts/get`); `Mcp-Param-*` for parameters marked `x-mcp-header` (planned) |
 | Streams | SSE responses to POST (standalone GET stream and `Last-Event-ID` resume are not used) | no GET or DELETE (they return 405); `subscriptions/listen` (planned); MRTR (`InputRequiredResult`) (planned) |
 | Server-to-client requests over SSE (sampling, elicitation) | answered while the response stream is read: each request is answered by a POST of the JSON-RPC response (with `Mcp-Session-Id`) from static responders configured on the Client, with an optional delay; unknown methods get `-32601` | forbidden by the spec (MRTR `InputRequiredResult` instead, planned): counted as `unsupported_request`, not answered |
+| Cancellation (`cancelAfterMs`, timeouts) | POST `notifications/cancelled {requestId, reason}` with the session headers; the response stream is still read for `cancelWait` to count late responses, then closed | closing the response stream is the cancellation (no notification); late responses cannot be seen |
 | Errors of interest | 404 session not found | 400 `-32020 HeaderMismatch` |
 
 `protocol: "auto"` follows the spec's fallback: send a modern request first, and fall back to `initialize` only on a 400 whose body isn't a recognised modern JSON-RPC error.
@@ -102,6 +103,9 @@ Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_t
 | `mcp_sessions_open` | Gauge | client-side open sessions |
 | `mcp_server_requests` | Counter | server-to-client requests read from response streams (`method` = the server's method) |
 | `mcp_server_request_duration` | Trend | time to answer a server-to-client request |
+| `mcp_cancellations` | Counter | cancelled calls, tagged `reason` and `outcome` |
+| `mcp_cancel_duration` | Trend | time to send a cancel |
+| `mcp_cancel_late_response` | Trend | cancel to a late response (stateful) |
 
 CI budgets use standard k6 thresholds:
 ```js
