@@ -1,7 +1,7 @@
 name: mcpload
 description: >-
-  Load/soak test a remote MCP server with k6 + xk6-mcpload, gate on per-tool p95/p99 and error budgets
-  plus leak verdicts, publish report.json/report.html and an optional PR comment.
+  AI-agent load & soak testing for MCP servers: agent-shaped traffic, per-tool p95/p99 and error budgets,
+  leak, restart and rolling-deploy verdicts, an HTML report and an optional PR comment.
 author: Atul Mishra
 branding:
   icon: activity

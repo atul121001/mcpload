@@ -1,4 +1,4 @@
-# mcpload
+# mcpload: AI-agent load & soak testing for MCP
 
 **Find out whether your MCP server can handle real AI-agent traffic, before your users find out it can't.**
 
