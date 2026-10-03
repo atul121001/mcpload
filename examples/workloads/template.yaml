@@ -1,0 +1,90 @@
+# Workload profile template for your own MCP server. Copy it, replace the tool names with the ones your server
+# lists (`tools/list`), and run:
+#
+#   ./mcpload run --url https://your-server/mcp --workload my-workload.yaml --html report.html
+#
+# mcpload checks the whole file before starting and names the flow, step and field of any mistake.
+# JSON with the same structure works too. Durations are "800ms", "3s", "1m" or a number of milliseconds.
+workload:
+  name: my-workload # shown in the report: "Workload: my-workload"
+  description: What a typical day of agent traffic looks like. # optional
+
+  agents: 50 # concurrent agent sessions (k6 VUs); --vus wins. Default 10.
+  duration: 5m # --duration wins. Default 2m.
+  thinkMs: 800 # mean pause between steps while the agent "decides" (random, exponential, capped at 5x).
+  #              A flow or a step can set its own thinkMs. Default THINK_MS (500).
+
+  # Test data. Each agent session picks one row per pool (`pick: random`, the default, or `sequential`, which
+  # walks the rows in order across all agents). Use it in args as {{data.<pool>.<column>}}.
+  data:
+    customers:
+      file: customers.csv # relative to this file; first row = column names (letters, digits, _)
+      pick: random
+    regions:
+      values: [eu-west, us-east, ap-south] # inline list of plain values: {{data.regions}}
+    # Inline rows work too:
+    # accounts:
+    #   values:
+    #     - { id: 42, tier: gold }
+    #     - { id: 43, tier: silver }
+    # CSV values are text. For a number argument, use `values:` with numbers: "{{data.accounts.id}}" alone in a
+    # string becomes the value itself (42, not "42"); inside a longer string it is inserted as text.
+
+  # Budgets for every flow (a flow's own `budgets` win). A flow breaking one fails the run (verdict `workload`
+  # and the k6 thresholds).
+  budgets:
+    p95: 3s # end-to-end time of a flow, connect to last step, think time included. Default 5s.
+    # p99: 6s # optional
+    completion: 99% # share of flows where every call succeeded (no transport error, no isError). Default 95%.
+    # stepP95: 1s # optional: a p95 budget for every step of every flow; also stepP99.
+
+  # Per-tool budgets come from the usual settings: --env P95_MS=800, P99_MS, ERR_RATE, TOOL_BUDGETS='{...}'.
+
+  flows:
+    # Weights are relative: 60/30/10 means 60% of agent sessions run the first flow.
+    - name: lookup-orders # letters, digits, '_', '.', '-'
+      weight: 60
+      steps:
+        # A bare tool name: called with TOOL_ARGS for that tool if set, else placeholder args built from its
+        # inputSchema. The step is named after the tool.
+        - search_customer
+        # A step with arguments. `as` names the result so later steps can use it.
+        - tool: get_orders
+          args:
+            customer_email: "{{data.customers.email}}"
+            region: "{{data.regions}}"
+            limit: 5
+          as: orders
+        # Calls sent together (one parallel batch; the step takes as long as its slowest call).
+        - name: get_order_details
+          thinkMs: 1500 # this step's pause before it starts
+          parallel:
+            # One call per element of a list in an earlier result (at most `max`, default 5). The result is read
+            # as structuredContent, else its text parsed as JSON. $item is the current element.
+            - tool: get_order
+              forEach: { $from: orders, path: orders, max: 3 }
+              args: { order_id: { $from: $item, path: id } }
+            - get_shipping_status
+      budgets: # optional, overrides the defaults above for this flow
+        p95: 4s
+        steps:
+          get_order_details: { p95: 1500ms } # a single step's budget
+
+    - name: check-subscription
+      weight: 30
+      steps:
+        - { tool: search_customer, args: { email: "{{data.customers.email}}" }, as: customer }
+        - tool: get_subscription
+          # A value from an earlier result: `path` walks it (dots or [n]); `match` takes the first regex capture.
+          # mcpload stops with an error if $from names no `as` of an earlier step.
+          args: { customer_id: { $from: customer, path: "results[0].url", match: "/customers/([^/]+)" } }
+
+    - name: create-ticket
+      weight: 10
+      budgets: { p95: 5s, completion: 99.5% }
+      steps:
+        - search_customer
+        - tool: create_ticket
+          args: { subject: "Order question from {{data.customers.name}}", priority: normal }
+        # repeat: N sends N identical calls in one step.
+        - { tool: add_ticket_note, repeat: 2 }

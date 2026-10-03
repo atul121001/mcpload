@@ -1,5 +1,5 @@
-// Package cli implements the mcpload command line: run, render, validate,
-// upload and version. It uses the stdlib flag package with one FlagSet per
+// Package cli implements the mcpload command line: run, capacity, render,
+// validate, upload, demo, compare and version. It uses the stdlib flag package with one FlagSet per
 // subcommand.
 package cli
 
@@ -35,13 +35,16 @@ const usageText = `mcpload - load and soak testing for remote MCP servers
 
 Usage:
   mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
+  mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--refine 2] [flags]
   mcpload render <report.json> <out.html>
   mcpload validate <report.json>
   mcpload upload --url <upload server base url> --key <api key> <report.json>
+  mcpload demo up|down|status|logs   (start the demo MCP servers in Docker)
+  mcpload compare <baseline.json> <current.json> [flags]
   mcpload version
 
 Run 'mcpload <command> -h' for the flags of a command.
-Exit codes: 0 passed, 1 failed (verdict or threshold), 2 usage/runtime error.
+Exit codes: 0 passed, 1 failed (verdict or threshold; compare: regression), 2 usage/runtime error.
 `
 
 // Main runs the CLI and returns the process exit code.
@@ -54,15 +57,20 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "run":
 		return runCmd(rest, stdout, stderr)
+	case "capacity":
+		return capacityCmd(rest, stdout, stderr)
 	case "render":
 		return renderCmd(rest, stdout, stderr)
 	case "validate":
 		return validateCmd(rest, stdout, stderr)
+	case "demo":
+		return demoCmd(rest, stdout, stderr)
 	case "upload":
 		return uploadCmd(rest, stdout, stderr)
+	case "compare":
+		return compareCmd(rest, stdout, stderr)
 	case "version", "--version", "-version":
-		fmt.Fprintf(stdout, "mcpload %s\n", Version)
-		return ExitPass
+		return versionCmd(stdout)
 	case "help", "-h", "--help", "-help":
 		fmt.Fprint(stdout, usageText)
 		return ExitPass
@@ -101,10 +109,40 @@ func newFlagSet(name, synopsis string, stderr io.Writer) *flag.FlagSet {
 		fs.VisitAll(func(*flag.Flag) { hasFlags = true })
 		if hasFlags {
 			fmt.Fprintln(stderr, "\nFlags:")
-			fs.PrintDefaults()
+			visibleFlags(fs).PrintDefaults()
 		}
 	}
 	return fs
+}
+
+// hidden lists flags left out of -h output, per FlagSet.
+var hidden = map[*flag.FlagSet]map[string]bool{}
+
+// hideFlags keeps advanced flags working but out of the -h listing.
+func hideFlags(fs *flag.FlagSet, names ...string) {
+	if hidden[fs] == nil {
+		hidden[fs] = map[string]bool{}
+	}
+	for _, n := range names {
+		hidden[fs][n] = true
+	}
+}
+
+// visibleFlags returns a copy of fs without its hidden flags, for usage text.
+func visibleFlags(fs *flag.FlagSet) *flag.FlagSet {
+	h := hidden[fs]
+	if len(h) == 0 {
+		return fs
+	}
+	vis := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
+	vis.SetOutput(fs.Output())
+	fs.VisitAll(func(f *flag.Flag) {
+		if !h[f.Name] {
+			vis.Var(f.Value, f.Name, f.Usage)
+			vis.Lookup(f.Name).DefValue = f.DefValue
+		}
+	})
+	return vis
 }
 
 // flagExit maps a flag parse error to an exit code (-h is success).

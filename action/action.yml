@@ -1,7 +1,7 @@
 name: mcpload
 description: >-
-  Load/soak test a remote MCP server with k6 + xk6-mcpload, gate on per-tool p95/p99 and error budgets
-  plus leak verdicts, publish report.json/report.html and an optional PR comment.
+  AI-agent load & soak testing for MCP servers: agent-shaped traffic, per-tool p95/p99 and error budgets,
+  leak, restart and rolling-deploy verdicts, an HTML report and an optional PR comment.
 author: Atul Mishra
 branding:
   icon: activity
@@ -116,10 +116,32 @@ inputs:
     default: ${{ github.token }}
   fail-on:
     description: >-
-      fail = fail the step when the run fails its verdicts or budgets; never = only report.
+      fail = fail the step when the run fails its verdicts or budgets (including a regression against the baseline,
+      unless fail-on-regression is false); never = only report.
       A tool error (no report produced, exit code 2) always fails the step.
     required: false
     default: fail
+  baseline:
+    description: >-
+      Optional. A baseline report.json (path relative to the workspace, or an http(s) URL) to compare this run with:
+      per-tool p50/p95/p99, error rate and req/s, overall error rate, connect p95, memory and capacity, with noise floors
+      (see `mcpload compare`). Adds the regression verdict, a "Compared with baseline" table to the summary and PR comment,
+      and the regressed output. Tune the rules with extra-args, e.g. --max-p95-increase 30% --min-delta-ms 50.
+    required: false
+    default: ''
+  baseline-branch:
+    description: >-
+      Optional, used when baseline is empty. Compare with the report artifact (same artifact-name) of the latest successful
+      push/schedule/workflow_dispatch run of this workflow on this branch, e.g. main. Needs `permissions: actions: read`.
+      When there is none yet (the first run), the comparison is skipped with a notice.
+    required: false
+    default: ''
+  fail-on-regression:
+    description: >-
+      true = a regression against the baseline fails the run (regression verdict fail), so fail-on: fail fails the step;
+      false = the regression verdict only warns.
+    required: false
+    default: 'true'
   output-dir:
     description: Directory (relative to the workspace) for report.json and report.html
     required: false
@@ -144,6 +166,9 @@ outputs:
   result:
     description: pass | fail | error
     value: ${{ steps.summary.outputs.result }}
+  regressed:
+    description: "'true' when the run was compared with a baseline and regressed, else 'false'"
+    value: ${{ steps.summary.outputs.regressed }}
   exit-code:
     description: Exit code of `mcpload run` (0 pass, 1 fail, 2 error)
     value: ${{ steps.run.outputs.exit-code }}
@@ -243,6 +268,53 @@ runs:
         "$BIN/k6$EXE" version
         "$BIN/mcpload$EXE" version
 
+    - name: Find baseline report
+      id: find-baseline
+      if: inputs.baseline == '' && inputs.baseline-branch != ''
+      uses: actions/github-script@v7
+      env:
+        BRANCH: ${{ inputs.baseline-branch }}
+        ARTIFACT: ${{ inputs.artifact-name }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          // The newest unexpired artifact named like ours from a successful, non-PR run of this
+          // workflow on the baseline branch. PR runs report the PR's branch, but a fork may name its branch "main".
+          const { BRANCH: branch, ARTIFACT: name } = process.env;
+          const { owner, repo } = context.repo;
+          try {
+            const { data: self } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: context.runId });
+            let checked = 0, seen = 0;
+            for await (const page of github.paginate.iterator(github.rest.actions.listArtifactsForRepo, { owner, repo, name, per_page: 100 })) {
+              for (const a of page.data) {
+                const wr = a.workflow_run;
+                if (++seen > 500 || checked >= 30) break;
+                if (a.expired || !wr || wr.head_branch !== branch || wr.id === context.runId) continue;
+                checked++;
+                const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: wr.id });
+                if (run.conclusion !== 'success' || run.workflow_id !== self.workflow_id || run.event.startsWith('pull_request')) continue;
+                core.setOutput('run-id', String(run.id));
+                core.notice(`mcpload: comparing with the '${name}' report of ${branch} at ${run.head_sha.slice(0, 7)} (${run.html_url})`);
+                return;
+              }
+              if (seen > 500 || checked >= 30) break;
+            }
+            core.notice(`mcpload: no baseline yet: no successful run of this workflow on ${branch} has a '${name}' artifact. Skipping the comparison; a run on ${branch} creates it.`);
+          } catch (e) {
+            core.warning(`mcpload: could not look up the baseline (${e.status || ''} ${e.message}); skipping the comparison. The job needs 'permissions: actions: read'.`);
+          }
+
+    - name: Download baseline report
+      id: baseline
+      if: steps.find-baseline.outputs.run-id != ''
+      continue-on-error: true
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        run-id: ${{ steps.find-baseline.outputs.run-id }}
+        github-token: ${{ inputs.github-token }}
+        path: ${{ runner.temp }}/mcpload-baseline
+
     - name: Run mcpload
       id: run
       shell: bash
@@ -270,6 +342,10 @@ runs:
         IN_LABEL: ${{ inputs.label }}
         IN_EXTRA: ${{ inputs.extra-args }}
         IN_OUT_DIR: ${{ inputs.output-dir }}
+        IN_BASELINE: ${{ inputs.baseline }}
+        IN_FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        BASELINE_RUN: ${{ steps.find-baseline.outputs.run-id }}
+        BASELINE_DL: ${{ steps.baseline.outcome }}
         # Windows runners: stop Git Bash (MSYS) from rewriting /-prefixed arguments such as URL paths into C:/ paths.
         MSYS_NO_PATHCONV: '1'
         MSYS2_ARG_CONV_EXCL: '*'
@@ -317,6 +393,21 @@ runs:
         [ -n "$IN_P95" ]          && add --env "P95_MS=$IN_P95"
         [ -n "$IN_P99" ]          && add --env "P99_MS=$IN_P99"
         [ -n "$IN_ERR" ]          && add --env "ERR_RATE=$IN_ERR"
+        case "$IN_FAIL_ON_REGRESSION" in true|false) ;; *) echo "::error::fail-on-regression must be 'true' or 'false', got '$IN_FAIL_ON_REGRESSION'"; echo "exit-code=2" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
+        baseline="$IN_BASELINE"
+        if [ -z "$baseline" ] && [ -n "$BASELINE_RUN" ]; then
+          dl="$RUNNER_TEMP/mcpload-baseline/report.json"
+          if [ "$BASELINE_DL" = "success" ] && [ -f "$dl" ]; then
+            baseline="$dl"
+            if [ "$RUNNER_OS" = "Windows" ] && command -v cygpath >/dev/null 2>&1; then baseline="$(cygpath -m "$baseline")"; fi
+          else
+            echo "::notice::mcpload: the baseline artifact of run $BASELINE_RUN could not be downloaded or has no report.json; skipping the comparison"
+          fi
+        fi
+        if [ -n "$baseline" ]; then
+          add --baseline "$baseline"
+          [ "$IN_FAIL_ON_REGRESSION" = "false" ] && add --fail-on-regression=false
+        fi
         # env: one K=V per line; values are passed through but not echoed (they may hold tokens).
         while IFS= read -r line || [ -n "$line" ]; do
           line="${line%$'\r'}"
@@ -406,6 +497,7 @@ runs:
           --marker "$MARKER" --github-output "$TMP/result.txt"
         cat "$TMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
         result="$(sed -n 's/^result=//p' "$TMP/result.txt" | tail -n1)"
+        regressed="$(sed -n 's/^regressed=//p' "$TMP/result.txt" | tail -n1)"
         # A CLI error wins over whatever report may exist; passed = exit 0 and the report's overall rule says pass.
         if [ "${EXIT_CODE:-2}" = "2" ]; then result=error; fi
         if [ "${EXIT_CODE:-2}" = "0" ] && [ "$result" = "pass" ]; then passed=true; else passed=false; fi
@@ -413,6 +505,7 @@ runs:
         {
           echo "result=$result"
           echo "passed=$passed"
+          echo "regressed=${regressed:-false}"
           echo "comment-file=$TMP/summary.md"
         } >> "$GITHUB_OUTPUT"
 
@@ -451,19 +544,23 @@ runs:
         RESULT: ${{ steps.summary.outputs.result }}
         EXIT_CODE: ${{ steps.run.outputs.exit-code }}
         FAIL_ON: ${{ inputs.fail-on }}
+        REGRESSED: ${{ steps.summary.outputs.regressed }}
       run: |
         case "$FAIL_ON" in fail|never) ;; *) echo "::error::fail-on must be 'fail' or 'never', got '$FAIL_ON'"; exit 2 ;; esac
         if [ "$RESULT" = "error" ] || [ "${EXIT_CODE:-2}" = "2" ]; then
           echo "::error::mcpload errored (exit code ${EXIT_CODE:-none}); see the 'Run mcpload' step log"
           exit 2
         fi
+        why="verdicts or budgets"
+        [ "$REGRESSED" = "true" ] && why="performance regression vs the baseline, or other verdicts or budgets"
         if [ "$RESULT" = "pass" ] && [ "$EXIT_CODE" = "0" ]; then
+          if [ "$REGRESSED" = "true" ]; then echo "::warning::mcpload: performance regression vs the baseline (not failing because fail-on-regression=false)"; fi
           echo "mcpload: PASS"
           exit 0
         fi
         if [ "$FAIL_ON" = "never" ]; then
-          echo "::warning::mcpload: FAIL (not failing the job because fail-on=never)"
+          echo "::warning::mcpload: FAIL ($why; not failing the job because fail-on=never)"
           exit 0
         fi
-        echo "::error::mcpload: FAIL (verdicts or budgets); see the job summary"
+        echo "::error::mcpload: FAIL ($why); see the job summary"
         exit 1

@@ -46,6 +46,8 @@ const (
 	VerdictRecovery        = "recovery"
 	VerdictCallIntegrity   = "call_integrity"
 	VerdictCancellation    = "cancellation"
+	VerdictRegression      = "regression"
+	VerdictWorkload        = "workload"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
@@ -53,7 +55,8 @@ var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
 	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew, VerdictSessionSurvival,
-	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation,
+	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation, VerdictRegression,
+	VerdictWorkload,
 }
 
 // Verdict statuses.
@@ -78,6 +81,8 @@ type Report struct {
 	PayloadsIncluded bool        `json:"payloadsIncluded"`
 	// Workflow summarises multi-step agent workflows (scenario agent-workflow); nil otherwise.
 	Workflow *Workflow `json:"workflow,omitempty"`
+	// Workload summarises a workload profile's flows (scenario workload); nil otherwise.
+	Workload *Workload `json:"workload,omitempty"`
 	// Capacity is the per-step result of a step-load run (optional).
 	Capacity *Capacity `json:"capacity,omitempty"`
 	// Sessions summarises long-lived sessions (scenario long-lived); nil otherwise.
@@ -89,6 +94,93 @@ type Report struct {
 	CallIntegrity *CallIntegrity `json:"callIntegrity,omitempty"`
 	// Cancellation summarises cancelled calls (optional; runs that cancelled calls).
 	Cancellation *Cancellation `json:"cancellation,omitempty"`
+	// Comparison is this run against a baseline report (--baseline); nil otherwise.
+	Comparison *Comparison `json:"comparison,omitempty"`
+}
+
+// Comparison statuses (tools[].status, metrics[].status).
+const (
+	DeltaRegressed = "regressed" // worse beyond every noise rule
+	DeltaImproved  = "improved"  // better beyond the same rules
+	DeltaOK        = "ok"        // within noise
+	DeltaAdded     = "added"     // tool only in the current run
+	DeltaRemoved   = "removed"   // tool only in the baseline
+	DeltaFewCalls  = "few_calls" // fewer than MinCalls calls in either run
+	DeltaNA        = "n/a"       // not comparable (missing in a run, or the run is too short)
+)
+
+// Comparison is report.comparison: this run compared with a baseline report
+// (mcpload run --baseline). Regressed is true when any tool or metric has
+// status "regressed"; Reasons say which, in words. Warnings list differences
+// that may make the comparison unfair (scenario, protocol, load, sampler).
+type Comparison struct {
+	Baseline  BaselineRef   `json:"baseline"`
+	Rules     CompareRules  `json:"rules"`
+	Regressed bool          `json:"regressed"`
+	Reasons   []string      `json:"reasons"`
+	Warnings  []string      `json:"warnings"`
+	Tools     []ToolDelta   `json:"tools"`
+	Metrics   []MetricDelta `json:"metrics"`
+}
+
+// BaselineRef identifies the baseline report. Source is the path or URL it was read from.
+type BaselineRef struct {
+	Source    string `json:"source"`
+	RunID     string `json:"runId"`
+	StartedAt string `json:"startedAt"`
+	Scenario  string `json:"scenario"`
+	Protocol  string `json:"protocol"`
+	Git       *Git   `json:"git,omitempty"`
+}
+
+// CompareRules are the noise rules the comparison used. Relative increases
+// are fractions (0.2 = +20%); MinErrorDelta is absolute (0.005 = 0.5 points).
+type CompareRules struct {
+	MaxP95Increase       float64 `json:"maxP95Increase"`
+	MaxP99Increase       float64 `json:"maxP99Increase"`
+	MaxErrorIncrease     float64 `json:"maxErrorIncrease"`
+	MinErrorDelta        float64 `json:"minErrorDelta"`
+	MinDeltaMs           float64 `json:"minDeltaMs"`
+	MinCalls             int64   `json:"minCalls"`
+	MaxLeakSlopeIncrease float64 `json:"maxLeakSlopeIncreaseMiBPerMin"`
+}
+
+// ToolDelta is one tool in both runs. Base is nil for an added tool, Current
+// for a removed one. Regressed/Improved name the fields that moved beyond
+// the rules ("p95", "p99", "errorRate").
+type ToolDelta struct {
+	Name      string      `json:"name"`
+	Status    string      `json:"status"`
+	Base      *ToolSample `json:"base"`
+	Current   *ToolSample `json:"current"`
+	Regressed []string    `json:"regressed,omitempty"`
+	Improved  []string    `json:"improved,omitempty"`
+}
+
+// ToolSample is one tool's numbers in one run. RPS is calls per second of
+// warm-up plus load (phases.loadEndS; cool-down has no load).
+type ToolSample struct {
+	Reqs      int64   `json:"reqs"`
+	Errors    int64   `json:"errors"`
+	ErrorRate float64 `json:"errorRate"`
+	P50       float64 `json:"p50"`
+	P95       float64 `json:"p95"`
+	P99       float64 `json:"p99"`
+	RPS       float64 `json:"rps"`
+}
+
+// MetricDelta is one run-level value in both runs. ID is errorRate,
+// connectP95Ms, memoryGrowthMiB, leakSlopeMiBPerMin, retainedMiB or
+// maxSustainableVus; Unit is rate, ms, MiB, MiB/min or agents. Base and
+// Current are nil when a run lacks the value.
+type MetricDelta struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	Unit    string   `json:"unit"`
+	Base    *float64 `json:"base"`
+	Current *float64 `json:"current"`
+	Status  string   `json:"status"`
+	Note    string   `json:"note,omitempty"`
 }
 
 // Sessions is report.sessions: long-lived sessions and how they ended.
@@ -194,6 +286,42 @@ type WorkflowStep struct {
 	Latency
 }
 
+// Workload is report.workload: a workload profile's flows (scenario
+// workload, mcpload run --workload), in the profile's order.
+type Workload struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Flows       []WorkloadFlow `json:"flows"`
+}
+
+// WorkloadFlow is one weighted flow. Runs flows started, Completed of them
+// ran every step with every call succeeding; DurationMs covers complete
+// flows (connect to the end of the last step, think time included).
+type WorkloadFlow struct {
+	Name           string         `json:"name"`
+	Weight         float64        `json:"weight"`
+	Runs           int64          `json:"runs"`
+	Completed      int64          `json:"completed"`
+	CompletionRate float64        `json:"completionRate"`
+	DurationMs     Latency        `json:"durationMs"`
+	Budget         *Budget        `json:"budget,omitempty"`
+	Steps          []WorkloadStep `json:"steps"`
+}
+
+// WorkloadStep is the latency of one flow step (its parallel batch).
+type WorkloadStep struct {
+	Name string `json:"name"`
+	Latency
+	Budget *Budget `json:"budget,omitempty"`
+}
+
+// Budget is the latency (ms) and completion budget a flow or step was run with.
+type Budget struct {
+	P95Ms             *float64 `json:"p95Ms,omitempty"`
+	P99Ms             *float64 `json:"p99Ms,omitempty"`
+	MinCompletionRate *float64 `json:"minCompletionRate,omitempty"`
+}
+
 // Capacity is the outcome of a step-load run: one entry per concurrency step
 // and the breaking point (verdict capacity).
 type Capacity struct {
@@ -210,9 +338,25 @@ type Capacity struct {
 	// breaking step, so the breach may be k6's own overhead.
 	Inconclusive bool `json:"inconclusive"`
 	// StoppedEarly is set when the scenario aborted the run (ABORT_ERR_RATE).
-	StoppedEarly bool            `json:"stoppedEarly"`
-	Budgets      CapacityBudgets `json:"budgets"`
-	Steps        []Step          `json:"steps"`
+	StoppedEarly bool `json:"stoppedEarly"`
+	// EstimatedVUs is the sustainable concurrency interpolated between the
+	// last passing and the first breaking step (2 significant figures); nil
+	// without such a bracket. EstimateBasis says how it was estimated, or why
+	// there is no estimate.
+	EstimatedVUs  *int   `json:"estimatedVus,omitempty"`
+	EstimateBasis string `json:"estimateBasis,omitempty"`
+	// Degradation is the first passing step that clearly got worse than the
+	// first step; Failure the first step where the server fell over.
+	Degradation *StepMark       `json:"degradation,omitempty"`
+	Failure     *StepMark       `json:"failure,omitempty"`
+	Budgets     CapacityBudgets `json:"budgets"`
+	Steps       []Step          `json:"steps"`
+}
+
+// StepMark points at one step of a step-load run and says why.
+type StepMark struct {
+	VUs    int    `json:"vus"`
+	Reason string `json:"reason"`
 }
 
 // CapacityBudgets are the budgets each step was judged against.
@@ -232,7 +376,8 @@ type ToolBudget struct {
 // Step is one concurrency level of a step-load run. StartS/EndS bound its
 // tagged requests (seconds since run start). Breached lists the step-level
 // fields over budget ("connectP95Ms", "connectErrorRate", "toolCalls");
-// Breaches describes every breach in words.
+// Breaches describes every breach in words. P95Ms/P99Ms (optional) cover the
+// successful tools/call of all tools in the step (nil without one).
 type Step struct {
 	VUs                int        `json:"vus"`
 	StartS             float64    `json:"startS"`
@@ -241,6 +386,8 @@ type Step struct {
 	Errors             int64      `json:"errors"`
 	ErrorRate          float64    `json:"errorRate"`
 	RPS                float64    `json:"rps"`
+	P95Ms              *float64   `json:"p95Ms,omitempty"`
+	P99Ms              *float64   `json:"p99Ms,omitempty"`
 	ConnectP95Ms       *float64   `json:"connectP95Ms"`
 	ConnectErrorRate   *float64   `json:"connectErrorRate"`
 	GeneratorCPUMaxPct *float64   `json:"generatorCpuMaxPct,omitempty"`
@@ -251,6 +398,9 @@ type Step struct {
 	Tools              []StepTool `json:"tools"`
 	// ByErrorType splits Errors by error_type (optional; omitted without errors).
 	ByErrorType map[string]int64 `json:"byErrorType,omitempty"`
+	// Refinement marks a step added after the first pass to narrow the
+	// breaking point (mcpload capacity --refine); it ran in a second k6 run.
+	Refinement bool `json:"refinement,omitempty"`
 }
 
 // StepTool is one tool within a step. P95/P99 cover successful calls (nil
@@ -481,6 +631,16 @@ func (r *Report) Normalize() {
 	if r.Workflow != nil && r.Workflow.Steps == nil {
 		r.Workflow.Steps = []WorkflowStep{}
 	}
+	if r.Workload != nil {
+		if r.Workload.Flows == nil {
+			r.Workload.Flows = []WorkloadFlow{}
+		}
+		for i := range r.Workload.Flows {
+			if r.Workload.Flows[i].Steps == nil {
+				r.Workload.Flows[i].Steps = []WorkloadStep{}
+			}
+		}
+	}
 	s := &r.Series
 	if s.T == nil {
 		s.T = []float64{}
@@ -552,6 +712,27 @@ func (r *Report) Normalize() {
 			}
 		}
 	}
+	if cmp := r.Comparison; cmp != nil {
+		if cmp.Reasons == nil {
+			cmp.Reasons = []string{}
+		}
+		if cmp.Warnings == nil {
+			cmp.Warnings = []string{}
+		}
+		if cmp.Tools == nil {
+			cmp.Tools = []ToolDelta{}
+		}
+		if cmp.Metrics == nil {
+			cmp.Metrics = []MetricDelta{}
+		}
+		for i := range cmp.Metrics {
+			for _, p := range []**float64{&cmp.Metrics[i].Base, &cmp.Metrics[i].Current} {
+				if *p != nil && !finite(**p) {
+					*p = nil
+				}
+			}
+		}
+	}
 	if c := r.Capacity; c != nil {
 		if c.Steps == nil {
 			c.Steps = []Step{}
@@ -567,7 +748,7 @@ func (r *Report) Normalize() {
 			if st.Tools == nil {
 				st.Tools = []StepTool{}
 			}
-			for _, p := range []**float64{&st.ConnectP95Ms, &st.ConnectErrorRate, &st.GeneratorCPUMaxPct} {
+			for _, p := range []**float64{&st.P95Ms, &st.P99Ms, &st.ConnectP95Ms, &st.ConnectErrorRate, &st.GeneratorCPUMaxPct} {
 				if *p != nil && !finite(**p) {
 					*p = nil
 				}
@@ -778,6 +959,18 @@ func (r *Report) Check() error {
 		}
 	}
 
+	latency := func(path string, l Latency) {
+		if l.Count < 0 {
+			add("%s.count must be >= 0", path)
+		}
+		nonNeg(path+".p50", l.P50)
+		nonNeg(path+".p95", l.P95)
+		nonNeg(path+".p99", l.P99)
+		nonNeg(path+".max", l.Max)
+		if !(l.P50 <= l.P95 && l.P95 <= l.P99 && l.P99 <= l.Max) {
+			add("%s percentiles not monotonic (p50<=p95<=p99<=max)", path)
+		}
+	}
 	if w := r.Workflow; w != nil {
 		if w.Runs < 0 || w.Completed < 0 {
 			add("workflow.runs and workflow.completed must be >= 0")
@@ -786,18 +979,6 @@ func (r *Report) Check() error {
 			add("workflow.completed > workflow.runs")
 		}
 		rate("workflow.completionRate", w.CompletionRate)
-		latency := func(path string, l Latency) {
-			if l.Count < 0 {
-				add("%s.count must be >= 0", path)
-			}
-			nonNeg(path+".p50", l.P50)
-			nonNeg(path+".p95", l.P95)
-			nonNeg(path+".p99", l.P99)
-			nonNeg(path+".max", l.Max)
-			if !(l.P50 <= l.P95 && l.P95 <= l.P99 && l.P99 <= l.Max) {
-				add("%s percentiles not monotonic (p50<=p95<=p99<=max)", path)
-			}
-		}
 		latency("workflow.durationMs", w.DurationMs)
 		if w.Steps == nil {
 			add("workflow.steps is required")
@@ -810,6 +991,60 @@ func (r *Report) Check() error {
 			}
 			steps[st.Name] = true
 			latency(fmt.Sprintf("workflow.steps[%s]", st.Name), st.Latency)
+		}
+	}
+	if w := r.Workload; w != nil {
+		nonEmpty("workload.name", w.Name)
+		budget := func(path string, b *Budget) {
+			if b == nil {
+				return
+			}
+			for k, v := range map[string]*float64{"p95Ms": b.P95Ms, "p99Ms": b.P99Ms} {
+				if v != nil && !(*v > 0 && finite(*v)) {
+					add("%s.%s must be > 0 (got %v)", path, k, *v)
+				}
+			}
+			if v := b.MinCompletionRate; v != nil && !(*v > 0 && *v <= 1) {
+				add("%s.minCompletionRate must be in (0,1] (got %v)", path, *v)
+			}
+		}
+		if w.Flows == nil {
+			add("workload.flows is required")
+		}
+		flows := map[string]bool{}
+		for _, f := range w.Flows {
+			nonEmpty("workload.flows[].name", f.Name)
+			if flows[f.Name] {
+				add("duplicate workload flow '%s'", f.Name)
+			}
+			flows[f.Name] = true
+			p := fmt.Sprintf("workload.flows[%s]", f.Name)
+			if !(f.Weight > 0 && finite(f.Weight)) {
+				add("%s.weight must be > 0 (got %v)", p, f.Weight)
+			}
+			if f.Runs < 0 || f.Completed < 0 {
+				add("%s.runs and completed must be >= 0", p)
+			}
+			if f.Completed > f.Runs {
+				add("%s.completed > runs", p)
+			}
+			rate(p+".completionRate", f.CompletionRate)
+			latency(p+".durationMs", f.DurationMs)
+			budget(p+".budget", f.Budget)
+			if f.Steps == nil {
+				add("%s.steps is required", p)
+			}
+			steps := map[string]bool{}
+			for _, st := range f.Steps {
+				nonEmpty(p+".steps[].name", st.Name)
+				if steps[st.Name] {
+					add("duplicate step '%s' in %s", st.Name, p)
+				}
+				steps[st.Name] = true
+				sp := fmt.Sprintf("%s.steps[%s]", p, st.Name)
+				latency(sp, st.Latency)
+				budget(sp+".budget", st.Budget)
+			}
 		}
 	}
 
@@ -1002,6 +1237,27 @@ func (r *Report) Check() error {
 				break
 			}
 		}
+		if e := c.EstimatedVUs; e != nil {
+			// An interpolated estimate lies between the last passing and the breaking step.
+			if c.MaxSustainableVUs == nil || c.BreakingVUs == nil || *e < *c.MaxSustainableVUs || *e > *c.BreakingVUs {
+				add("capacity.estimatedVus must lie between maxSustainableVus and breakingVus")
+			}
+		}
+		stepVUs := map[int]bool{}
+		for _, st := range c.Steps {
+			stepVUs[st.VUs] = true
+		}
+		for _, m := range []struct {
+			path string
+			v    *StepMark
+		}{{"capacity.degradation", c.Degradation}, {"capacity.failure", c.Failure}} {
+			if m.v != nil {
+				if !stepVUs[m.v.VUs] {
+					add("%s.vus must be the vus of a step", m.path)
+				}
+				nonEmpty(m.path+".reason", m.v.Reason)
+			}
+		}
 		nonNeg("capacity.budgets.connectP95Ms", c.Budgets.ConnectP95Ms)
 		rate("capacity.budgets.connectErrorRate", c.Budgets.ConnectErrorRate)
 		for name, b := range c.Budgets.Tools {
@@ -1027,6 +1283,15 @@ func (r *Report) Check() error {
 			}
 			rate(path+".errorRate", st.ErrorRate)
 			nonNeg(path+".rps", st.RPS)
+			if st.P95Ms != nil {
+				nonNeg(path+".p95Ms", *st.P95Ms)
+			}
+			if st.P99Ms != nil {
+				nonNeg(path+".p99Ms", *st.P99Ms)
+			}
+			if st.P95Ms != nil && st.P99Ms != nil && *st.P95Ms > *st.P99Ms {
+				add("%s percentiles not monotonic (p95Ms<=p99Ms)", path)
+			}
 			if st.ConnectP95Ms != nil {
 				nonNeg(path+".connectP95Ms", *st.ConnectP95Ms)
 			}
@@ -1107,6 +1372,90 @@ func (r *Report) Check() error {
 			if a, b := s.WorkAfterCancelP50Ms, s.WorkAfterCancelP95Ms; a != nil && b != nil && *a > *b {
 				add("cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)")
 			}
+		}
+	}
+	if cmp := r.Comparison; cmp != nil {
+		nonEmpty("comparison.baseline.source", cmp.Baseline.Source)
+		if cmp.Baseline.Git != nil && !reGitSHA.MatchString(cmp.Baseline.Git.SHA) {
+			add("comparison.baseline.git.sha must match ^[0-9a-f]{7,64}$ (got %q)", cmp.Baseline.Git.SHA)
+		}
+		ru := cmp.Rules
+		for _, p := range []struct {
+			path string
+			v    float64
+		}{{"maxP95Increase", ru.MaxP95Increase}, {"maxP99Increase", ru.MaxP99Increase}, {"maxErrorIncrease", ru.MaxErrorIncrease},
+			{"minErrorDelta", ru.MinErrorDelta}, {"minDeltaMs", ru.MinDeltaMs}, {"maxLeakSlopeIncreaseMiBPerMin", ru.MaxLeakSlopeIncrease}} {
+			nonNeg("comparison.rules."+p.path, p.v)
+		}
+		if ru.MinCalls < 0 {
+			add("comparison.rules.minCalls must be >= 0")
+		}
+		if cmp.Reasons == nil || cmp.Warnings == nil || cmp.Tools == nil || cmp.Metrics == nil {
+			add("comparison.reasons, .warnings, .tools and .metrics are required")
+		}
+		regressed := false
+		seen := map[string]bool{}
+		for _, t := range cmp.Tools {
+			tp := fmt.Sprintf("comparison.tools[%s]", t.Name)
+			nonEmpty("comparison.tools[].name", t.Name)
+			if seen[t.Name] {
+				add("duplicate comparison tool '%s'", t.Name)
+			}
+			seen[t.Name] = true
+			switch t.Status {
+			case DeltaRegressed, DeltaImproved, DeltaOK, DeltaFewCalls:
+				if t.Base == nil || t.Current == nil {
+					add("%s.base and .current are required for status %q", tp, t.Status)
+				}
+			case DeltaAdded:
+				if t.Base != nil || t.Current == nil {
+					add("%s: an added tool has current and no base", tp)
+				}
+			case DeltaRemoved:
+				if t.Base == nil || t.Current != nil {
+					add("%s: a removed tool has base and no current", tp)
+				}
+			default:
+				add("%s.status invalid: %q", tp, t.Status)
+			}
+			regressed = regressed || t.Status == DeltaRegressed
+			for _, s := range []*ToolSample{t.Base, t.Current} {
+				if s == nil {
+					continue
+				}
+				if s.Reqs < 0 || s.Errors < 0 || s.Errors > s.Reqs {
+					add("%s: errors must be in [0, reqs]", tp)
+				}
+				rate(tp+".errorRate", s.ErrorRate)
+				nonNeg(tp+".rps", s.RPS)
+				if !(s.P50 >= 0 && s.P50 <= s.P95 && s.P95 <= s.P99) {
+					add("%s percentiles not monotonic (p50<=p95<=p99)", tp)
+				}
+			}
+			for _, f := range append(append([]string{}, t.Regressed...), t.Improved...) {
+				if f != "p95" && f != "p99" && f != "errorRate" {
+					add("%s has an invalid regressed/improved entry %q", tp, f)
+				}
+			}
+		}
+		for i, m := range cmp.Metrics {
+			mp := fmt.Sprintf("comparison.metrics[%d]", i)
+			nonEmpty(mp+".id", m.ID)
+			nonEmpty(mp+".label", m.Label)
+			switch m.Unit {
+			case "rate", "ms", "MiB", "MiB/min", "agents":
+			default:
+				add("%s.unit invalid: %q", mp, m.Unit)
+			}
+			switch m.Status {
+			case DeltaRegressed, DeltaImproved, DeltaOK, DeltaNA:
+			default:
+				add("%s.status invalid: %q", mp, m.Status)
+			}
+			regressed = regressed || m.Status == DeltaRegressed
+		}
+		if regressed != cmp.Regressed {
+			add("comparison.regressed must be true exactly when a tool or metric has status \"regressed\"")
 		}
 	}
 	return errors.Join(errs...)

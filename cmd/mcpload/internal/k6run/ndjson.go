@@ -31,6 +31,14 @@ const (
 	MetricWorkflowStepDuration = "mcp_workflow_step_duration"
 	MetricWorkflowComplete     = "mcp_workflow_complete"
 
+	// Custom metrics of scenarios/workload.js, tagged flow (and flow_step:
+	// not `step`, which step-load puts on every request it makes).
+	MetricWorkloadFlowDuration = "mcp_workload_flow_duration"
+	MetricWorkloadStepDuration = "mcp_workload_step_duration"
+	MetricWorkloadFlowComplete = "mcp_workload_flow_complete"
+	FlowTag                    = "flow"
+	FlowStepTag                = "flow_step"
+
 	// k6 built-in metrics.
 	MetricIterations        = "iterations"
 	MetricDroppedIterations = "dropped_iterations"
@@ -153,6 +161,7 @@ type Aggregator struct {
 	// (the 'scenario' system tag) and tool, for phase comparisons.
 	scenarioTools map[string]map[string][]float64
 	wf            workflowAgg
+	wl            workloadAgg
 	sk            skewAgg
 	// steps holds per-step aggregates keyed by the StepTag value (step-load).
 	steps  map[string]*stepAgg
@@ -308,6 +317,17 @@ func (a *Aggregator) add(l *line) error {
 		a.wf.runs++
 		if v != 0 {
 			a.wf.completed++
+		}
+	case MetricWorkloadFlowDuration:
+		f := a.wl.flow(tags[FlowTag])
+		f.durations = append(f.durations, v)
+	case MetricWorkloadStepDuration:
+		a.wl.flow(tags[FlowTag]).addStep(tags[FlowStepTag], v)
+	case MetricWorkloadFlowComplete:
+		f := a.wl.flow(tags[FlowTag])
+		f.runs++
+		if v != 0 {
+			f.completed++
 		}
 	case MetricSkewRequests, MetricSkewFailures, MetricSkewFailureDuration, MetricSkewNegotiated:
 		a.sk.add(l.Metric, v, tags)
@@ -567,6 +587,51 @@ func (a *Aggregator) Workflow() *WorkflowStats {
 	return ws
 }
 
+// workloadAgg collects scenarios/workload.js's metrics per flow, in first-seen order.
+type workloadAgg struct {
+	order []string
+	flows map[string]*workflowAgg
+}
+
+func (w *workloadAgg) flow(name string) *workflowAgg {
+	if name == "" {
+		name = "unnamed"
+	}
+	if w.flows == nil {
+		w.flows = map[string]*workflowAgg{}
+	}
+	f := w.flows[name]
+	if f == nil {
+		f = &workflowAgg{}
+		w.flows[name] = f
+		w.order = append(w.order, name)
+	}
+	return f
+}
+
+// FlowStats is one workload flow: Runs and Completed count
+// mcp_workload_flow_complete samples, Duration is mcp_workload_flow_duration
+// (complete flows) and Steps is mcp_workload_step_duration by flow_step.
+type FlowStats struct {
+	Name string
+	WorkflowStats
+}
+
+// Workload returns scenarios/workload.js's per-flow metrics in first-seen
+// order, or nil when the run emitted none.
+func (a *Aggregator) Workload() []FlowStats {
+	var out []FlowStats
+	for _, n := range a.wl.order {
+		f := a.wl.flows[n]
+		fs := FlowStats{Name: n, WorkflowStats: WorkflowStats{Runs: round(f.runs), Completed: round(f.completed), Duration: latencyOf(f.durations)}}
+		for _, sn := range f.stepOrder {
+			fs.Steps = append(fs.Steps, WorkflowStep{Name: sn, Latency: latencyOf(f.steps[sn])})
+		}
+		out = append(out, fs)
+	}
+	return out
+}
+
 // StepTag is the tag scenarios/step-load.js puts on every request made while a
 // step holds its concurrency; its value is the step's VU count.
 const StepTag = "step"
@@ -647,7 +712,8 @@ func (a *Aggregator) addStep(st, metric string, t time.Time, v float64, tags map
 
 // StepStats aggregates the requests of one load step (step-load scenario).
 // Tools follow Tools(); ConnectP95 is the p95 (ms) of successful connects
-// (nil without one).
+// (nil without one); CallP95/CallP99 cover the successful tools/call of all
+// tools together (nil without one).
 type StepStats struct {
 	VUs                     int
 	First, Last             time.Time
@@ -655,6 +721,7 @@ type StepStats struct {
 	Tools                   []ToolStats
 	Connects, ConnectErrors int64
 	ConnectP95              *float64
+	CallP95, CallP99        *float64
 	// ByErrorType splits Errors by error_type (empty without errors).
 	ByErrorType map[string]int64
 }
@@ -673,6 +740,14 @@ func (a *Aggregator) Steps() []StepStats {
 			ByErrorType: errorTypes(s.byErrorType)}
 		if st.Errors > st.Reqs {
 			st.Errors = st.Reqs
+		}
+		var calls []float64
+		for _, t := range s.tools {
+			calls = append(calls, t.durations...)
+		}
+		if len(calls) > 0 {
+			sort.Float64s(calls)
+			st.CallP95, st.CallP99 = ptr(Percentile(calls, 0.95)), ptr(Percentile(calls, 0.99))
 		}
 		if len(s.connect) > 0 {
 			c := append([]float64(nil), s.connect...)

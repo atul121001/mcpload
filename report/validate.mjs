@@ -51,12 +51,12 @@ export function semanticErrors(r) {
     if (t.errors > t.reqs) errs.push(`tools[${t.name}].errors > reqs`);
     if (!(t.p50 <= t.p95 && t.p95 <= t.p99 && t.p99 <= t.max)) errs.push(`tools[${t.name}] percentiles not monotonic (p50<=p95<=p99<=max)`);
   }
+  const mono = (path, l) => {
+    if (!(l.p50 <= l.p95 && l.p95 <= l.p99 && l.p99 <= l.max)) errs.push(`${path} percentiles not monotonic (p50<=p95<=p99<=max)`);
+  };
   const w = r.workflow;
   if (w) {
     if (w.completed > w.runs) errs.push('workflow.completed > workflow.runs');
-    const mono = (path, l) => {
-      if (!(l.p50 <= l.p95 && l.p95 <= l.p99 && l.p99 <= l.max)) errs.push(`${path} percentiles not monotonic (p50<=p95<=p99<=max)`);
-    };
     mono('workflow.durationMs', w.durationMs);
     const steps = new Set();
     for (const st of w.steps) {
@@ -65,16 +65,42 @@ export function semanticErrors(r) {
       mono(`workflow.steps[${st.name}]`, st);
     }
   }
+  if (r.workload) {
+    const flows = new Set();
+    for (const f of r.workload.flows) {
+      const p = `workload.flows[${f.name}]`;
+      if (flows.has(f.name)) errs.push(`duplicate workload flow '${f.name}'`);
+      flows.add(f.name);
+      if (f.completed > f.runs) errs.push(`${p}.completed > runs`);
+      mono(`${p}.durationMs`, f.durationMs);
+      const steps = new Set();
+      for (const st of f.steps) {
+        if (steps.has(st.name)) errs.push(`duplicate step '${st.name}' in ${p}`);
+        steps.add(st.name);
+        mono(`${p}.steps[${st.name}]`, st);
+      }
+    }
+  }
   const c = r.capacity;
   if (c) {
     const pv = c.plannedVus || [];
     for (let i = 1; i < pv.length; i++) {
       if (!(pv[i] > pv[i - 1])) { errs.push('capacity.plannedVus must be increasing integers >= 1'); break; }
     }
+    if (c.estimatedVus != null) {
+      if (c.maxSustainableVus == null || c.breakingVus == null || c.estimatedVus < c.maxSustainableVus || c.estimatedVus > c.breakingVus) {
+        errs.push('capacity.estimatedVus must lie between maxSustainableVus and breakingVus');
+      }
+    }
+    const stepVus = new Set(c.steps.map((st) => st.vus));
+    for (const k of ['degradation', 'failure']) {
+      if (c[k] && !stepVus.has(c[k].vus)) errs.push(`capacity.${k}.vus must be the vus of a step`);
+    }
     c.steps.forEach((st, i) => {
       const path = `capacity.steps[${i}]`;
       if (i > 0 && !(st.vus > c.steps[i - 1].vus)) errs.push(`capacity.steps must be sorted by strictly increasing vus (index ${i})`);
       if (st.endS < st.startS) errs.push(`${path}.endS is before startS`);
+      if (st.p95Ms != null && st.p99Ms != null && st.p95Ms > st.p99Ms) errs.push(`${path} percentiles not monotonic (p95Ms<=p99Ms)`);
       if (st.errors > st.reqs) errs.push(`${path}: errors must be in [0, reqs]`);
       for (const t of st.tools) {
         if (t.errors > t.reqs) errs.push(`${path}.tools[${t.name}]: errors must be in [0, reqs]`);
@@ -111,6 +137,27 @@ export function semanticErrors(r) {
     if (sv && sv.workAfterCancelP50Ms != null && sv.workAfterCancelP95Ms != null && sv.workAfterCancelP50Ms > sv.workAfterCancelP95Ms) {
       errs.push('cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)');
     }
+  }
+  const cmp = r.comparison;
+  if (cmp) {
+    let regressed = false;
+    const seen = new Set();
+    for (const t of cmp.tools) {
+      const tp = `comparison.tools[${t.name}]`;
+      if (seen.has(t.name)) errs.push(`duplicate comparison tool '${t.name}'`);
+      seen.add(t.name);
+      if (t.status === 'added' && (t.base !== null || t.current === null)) errs.push(`${tp}: an added tool has current and no base`);
+      else if (t.status === 'removed' && (t.base === null || t.current !== null)) errs.push(`${tp}: a removed tool has base and no current`);
+      else if (t.status !== 'added' && t.status !== 'removed' && (t.base === null || t.current === null)) errs.push(`${tp}.base and .current are required for status "${t.status}"`);
+      regressed = regressed || t.status === 'regressed';
+      for (const s of [t.base, t.current]) {
+        if (!s) continue;
+        if (s.errors > s.reqs) errs.push(`${tp}: errors must be in [0, reqs]`);
+        if (!(s.p50 <= s.p95 && s.p95 <= s.p99)) errs.push(`${tp} percentiles not monotonic (p50<=p95<=p99)`);
+      }
+    }
+    for (const m of cmp.metrics) regressed = regressed || m.status === 'regressed';
+    if (regressed !== cmp.regressed) errs.push('comparison.regressed must be true exactly when a tool or metric has status "regressed"');
   }
   return errs;
 }

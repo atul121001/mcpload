@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/k6run"
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/report"
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/sampler"
+	"github.com/atul121001/mcpload/cmd/mcpload/internal/workload"
 )
 
 // multiFlag is a repeatable string flag.
@@ -50,17 +52,32 @@ type runOpts struct {
 	waitReady                       time.Duration
 	chaosRestart                    time.Duration
 	chaosContainer, callsURL        string
+	baseline                        string
+	cmp                             analysis.CompareConfig
+	failOnRegression                bool
+	workload                        string
 	set                             map[string]bool
+
+	wl     *workload.Workload // loaded from --workload
+	wlFile string             // its normalized JSON (WORKLOAD_FILE), written by execute
+	// Set by the capacity subcommand: refinement steps and the knobs the
+	// step table suggests.
+	refine int
+	hints  stepHints
 }
 
 const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]"
 
 func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs := newFlagSet("run", runSynopsis, stderr)
-	fs.StringVar(&o.scenario, "scenario", "", "k6 scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload (default agent-session)")
-	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to k6 as MCP_URL (required)")
+	fs.StringVar(&o.scenario, "scenario", "", "scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload, then among the scenarios built into mcpload (default agent-session)")
+	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to the scenario as MCP_URL (required)")
 	fs.StringVar(&o.protocol, "protocol", "auto", "MCP protocol version or 'auto' (MCP_PROTOCOL)")
-	fs.StringVar(&o.k6, "k6", "", "k6 binary built with xk6-mcpload (default: ./k6 in the current folder, then next to mcpload, then k6 on PATH)")
+	// Advanced, hidden from -h: run a different engine (a k6 built with
+	// xk6-mcpload) instead of the one embedded in mcpload. Also $MCPLOAD_ENGINE.
+	fs.StringVar(&o.k6, "engine", "", "engine binary: a k6 built with xk6-mcpload (default: the engine embedded in mcpload)")
+	fs.StringVar(&o.k6, "k6", "", "same as --engine")
+	hideFlags(fs, "engine", "k6")
 	fs.StringVar(&o.samplerKind, "sampler", "none", "server sampler: none | docker | prometheus")
 	fs.StringVar(&o.container, "container", "", "container name or id for --sampler docker")
 	fs.StringVar(&o.promURL, "prom-url", "", "Prometheus text endpoint (e.g. http://host:3001/metrics) for --sampler prometheus")
@@ -68,10 +85,10 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.soakMin, "soak-min", 30, "soak: constant-load minutes (SOAK_MIN)")
 	fs.Float64Var(&o.warmupMin, "warmup-min", 0, "soak: warm-up minutes (WARMUP_MIN; default 10% of soak, min 1)")
 	fs.Float64Var(&o.cooldownMin, "cooldown-min", 5, "soak: cool-down minutes (COOLDOWN_MIN)")
-	fs.IntVar(&o.vus, "vus", 0, "VUs, passed to the script as VUS (scenario knob, not k6 --vus)")
-	fs.StringVar(&o.duration, "duration", "", "duration, passed to the script as DURATION (scenario knob, not k6 --duration)")
+	fs.IntVar(&o.vus, "vus", 0, "VUs, passed to the script as VUS (a scenario knob)")
+	fs.StringVar(&o.duration, "duration", "", "duration, passed to the script as DURATION (a scenario knob)")
 	fs.IntVar(&o.minAgents, "min-agents", 0, "step-load: concurrency the server must hold within budgets for the capacity verdict to pass (MIN_AGENTS)")
-	fs.Var(&o.env, "env", "extra K=V passed to k6 with -e (repeatable)")
+	fs.Var(&o.env, "env", "extra K=V setting passed to the scenario (repeatable)")
 	fs.StringVar(&o.label, "label", "", "short display name of the target")
 	fs.StringVar(&o.gitSHA, "git-sha", "", "git sha of the system under test (default $GITHUB_SHA)")
 	fs.StringVar(&o.gitRef, "git-ref", "", "git ref of the system under test (default $GITHUB_REF)")
@@ -82,16 +99,20 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.leakSlope, "leak-slope-mb-per-min", 1, "memory_leak RSS slope limit in MiB/min (1 MiB = 1048576 bytes)")
 	fs.Float64Var(&o.minR2, "min-r2", 0.7, "minimum R² for a leak slope to count")
 	fs.BoolVar(&o.includePayloads, "include-payloads", false, "keep tool arguments/results (INCLUDE_PAYLOADS=1)")
-	fs.StringVar(&o.k6Out, "k6-out", "", "keep k6's raw outputs (metrics.ndjson, summary.json) in this directory")
+	fs.StringVar(&o.k6Out, "k6-out", "", "keep the engine's raw outputs (metrics.ndjson, summary.json) in this directory")
 	fs.DurationVar(&o.waitReady, "wait-ready", 0, "before starting, wait up to this long (e.g. 2m) for the server to answer an MCP handshake (0 = don't wait)")
-	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after k6 starts (e.g. 30s); only on servers you own (0 = off)")
+	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after the load starts (e.g. 30s); only on servers you own (0 = off)")
 	fs.StringVar(&o.chaosContainer, "chaos-container", "", "container to restart for --chaos-restart (default: --container)")
+	fs.StringVar(&o.baseline, "baseline", "", "compare with this baseline report.json (path or http(s) URL) after the run: adds the regression verdict and report.json comparison")
+	compareFlags(fs, &o.cmp)
+	fs.BoolVar(&o.failOnRegression, "fail-on-regression", true, "with --baseline: a regression fails the run (false: the regression verdict only warns)")
+	fs.StringVar(&o.workload, "workload", "", "workload profile (YAML or JSON): weighted business flows of tool calls, test data and budgets, run by the workload scenario (the default --scenario with this flag)")
 	fs.StringVar(&o.callsURL, "calls-url", "", "server endpoint listing executed call ids (GET ?prefix=, answers {\"executions\": {id: count}}), e.g. http://localhost:3019/calls, for the call_integrity verdict")
 	return fs
 }
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
-	o := &runOpts{set: map[string]bool{}}
+	o := &runOpts{set: map[string]bool{}, cmp: analysis.DefaultCompareConfig()}
 	fs := runFlags(o, stderr)
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -119,6 +140,17 @@ func (o *runOpts) validate(pos []string) error {
 	}
 	if o.url == "" {
 		return errors.New("--url is required")
+	}
+	if o.workload != "" {
+		// Fail before k6 starts, naming the flow, step and field at fault.
+		wl, err := workload.Load(o.workload)
+		if err != nil {
+			return err
+		}
+		o.wl = wl
+		if o.scenario == "" {
+			o.scenario = workloadScenario
+		}
 	}
 	cwd, _ := os.Getwd()
 	scenario, err := resolveScenario(o.scenario, cwd, exeDir())
@@ -190,6 +222,9 @@ func (o *runOpts) validate(pos []string) error {
 	if o.leakSlope <= 0 || o.minR2 < 0 || o.minR2 > 1 {
 		return errors.New("--leak-slope-mb-per-min must be > 0 and --min-r2 in [0,1]")
 	}
+	if err := checkCompareConfig(o.cmp); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -233,6 +268,14 @@ func (o *runOpts) k6Env() ([]string, map[string]string) {
 	}
 	if o.includePayloads {
 		put("INCLUDE_PAYLOADS", "1")
+	}
+	if o.wlFile != "" {
+		put(workloadFileEnv, o.wlFile)
+	} else if p := m[workloadFileEnv]; p != "" && !filepath.IsAbs(p) {
+		// k6's open() would resolve a relative path against the script's folder.
+		if abs, err := filepath.Abs(p); err == nil {
+			put(workloadFileEnv, abs)
+		}
 	}
 	out := make([]string, 0, len(order))
 	for _, k := range order {
@@ -314,6 +357,15 @@ func newRunID() string {
 func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	logf := func(format string, a ...any) { fmt.Fprintf(stderr, "mcpload: "+format+"\n", a...) }
 	logf("using scenario %s", o.scenario)
+	// Read the baseline first, so a bad --baseline fails before the run, not after it.
+	var baseline *report.Report
+	if o.baseline != "" {
+		var err error
+		if baseline, err = loadReport(o.baseline); err != nil {
+			return 0, fmt.Errorf("--baseline: %w", err)
+		}
+		logf("baseline: %s (run %s, %s)", o.baseline, baseline.Run.ID, describeRun(baseline))
+	}
 
 	bin, err := k6run.FindBinary(o.k6)
 	if err != nil {
@@ -323,6 +375,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	k6Version, err := k6run.Version(ctx, bin)
 	if err != nil {
 		return 0, err
+	}
+	if o.wl != nil {
+		path, cleanup, err := writeWorkloadFile(o.wl)
+		if err != nil {
+			return 0, fmt.Errorf("workload: %w", err)
+		}
+		defer cleanup()
+		o.wlFile = path
+		logf("workload %s: %d flows, %d tools (%s)", o.wl.Name, len(o.wl.Flows), len(o.wl.ToolNames()), strings.Join(o.wl.ToolNames(), ", "))
 	}
 	env, explicitEnv := o.k6Env()
 	envMap := scriptEnv(os.Environ(), explicitEnv)
@@ -448,7 +509,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 
 	var cpuMon *sampler.CPUMonitor
 	var stopChaos func() chaosRun
-	logf("k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
+	logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, o.url, smp.Kind(), o.interval)
 	res, err := k6run.Run(k6run.RunConfig{
 		Bin: bin, Script: o.scenario, Env: env,
 		NDJSONPath: ndjson, SummaryPath: summaryPath,
@@ -603,6 +664,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			r.Workflow.Steps = append(r.Workflow.Steps, report.WorkflowStep{Name: st.Name, Latency: toLatency(st.Latency)})
 		}
 	}
+	if flows := agg.Workload(); flows != nil || scenario == workloadScenario {
+		if def := workloadDef(o, envMap, logf); def != nil {
+			r.Workload = workloadReport(def, flows)
+		}
+	}
 	for _, th := range agg.Thresholds(defs, sum, durationS) {
 		var obs *float64
 		if th.Observed != nil {
@@ -698,6 +764,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
 		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
 	}
+	if r.Workload != nil {
+		r.Verdicts = append(r.Verdicts, analysis.WorkloadVerdict(r.Workload))
+	}
 	if sk := agg.Skew(); sk != nil || scenario == versionSkewScenario {
 		r.Verdicts = append(r.Verdicts, analysis.VersionSkewVerdict(skewInput(sk)))
 	}
@@ -709,7 +778,24 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		}
 		capCfg.Planned = opts.StepLevels(stepLoadK6Scenario)
 		capCfg.StoppedEarly = stoppedEarly
-		cp, v := analysis.CapacityVerdict(buildSteps(steps, origin, cpuWindows), capCfg)
+		first := buildSteps(steps, origin, cpuWindows)
+		cp, v := analysis.CapacityVerdict(first, capCfg)
+		if levels := refineLevels(cp, o.refine); len(levels) > 0 && !res.Interrupted {
+			extra, err := refinePass(o, bin, env, levels, origin, sig, stdout, stderr, logf)
+			switch {
+			case err != nil:
+				logf("warning: refinement run failed (%v); reporting the first pass only", err)
+			case len(extra) == 0:
+				logf("warning: the refinement run produced no step data; reporting the first pass only")
+			default:
+				planned := append(append([]int(nil), capCfg.Planned...), levels...)
+				slices.Sort(planned)
+				capCfg.Planned = slices.Compact(planned)
+				cp, v = analysis.CapacityVerdict(mergeSteps(first, extra), capCfg)
+			}
+		} else if o.refine > 0 && cp.BreakingVUs != nil {
+			logf("refine: nothing to refine (no gap between a passing and a conclusive breaking step)")
+		}
 		if len(steps) > 0 {
 			r.Capacity = cp
 		}
@@ -723,6 +809,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		}
 		r.Cancellation = c
 		r.Verdicts = append(r.Verdicts, analysis.CancellationVerdict(c, worst))
+	}
+	if baseline != nil {
+		// Compare once every verdict is in: the comparison reads memory_leak and generator.
+		r.Comparison = analysis.Compare(baseline, r, o.baseline, o.cmp, cfg)
+		r.Verdicts = append(r.Verdicts, analysis.RegressionVerdict(r.Comparison, o.failOnRegression))
 	}
 
 	r.Normalize()
@@ -741,7 +832,16 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		logf("wrote %s", o.html)
 	}
 
-	printSteps(stderr, r.Capacity)
+	hints := o.hints
+	if hints == (stepHints{}) {
+		hints = runStepHints
+	}
+	printSteps(stderr, r.Capacity, hints)
+	if r.Comparison != nil {
+		fmt.Fprintln(stderr)
+		writeCompareText(stderr, r.Comparison, r)
+	}
+	printWorkload(stderr, r.Workload)
 	printVerdicts(stderr, r)
 
 	exit := ExitPass

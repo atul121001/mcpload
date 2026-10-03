@@ -105,6 +105,8 @@ th { color: var(--ink-2); font-weight: 600; font-size: 12.5px; }
 td.breach { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
 td.breach::after { content: " \2716"; font-size: 11px; }
 td.ok-budget::after { content: ""; }
+td.regressed { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
+td.improved { color: var(--good-ink); }
 tr.total td { font-weight: 600; border-top: 1px solid var(--axis); }
 .small { font-size: 12px; }
 
@@ -136,7 +138,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   .verdict, .chart, tr { break-inside: avoid; }
   h2 { break-after: avoid; }
   details, .tip { display: none !important; }
-  .overall, .badge, td.breach { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .overall, .badge, td.breach, td.regressed { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .charts.two { grid-template-columns: 1fr 1fr; }
 }
 @page { margin: 14mm; }
@@ -184,7 +186,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   // k6 metric name without the tag selector, e.g. "mcp_req_duration{tool:x}" -> "mcp_req_duration".
   function metricBase(m) { return String(m).split('{')[0]; }
   // Rate metrics (observed value is a 0..1 fraction). A Counter's "rate" is per second, a Trend's values are ms.
-  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || b === 'mcp_workflow_complete' || /_rate$|_failed$/.test(b); }
+  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || b === 'mcp_workflow_complete' || b === 'mcp_workload_flow_complete' || /_rate$|_failed$/.test(b); }
   function isDurationMetric(m) { return /duration|ttfb|_ms$/.test(metricBase(m)); }
 
   // ---------- threshold lookup: tool -> {p95:bool, p99:bool, errorRate:bool} (true = breached) ----------
@@ -255,6 +257,62 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   });
   h.push('</section>');
 
+  // ---------- comparison with a baseline (run --baseline) ----------
+  var CMP = R.comparison;
+  if (CMP) {
+    var MARK = { regressed: '⚠', improved: '✓', ok: '·' };
+    var cmpVal = function (unit, v) {
+      if (v == null) return '–';
+      return unit === 'ms' ? ms(v) : unit === 'rate' ? pct(v) : unit === 'req/s' ? num(v, 1) : unit === 'MiB' ? num(v, 1) + ' MiB' : unit === 'MiB/min' ? num(v, 2) + ' MiB/min' : num(v) + ' ' + unit;
+    };
+    var cmpPct = function (b, c) {
+      if (b == null || c == null || b < 0) return '';
+      if (b === 0) return c === 0 ? '' : 'new';
+      var p = Math.round(100 * (c - b) / b);
+      return p === 0 ? '' : (p > 0 ? '+' : '') + p + '%';
+    };
+    var cmpCell = function (unit, b, c, st) {
+      var p = unit === 'req/s' ? '' : cmpPct(b, c);
+      return '<td' + (st === 'regressed' || st === 'improved' ? ' class="' + st + '"' : '') + '>' + esc(cmpVal(unit, b) + ' → ' + cmpVal(unit, c)) +
+        (p ? ' <span class="muted small">(' + esc(p) + ')</span>' : '') + (MARK[st] ? ' ' + MARK[st] : '') + '</td>';
+    };
+    var fieldSt = function (t, f, judged) {
+      if (!judged) return '';
+      return (t.regressed || []).indexOf(f) >= 0 ? 'regressed' : (t.improved || []).indexOf(f) >= 0 ? 'improved' : 'ok';
+    };
+    var minCalls = CMP.rules.minCalls, B = CMP.baseline;
+    var bName = B.git ? B.git.sha.slice(0, 7) + (B.git.ref ? ' (' + B.git.ref.replace(/^refs\/heads\//, '').replace(/^refs\//, '') + ')' : '') : 'run ' + String(B.runId).slice(0, 8);
+    var cmpRes = CMP.regressed ? 'fail' : 'pass';
+    h.push('<h2>Compared with baseline</h2><section class="card"><p style="margin:0 0 10px"><span class="badge ' + cmpRes + '"><span aria-hidden="true">' + ICON[cmpRes] + '</span>' +
+      (CMP.regressed ? 'regression' : 'no regression') + '</span> vs <span class="mono">' + esc(bName) + '</span> <span class="muted">· ' + esc(B.scenario) + ' · ' + esc(B.protocol) + ' · ' + esc(B.source) + '</span></p>');
+    if (CMP.regressed) h.push('<ul style="margin:0 0 10px">' + CMP.reasons.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>');
+    CMP.warnings.forEach(function (w) { h.push('<p class="small" style="margin:0 0 8px;color:var(--warn-ink)">⚠ ' + esc(w) + '</p>'); });
+    if (CMP.tools.length) {
+      h.push('<div class="tablewrap"><table><thead><tr><th>Tool</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Error rate</th><th>req/s</th></tr></thead><tbody>');
+      CMP.tools.forEach(function (t) {
+        var b = t.base || {}, c = t.current || {}, both = t.base && t.current && t.status !== 'few_calls';
+        var lat = both && b.reqs - b.errors >= minCalls && c.reqs - c.errors >= minCalls;
+        var tag = { added: 'added', removed: 'removed', few_calls: 'too few calls' }[t.status];
+        h.push('<tr><td class="mono" style="text-align:left">' + esc(t.name) + (tag ? ' <span class="muted small">(' + tag + ')</span>' : '') + '</td>' +
+          '<td>' + (t.base ? num(b.reqs) : '–') + ' → ' + (t.current ? num(c.reqs) : '–') + '</td>' +
+          cmpCell('ms', b.p50, c.p50, '') + cmpCell('ms', b.p95, c.p95, fieldSt(t, 'p95', lat)) + cmpCell('ms', b.p99, c.p99, fieldSt(t, 'p99', lat)) +
+          cmpCell('rate', b.errorRate, c.errorRate, fieldSt(t, 'errorRate', both)) + cmpCell('req/s', b.rps, c.rps, '') + '</tr>');
+      });
+      h.push('</tbody></table></div>');
+    }
+    if (CMP.metrics.length) {
+      h.push('<div class="tablewrap" style="margin-top:10px"><table><thead><tr><th style="text-align:left">Run</th><th>Baseline → current</th><th style="text-align:left">Note</th></tr></thead><tbody>');
+      CMP.metrics.forEach(function (m) {
+        h.push('<tr><th style="text-align:left">' + esc(m.label) + '</th>' + cmpCell(m.unit, m.base, m.current, m.status) + '<td style="text-align:left" class="small muted">' + esc(m.note || '') + '</td></tr>');
+      });
+      h.push('</tbody></table></div>');
+    }
+    var ru = CMP.rules;
+    h.push('<div class="muted small" style="margin-top:8px">A tool regresses only when both runs made at least ' + num(minCalls) + ' calls of it and its p95 rose more than ' + num(ru.maxP95Increase * 100) +
+      '% (p99: ' + num(ru.maxP99Increase * 100) + '%) <b>and</b> more than ' + num(ru.minDeltaMs) + ' ms; an error rate when it rose more than ' + num(ru.minErrorDelta * 100, 2) + ' points, more than ' +
+      num(ru.maxErrorIncrease * 100) + '% of the baseline rate and significantly (p &lt; 0.05). ⚠ regression · ✓ improvement · · within noise.</div></section>');
+  }
+
   // "timeout 14, http 3": the n most frequent keys of a byErrorType map.
   function topErr(m, n) {
     var ks = Object.keys(m || {}).filter(function (k) { return m[k] > 0; }).sort(function (a, b) { return m[b] - m[a] || (a < b ? -1 : 1); });
@@ -279,14 +337,38 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
           : 'Budgets broke at the first step (' + num(cap.breakingVus) + ' agents): no sustainable concurrency found.';
     if (cap.minAgents != null) capLine += ' <span class="muted">Target: ' + num(cap.minAgents) + ' agents.</span>';
     if (cap.stoppedEarly) capLine += ' <span class="muted">The run stopped early (ABORT_ERR_RATE).</span>';
-    h.push('<h2>Capacity (step load)</h2><section class="card"><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
-      '<th>Agents</th><th>Result</th><th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
-      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
+    // Estimate: interpolated between the last passing and the first breaking step (capacity.estimatedVus).
+    var capTop = cap.steps[cap.steps.length - 1].vus;
+    var estV = cap.estimatedVus != null ? '~' + num(cap.estimatedVus) + ' agents'
+      : cap.breakingVus == null ? '≥ ' + num(capTop) + ' agents'
+        : cap.inconclusive ? 'inconclusive' : '< ' + num(cap.breakingVus) + ' agents';
+    var estNote = cap.estimatedVus != null ? 'An estimate, not a measured step: ' + (cap.estimateBasis || '')
+      : cap.breakingVus == null ? 'Nothing broke; test higher steps to find the limit.'
+        : cap.inconclusive ? (cap.estimateBasis || 'The load generator was saturated.') + '. Run k6 on a separate or bigger machine.'
+          : 'The first step already broke budgets; start lower.';
+    var capStats = [['Estimated sustainable capacity', estV],
+      ['Held budgets up to', cap.maxSustainableVus != null ? num(cap.maxSustainableVus) + ' agents' : '–'],
+      ['Broke budgets at', cap.breakingVus != null ? num(cap.breakingVus) + ' agents' : '–']];
+    if (cap.degradation) capStats.push(['Degradation from', num(cap.degradation.vus) + ' agents']);
+    if (cap.failure) capStats.push(['Failure at', num(cap.failure.vus) + ' agents']);
+    var capAll = cap.steps.some(function (st) { return st.p95Ms != null; });
+    h.push('<h2>Capacity (step load)</h2><section class="card"><div class="stats" style="margin:0 0 6px">' +
+      capStats.map(function (s, i) { return '<div class="stat"><div class="v"' + (i === 0 ? ' style="font-size:28px"' : '') + '>' + esc(s[1]) + '</div><div class="l">' + esc(s[0]) + '</div></div>'; }).join('') +
+      '</div><p class="small muted" style="margin:0 0 10px">' + esc(estNote) + '</p><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
+      '<th>Agents</th><th>Result</th>' + (capAll ? '<th>p95</th><th>p99</th>' : '') + '<th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
+      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Note</th></tr></thead><tbody>');
     cap.steps.forEach(function (st) {
       var res = st.passed ? 'pass' : 'fail';
       var sb = st.breached || [];
       var byName = {}; st.tools.forEach(function (t) { byName[t.name] = t; });
-      h.push('<tr><td>' + num(st.vus) + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+      // Markers, as in the terminal table: degradation, breaks budget (first breach), failure.
+      var notes = [];
+      if (cap.degradation && cap.degradation.vus === st.vus) notes.push('<b>degradation</b>: ' + esc(cap.degradation.reason));
+      if (cap.breakingVus === st.vus && st.breaches.length) notes.push('<b>breaks budget</b>: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      else if (!st.passed && st.breaches.length && !(cap.failure && cap.failure.vus === st.vus)) notes.push('over budget: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      if (cap.failure && cap.failure.vus === st.vus) notes.push('<b>failure</b>: ' + esc(cap.failure.reason));
+      h.push('<tr><td>' + num(st.vus) + (st.refinement ? ' <span class="muted small" title="refinement step (second k6 run)">refine</span>' : '') + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+        (capAll ? '<td>' + ms(st.p95Ms) + '</td><td>' + ms(st.p99Ms) + '</td>' : '') +
         '<td>' + num(st.rps, 1) + '</td><td>' + pct(st.errorRate) + '</td>' +
         '<td' + (sb.indexOf('connectP95Ms') >= 0 || sb.indexOf('connectErrorRate') >= 0 ? ' class="breach"' : '') + ' title="failed session starts ' + pct(st.connectErrorRate) + '">' + ms(st.connectP95Ms) + '</td>' +
         capTools.map(function (n) {
@@ -297,9 +379,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
         '<td class="small mono" style="white-space:nowrap">' + (st.byErrorType ? esc(topErr(st.byErrorType, 2)) : '<span class="muted">–</span>') + '</td>' +
         '<td>' + (st.generatorCpuMaxPct != null ? num(st.generatorCpuMaxPct, 0) + '%' + (st.generatorSaturated ? ' <span class="badge warn">saturated</span>' : '') : '–') + '</td>' +
         '<td style="white-space:normal;text-align:left;min-width:200px" class="small" title="' + esc(st.breaches.join('\n')) + '">' +
-        esc(st.breaches[0] || '') + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : '') + '</td></tr>');
+        notes.join('<br>') + '</td></tr>');
     });
-    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes. Errors lists the most frequent <code>error_type</code>s of the step.</div></section>');
+    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out).' + (capAll ? ' p95 and p99 cover the successful <code>tools/call</code> of all tools.' : '') +
+      ' Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes, and a note for every breach. Errors lists the most frequent <code>error_type</code>s of the step.' +
+      ' <b>Degradation</b>: the first step that held its budgets but got clearly worse (p95 at least 2× the first step’s, or a tool at half its error budget). <b>Failure</b>: error rate at <code>ABORT_ERR_RATE</code> or the run stopped there.</div></section>');
     h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-steps"></section></div>');
   }
 
@@ -361,6 +445,36 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     h.push(wRow('end to end', 'mcp_workflow_duration', W.durationMs, 'total'));
     h.push('</tbody></table><div class="muted small" style="margin-top:8px">' + num(W.completed) + ' of ' + num(W.runs) + ' workflows completed (' + pct(W.completionRate, 1) + '). ' +
       'A step is one parallel batch of <code>tools/call</code>, so its time is its slowest call. End to end runs from <code>connect()</code> to the end of the last step of a complete workflow, think pauses included.</div></section>');
+  }
+
+  // ---------- workload profile (scenario workload) ----------
+  var WL = R.workload;
+  if (WL && WL.flows && WL.flows.length) {
+    var wlTotal = WL.flows.reduce(function (a, f) { return a + f.weight; }, 0);
+    // a cell over its budget is highlighted, with the budget as its title
+    var over = function (text, v, budget, n) {
+      if (!n) return '<td>–</td>';
+      if (budget == null) return '<td>' + text + '</td>';
+      var bad = v > budget;
+      return '<td' + (bad ? ' class="breach"' : '') + ' title="budget ' + ms(budget) + (bad ? ' breached' : ' met') + '">' + text + '</td>';
+    };
+    h.push('<h2>Workload: ' + esc(WL.name) + '</h2><section class="card tablewrap">' +
+      (WL.description ? '<div class="muted small" style="margin-bottom:8px">' + esc(WL.description) + '</div>' : '') +
+      '<table><thead><tr><th>Flow</th><th>Weight</th><th>Runs</th><th>Completed</th><th>p50</th><th>p95</th><th>p99</th><th>Slowest step (p95)</th></tr></thead><tbody>');
+    WL.flows.forEach(function (f) {
+      var b = f.budget || {};
+      var d = f.durationMs;
+      var worst = null;
+      (f.steps || []).forEach(function (st) { if (st.count && (!worst || st.p95 > worst.p95)) worst = st; });
+      var done = f.runs ? pct(f.completionRate, 1) : '–';
+      var doneBad = f.runs && b.minCompletionRate != null && f.completionRate < b.minCompletionRate;
+      h.push('<tr><td class="mono">' + esc(f.name) + '</td><td>' + pct(wlTotal ? f.weight / wlTotal : 0, 0) + '</td><td>' + num(f.runs) + '</td>' +
+        '<td' + (doneBad ? ' class="breach"' : '') + (b.minCompletionRate != null ? ' title="minimum ' + pct(b.minCompletionRate, 1) + '"' : '') + '>' + done + '</td>' +
+        over(ms(d.p50), d.p50, null, d.count) + over(ms(d.p95), d.p95, b.p95Ms, d.count) + over(ms(d.p99), d.p99, b.p99Ms, d.count) +
+        (worst ? over(esc(worst.name) + ' ' + ms(worst.p95), worst.p95, worst.budget && worst.budget.p95Ms, 1) : '<td>–</td>') + '</tr>');
+    });
+    h.push('</tbody></table><div class="muted small" style="margin-top:8px">Each agent session picks a flow by weight and runs its steps. A flow is completed when every step ran and every call succeeded; ' +
+      'p50/p95/p99 are end to end over completed flows, from <code>connect()</code> to the last step, think pauses included. Highlighted cells broke the flow\'s budget (hover for it).</div></section>');
   }
 
   // ---------- charts ----------

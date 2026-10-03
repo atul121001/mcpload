@@ -11,6 +11,8 @@
 //   otherwise pass (with warnings if any verdict is "warn").
 // If the report is missing or unreadable, the summary says so and the result is "error".
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function parseArgs(argv) {
   const opts = { positional: [] };
@@ -59,6 +61,101 @@ function toolBudget(report, tool) {
   if (!ts.length) return '–';
   const bad = ts.filter((t) => t.passed === false);
   return bad.length ? `**FAIL** (${bad.map((t) => cell(t.expr)).join(', ')})` : 'pass';
+}
+
+// ---------- comparison with a baseline (report.comparison, `mcpload run --baseline`) ----------
+// Same layout as `mcpload compare --format markdown` (cmd/mcpload/internal/cli/compare.go).
+const MARK = { regressed: '⚠', improved: '✓', ok: '·' };
+const trim0 = (s) => s.replace(/\.?0+$/, '');
+const cmpMs = (v) => (v >= 1000 ? `${trim0(trim0((v / 1000).toFixed(2)))} s` : v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`);
+const cmpVal = (unit, v) => {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '–';
+  switch (unit) {
+    case 'ms': return cmpMs(v);
+    case 'rate': return `${trim0((v * 100).toFixed(2))}%`;
+    case 'req/s': return v.toFixed(1);
+    case 'MiB': return `${v.toFixed(1)} MiB`;
+    case 'MiB/min': return `${v.toFixed(2)} MiB/min`;
+    default: return `${v} ${unit}`;
+  }
+};
+const cmpPct = (b, c) => {
+  if (!Number.isFinite(b) || !Number.isFinite(c) || b < 0) return '';
+  if (b === 0) return c === 0 ? '0%' : 'new';
+  const p = Math.round((100 * (c - b)) / b);
+  return p === 0 ? '0%' : `${p > 0 ? '+' : ''}${p}%`;
+};
+const cmpDelta = (unit, b, c) => {
+  if (!Number.isFinite(b) || !Number.isFinite(c)) return '';
+  let d = c - b;
+  const sign = d < 0 ? '-' : '+';
+  d = Math.abs(d);
+  const zero = { rate: d < 0.00005, ms: d < 0.05, MiB: d < 0.05, 'MiB/min': d < 0.005 }[unit] ?? d === 0;
+  if (zero) return unit === 'rate' ? '0 pts' : `0 ${unit}`;
+  if (unit === 'rate') return `${sign}${(d * 100).toFixed(2)} pts`;
+  if (unit === 'ms') return sign + cmpMs(d);
+  return sign + cmpVal(unit, d);
+};
+const shortName = (b) => {
+  if (b.git && b.git.sha) {
+    const ref = String(b.git.ref || '').replace(/^refs\/heads\//, '').replace(/^refs\//, '');
+    return String(b.git.sha).slice(0, 7) + (ref ? ` (${ref})` : '');
+  }
+  return `run ${String(b.runId || '').slice(0, 8)}`;
+};
+
+export function renderComparison(c) {
+  const lines = [];
+  const b = c.baseline || {};
+  const ru = c.rules || {};
+  const tools = Array.isArray(c.tools) ? c.tools : [];
+  const metrics = Array.isArray(c.metrics) ? c.metrics : [];
+  lines.push('### Compared with baseline', '');
+  lines.push(`Baseline \`${cell(shortName(b))}\` · ${cell(b.scenario)} · ${cell(b.protocol)} · started ${cell(b.startedAt)}`, '');
+  if (c.regressed) {
+    lines.push('**Performance regression detected:**', '', ...(c.reasons || []).map((r) => `- ${cell(r)}`), '');
+  } else {
+    lines.push('**No regression:** every difference is within noise or an improvement.', '');
+  }
+  for (const w of c.warnings || []) lines.push(`> ⚠ ${cell(w)}`);
+  if ((c.warnings || []).length) lines.push('');
+  const field = (t, f, judged) => (!judged ? '' : (t.regressed || []).includes(f) ? 'regressed' : (t.improved || []).includes(f) ? 'improved' : 'ok');
+  const mdCell = (unit, bv, cv, st) => {
+    if (!Number.isFinite(bv)) return `– → ${cmpVal(unit, cv)}`;
+    if (!Number.isFinite(cv)) return `${cmpVal(unit, bv)} → –`;
+    let s = `${cmpVal(unit, bv)} → ${cmpVal(unit, cv)}`;
+    const p = cmpPct(bv, cv);
+    if (p && p !== '0%' && unit !== 'req/s') s += ` (${p})`;
+    if (MARK[st]) s += ` ${MARK[st]}`;
+    return s;
+  };
+  if (tools.length) {
+    lines.push('| Tool | Calls | p50 | p95 | p99 | Error rate | req/s |', '|---|--:|--:|--:|--:|--:|--:|');
+    for (const t of tools) {
+      const tb = t.base || {}, tc = t.current || {};
+      const both = !!(t.base && t.current) && t.status !== 'few_calls';
+      const lat = both && tb.reqs - tb.errors >= ru.minCalls && tc.reqs - tc.errors >= ru.minCalls;
+      const tag = { added: ' (added)', removed: ' (removed)', few_calls: ' (too few calls)' }[t.status] || '';
+      const calls = `${t.base ? fmtInt(tb.reqs) : '–'} → ${t.current ? fmtInt(tc.reqs) : '–'}`;
+      lines.push(`| \`${cell(t.name)}\`${tag} | ${calls} | ${mdCell('ms', tb.p50, tc.p50, '')} | ${mdCell('ms', tb.p95, tc.p95, field(t, 'p95', lat))} | ` +
+        `${mdCell('ms', tb.p99, tc.p99, field(t, 'p99', lat))} | ${mdCell('rate', tb.errorRate, tc.errorRate, field(t, 'errorRate', both))} | ${mdCell('req/s', tb.rps, tc.rps, '')} |`);
+    }
+    lines.push('');
+  }
+  if (metrics.length) {
+    lines.push('| Run | Baseline | Current | Δ | |', '|---|--:|--:|--:|---|');
+    for (const m of metrics) {
+      let d = cmpDelta(m.unit, m.base, m.current);
+      const p = cmpPct(m.base, m.current);
+      if (d && p && p !== '0%') d += ` (${p})`;
+      const mark = [MARK[m.status] || '', m.note || ''].filter(Boolean).join(' ');
+      lines.push(`| ${cell(m.label)} | ${cmpVal(m.unit, m.base)} | ${cmpVal(m.unit, m.current)} | ${d} | ${cell(mark)} |`);
+    }
+    lines.push('');
+  }
+  const n = (v) => +(v * 100).toFixed(6);
+  lines.push(`<sub>Rules: p95 +${n(ru.maxP95Increase)}% / p99 +${n(ru.maxP99Increase)}% and +${ru.minDeltaMs} ms; error rate +${n(ru.minErrorDelta)} pts, +${n(ru.maxErrorIncrease)}% and p < 0.05; at least ${ru.minCalls} calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>`, '');
+  return lines;
 }
 
 export function renderMarkdown(report, o = {}) {
@@ -133,6 +230,8 @@ export function renderMarkdown(report, o = {}) {
     lines.push('');
   }
 
+  if (report.comparison && typeof report.comparison === 'object') lines.push(...renderComparison(report.comparison));
+
   const tools = Array.isArray(report.tools) ? report.tools : [];
   if (tools.length) {
     lines.push('### Per-tool latency and errors', '');
@@ -195,8 +294,11 @@ function main() {
   if (o.out === undefined && o['append-to'] === undefined) process.stdout.write(md);
 
   const result = report ? (overall(report).passed ? 'pass' : 'fail') : 'error';
-  if (typeof o['github-output'] === 'string') appendFileSync(o['github-output'], `result=${result}\n`);
+  // regressed: the run was compared with a baseline (--baseline) and regressed.
+  const regressed = !!(report && report.comparison && report.comparison.regressed);
+  if (typeof o['github-output'] === 'string') appendFileSync(o['github-output'], `result=${result}\nregressed=${regressed}\n`);
   console.error(`mcpload summary: ${result}`);
 }
 
-main();
+// Run as a script, not when imported (action/summary.test.mjs imports it).
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

@@ -1,11 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestMain hides the built-in scenarios so lookups only see the test folders,
+// also in -tags embedengine builds; tests that need them call stubBuiltin.
+func TestMain(m *testing.M) {
+	builtinScenariosDir = func() (string, error) { return "", errors.New("no built-in scenarios in tests") }
+	os.Exit(m.Run())
+}
 
 func writeScenario(t *testing.T, dir, name string) string {
 	t.Helper()
@@ -92,6 +100,32 @@ func TestResolveScenarioSameDirLookedOnce(t *testing.T) {
 	dir := t.TempDir()
 	_, err := resolveScenario("", dir, dir)
 	if err == nil || strings.Count(err.Error(), "agent-session.js") != 1 {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func stubBuiltin(t *testing.T, dir string, err error) {
+	t.Helper()
+	old := builtinScenariosDir
+	builtinScenariosDir = func() (string, error) { return dir, err }
+	t.Cleanup(func() { builtinScenariosDir = old })
+}
+
+func TestResolveScenarioBuiltinFallback(t *testing.T) {
+	cwd, exe, builtin := t.TempDir(), t.TempDir(), t.TempDir()
+	want := writeScenario(t, builtin, "soak")
+	stubBuiltin(t, builtin, nil)
+	got, err := resolveScenario("soak", cwd, exe)
+	if err != nil || got != want {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+	// An on-disk scenarios/ folder still wins over the built-in copy.
+	disk := writeScenario(t, cwd, "soak")
+	if got, err := resolveScenario("soak", cwd, exe); err != nil || got != disk {
+		t.Fatalf("got %q, %v; want %q", got, err, disk)
+	}
+	// A name that is not built in either reports the built-in lookup too.
+	if _, err := resolveScenario("nope", cwd, exe); err == nil || !strings.Contains(err.Error(), "built into mcpload") {
 		t.Fatalf("got %v", err)
 	}
 }

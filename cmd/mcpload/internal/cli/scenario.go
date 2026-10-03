@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/atul121001/mcpload/cmd/mcpload/internal/engine"
+	"github.com/atul121001/mcpload/cmd/mcpload/internal/k6run"
 )
 
 // defaultScenario is the bundled scenario used when --scenario is omitted.
@@ -28,7 +31,8 @@ func isBareName(s string) bool {
 //   - An empty value means the bundled "agent-session" scenario.
 //   - A bare name such as "soak" is looked up as scenarios/<name>.js in the
 //     current folder (cwd), then next to the mcpload executable (exeDir),
-//     which is how release archives ship it.
+//     which is how release archives ship it, then among the scenarios built
+//     into release builds of mcpload.
 //
 // Any other value is a path that does not exist, which is an error as before.
 func resolveScenario(arg, cwd, exeDir string) (string, error) {
@@ -60,6 +64,13 @@ func resolveScenario(arg, cwd, exeDir string) (string, error) {
 			return p, nil
 		}
 	}
+	if dir, err := builtinScenariosDir(); err == nil {
+		p := filepath.Join(dir, rel)
+		if isFile(p) {
+			return p, nil
+		}
+		looked = append(looked, "the scenarios built into mcpload")
+	}
 	what := fmt.Sprintf("scenario %q", name)
 	if arg == "" {
 		what = fmt.Sprintf("no --scenario given and the default scenario %q", name)
@@ -77,14 +88,10 @@ func containsPath(list []string, p string) bool {
 	return false
 }
 
-// exeDir is the folder of the running mcpload executable, or "" if unknown.
-func exeDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	return filepath.Dir(exe)
-}
+// builtinScenariosDir returns the folder holding the scenarios embedded in
+// release builds (extracted on first use); a variable so tests can stub it.
+var builtinScenariosDir = engine.ScenariosDir
+
+// exeDir is the folder of the real (symlink-resolved) mcpload executable,
+// or "" if unknown.
+func exeDir() string { return k6run.ExeDir() }

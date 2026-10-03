@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "burst", "lb-check", "isolation", "step-load", "long-lived", "reconnect-storm", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "workload", "burst", "lb-check", "isolation", "step-load", "long-lived", "reconnect-storm", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -201,6 +201,42 @@
         }
       }
     },
+    "workload": {
+      "type": "object",
+      "description": "A workload profile's flows (scenario workload, mcpload run --workload), from the k6 custom metrics mcp_workload_flow_complete{flow}, mcp_workload_flow_duration{flow} and mcp_workload_step_duration{flow,flow_step}, merged with the profile's weights and budgets (verdict 'workload'). Absent for other scenarios.",
+      "required": ["name", "flows"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "flows": {
+          "type": "array",
+          "description": "In the profile's order; a flow that never ran has runs 0.",
+          "items": {
+            "type": "object",
+            "required": ["name", "weight", "runs", "completed", "completionRate", "durationMs", "steps"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "weight": { "type": "number", "exclusiveMinimum": 0, "description": "Relative weight from the profile; a session picks this flow with probability weight / sum of weights." },
+              "runs": { "type": "integer", "minimum": 0, "description": "Flows started (samples of mcp_workload_flow_complete)." },
+              "completed": { "type": "integer", "minimum": 0, "description": "Flows where every step ran and every call succeeded." },
+              "completionRate": { "$ref": "#/$defs/rate" },
+              "durationMs": { "$ref": "#/$defs/latency", "description": "End-to-end duration of completed flows: connect to the end of the last step, think pauses included." },
+              "budget": { "$ref": "#/$defs/budget" },
+              "steps": {
+                "type": "array",
+                "description": "Per step, in the flow's order: wall time of the step's parallel batch of calls (count 0 if the flow always stopped earlier).",
+                "items": {
+                  "allOf": [{ "$ref": "#/$defs/latency" }],
+                  "type": "object",
+                  "required": ["name"],
+                  "properties": { "name": { "type": "string", "minLength": 1 }, "budget": { "$ref": "#/$defs/budget" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "capacity": {
       "type": "object",
       "description": "Step-load runs only: per-step results and the breaking point (verdict 'capacity'). Each step covers the requests made while k6 held that concurrency (tag step=<vus>); ramps between steps are left out.",
@@ -212,6 +248,10 @@
         "breakingVus": { "type": ["integer", "null"], "minimum": 1, "description": "First step that crossed a budget; null when none did." },
         "inconclusive": { "type": "boolean", "description": "The load generator was saturated at the breaking step, so the breach may be k6's own overhead." },
         "stoppedEarly": { "type": "boolean", "description": "The scenario stopped the run once a step broke badly (ABORT_ERR_RATE)." },
+        "estimatedVus": { "type": "integer", "minimum": 1, "description": "Estimated sustainable concurrency, interpolated between maxSustainableVus (held) and breakingVus (broke) on the breached metrics (2 significant figures). Absent when there is no such bracket: nothing broke, the first step broke, or the result is inconclusive." },
+        "estimateBasis": { "type": "string", "description": "How estimatedVus was estimated, or why there is no estimate." },
+        "degradation": { "$ref": "#/$defs/stepMark", "description": "First step after the first that held its budgets but clearly got worse: p95 of tools/call at least 2x the first step's, or a tool's error rate (or failed session starts) at least half its budget and twice the first step's." },
+        "failure": { "$ref": "#/$defs/stepMark", "description": "First step where the server fell over: error rate >= ABORT_ERR_RATE (0.5 when unset or 0) or no tools/call completed; else the last step when the run stopped early." },
         "budgets": {
           "type": "object",
           "description": "Budgets each step was judged against.",
@@ -324,6 +364,77 @@
           }
         }
       }
+    },
+    "comparison": {
+      "type": "object",
+      "description": "This run compared with a baseline report (mcpload run --baseline; verdict 'regression'). See README 'Comparison'.",
+      "required": ["baseline", "rules", "regressed", "reasons", "warnings", "tools", "metrics"],
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "required": ["source", "runId", "startedAt", "scenario", "protocol"],
+          "properties": {
+            "source": { "type": "string", "minLength": 1, "description": "Path or URL the baseline report was read from." },
+            "runId": { "type": "string" },
+            "startedAt": { "type": "string" },
+            "scenario": { "type": "string" },
+            "protocol": { "type": "string" },
+            "git": {
+              "type": "object",
+              "required": ["sha"],
+              "properties": { "sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" }, "ref": { "type": "string" } }
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "description": "Noise rules used. Relative increases are fractions (0.2 = +20%); minErrorDelta is absolute (0.005 = 0.5 percentage points).",
+          "required": ["maxP95Increase", "maxP99Increase", "maxErrorIncrease", "minErrorDelta", "minDeltaMs", "minCalls", "maxLeakSlopeIncreaseMiBPerMin"],
+          "properties": {
+            "maxP95Increase": { "type": "number", "minimum": 0 },
+            "maxP99Increase": { "type": "number", "minimum": 0 },
+            "maxErrorIncrease": { "type": "number", "minimum": 0 },
+            "minErrorDelta": { "type": "number", "minimum": 0 },
+            "minDeltaMs": { "type": "number", "minimum": 0 },
+            "minCalls": { "type": "integer", "minimum": 0 },
+            "maxLeakSlopeIncreaseMiBPerMin": { "type": "number", "minimum": 0 }
+          }
+        },
+        "regressed": { "type": "boolean", "description": "True exactly when a tool or metric has status 'regressed'." },
+        "reasons": { "type": "array", "items": { "type": "string" }, "description": "Every regression in words." },
+        "warnings": { "type": "array", "items": { "type": "string" }, "description": "Differences that may make the comparison unfair (scenario, protocol, load, sampler, saturated generator)." },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "base", "current"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["regressed", "improved", "ok", "added", "removed", "few_calls"] },
+              "base": { "oneOf": [{ "$ref": "#/$defs/toolSample" }, { "type": "null" }], "description": "null for an added tool." },
+              "current": { "oneOf": [{ "$ref": "#/$defs/toolSample" }, { "type": "null" }], "description": "null for a removed tool." },
+              "regressed": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } },
+              "improved": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } }
+            }
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "unit", "base", "current", "status"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "examples": ["errorRate", "connectP95Ms", "memoryGrowthMiB", "leakSlopeMiBPerMin", "retainedMiB", "maxSustainableVus"] },
+              "label": { "type": "string", "minLength": 1 },
+              "unit": { "enum": ["rate", "ms", "MiB", "MiB/min", "agents"] },
+              "base": { "type": ["number", "null"] },
+              "current": { "type": ["number", "null"] },
+              "status": { "enum": ["regressed", "improved", "ok", "n/a"] },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -335,6 +446,20 @@
       "additionalProperties": { "type": "integer", "minimum": 0 }
     },
     "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "toolSample": {
+      "type": "object",
+      "description": "One tool in one run of a comparison; latencies over successful calls, rps = calls / (warm-up + load seconds).",
+      "required": ["reqs", "errors", "errorRate", "p50", "p95", "p99", "rps"],
+      "properties": {
+        "reqs": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "errorRate": { "$ref": "#/$defs/rate" },
+        "p50": { "$ref": "#/$defs/ms" },
+        "p95": { "$ref": "#/$defs/ms" },
+        "p99": { "$ref": "#/$defs/ms" },
+        "rps": { "type": "number", "minimum": 0 }
+      }
+    },
     "series": { "type": "array", "items": { "type": ["number", "null"] } },
     "latency": {
       "type": "object",
@@ -346,6 +471,15 @@
         "p95": { "$ref": "#/$defs/ms" },
         "p99": { "$ref": "#/$defs/ms" },
         "max": { "$ref": "#/$defs/ms" }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "description": "The budget a workload flow or step ran with; absent fields were not budgeted.",
+      "properties": {
+        "p95Ms": { "type": "number", "exclusiveMinimum": 0 },
+        "p99Ms": { "type": "number", "exclusiveMinimum": 0 },
+        "minCompletionRate": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
       }
     },
     "load": {
@@ -363,6 +497,15 @@
         "arrivalTimeUnitS": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
+    "stepMark": {
+      "type": "object",
+      "description": "One step of a step-load run and why it is marked.",
+      "required": ["vus", "reason"],
+      "properties": {
+        "vus": { "type": "integer", "minimum": 1, "description": "The vus of a capacity.steps entry." },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
     "step": {
       "type": "object",
       "required": ["vus", "startS", "endS", "reqs", "errors", "errorRate", "rps", "connectP95Ms", "connectErrorRate", "generatorSaturated", "passed", "breaches", "tools"],
@@ -374,6 +517,8 @@
         "errors": { "type": "integer", "minimum": 0 },
         "errorRate": { "$ref": "#/$defs/rate" },
         "rps": { "type": "number", "minimum": 0 },
+        "p95Ms": { "type": "number", "minimum": 0, "description": "p95 of the successful tools/call of all tools in the step (absent without one, and in reports written before it existed)." },
+        "p99Ms": { "type": "number", "minimum": 0, "description": "p99 of the same calls." },
         "connectP95Ms": { "type": ["number", "null"], "minimum": 0, "description": "p95 of successful session starts; null without one." },
         "connectErrorRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Share of failed session starts; null without any." },
         "generatorCpuMaxPct": { "type": "number", "minimum": 0, "maximum": 100, "description": "Busiest k6 CPU sampling interval within the step, % of the machine." },
@@ -382,6 +527,7 @@
         "breached": { "type": "array", "items": { "enum": ["connectP95Ms", "connectErrorRate", "toolCalls"] }, "description": "Step-level fields over budget." },
         "breaches": { "type": "array", "items": { "type": "string" }, "description": "Every breach in words, worst first." },
         "byErrorType": { "$ref": "#/$defs/counts", "description": "The step's errors (mcp_errors) by error_type, like summary.byErrorType (omitted without errors)." },
+        "refinement": { "type": "boolean", "description": "A step added after the first pass, in a second k6 run, to narrow the breaking point (mcpload capacity --refine); its times count from the first run's start." },
         "tools": {
           "type": "array",
           "items": {
@@ -405,7 +551,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation", "regression", "workload"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

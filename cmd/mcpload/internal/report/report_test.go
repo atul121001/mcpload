@@ -120,6 +120,40 @@ func TestCheckWorkflow(t *testing.T) {
 	}
 }
 
+func TestCheckWorkload(t *testing.T) {
+	r, err := ReadJSON(examplePath("healthy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Workload = &Workload{Name: "customer-support", Flows: []WorkloadFlow{{Name: "lookup-orders", Weight: 60, Runs: 10, Completed: 9, CompletionRate: 0.9,
+		DurationMs: Latency{Count: 9, P50: 900, P95: 1400, P99: 1490, Max: 1500}, Budget: &Budget{P95Ms: F(2000), MinCompletionRate: F(0.99)}}}}
+	r.Normalize()
+	if r.Workload.Flows[0].Steps == nil {
+		t.Fatal("Normalize left workload.flows[].steps nil")
+	}
+	r.Workload.Flows[0].Steps = append(r.Workload.Flows[0].Steps, WorkloadStep{Name: "get_orders", Latency: Latency{Count: 9, P50: 5, P95: 9, P99: 9, Max: 9}, Budget: &Budget{P95Ms: F(800)}})
+	if err := r.Check(); err != nil {
+		t.Fatalf("valid workload: %v", err)
+	}
+	b, _ := Marshal(r)
+	if !bytes.Contains(b, []byte(`"name": "get_orders",`)) || !bytes.Contains(b, []byte(`"p95Ms": 800`)) {
+		t.Errorf("workload step not marshalled as expected:\n%s", b)
+	}
+
+	f := &r.Workload.Flows[0]
+	f.Completed, f.Weight = 11, 0
+	f.Budget.MinCompletionRate = F(1.5)
+	f.Steps = append(f.Steps, WorkloadStep{Name: "get_orders", Latency: Latency{Count: 1, P50: 9, P95: 5, P99: 5, Max: 5}})
+	r.Workload.Flows = append(r.Workload.Flows, WorkloadFlow{Name: "lookup-orders", Weight: 1, Steps: []WorkloadStep{}})
+	err = r.Check()
+	for _, want := range []string{"workload.flows[lookup-orders].completed > runs", "weight must be > 0", "minCompletionRate must be in (0,1]",
+		"duplicate step 'get_orders'", "workload.flows[lookup-orders].steps[get_orders] percentiles", "duplicate workload flow"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
 func TestNormalizeEmptyReportValidates(t *testing.T) {
 	r := &Report{
 		Tool:   ToolInfo{Name: "mcpload", Version: "0.0.0"},
@@ -315,6 +349,38 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 			r.Cancellation = sampleCancellation()
 			r.Cancellation.Server = nil
 		}},
+		{"comparison valid", "", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Verdicts = append(r.Verdicts, Verdict{ID: VerdictRegression, Status: StatusFail, Signal: "comparison", Message: "x"})
+		}},
+		{"comparison not regressed valid", "", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[0].Status, r.Comparison.Tools[0].Regressed, r.Comparison.Regressed = DeltaOK, nil, false
+		}},
+		{"comparison regressed flag", "comparison.regressed must be true exactly", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Regressed = false
+		}},
+		{"comparison added with base", "an added tool has current and no base", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[1].Base = r.Comparison.Tools[0].Base
+		}},
+		{"comparison bad tool status", "status invalid", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[2].Status = "worse"
+		}},
+		{"comparison tool percentiles", "p50<=p95<=p99", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[0].Current.P99 = 1
+		}},
+		{"comparison bad unit", "unit invalid", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Metrics[0].Unit = "%"
+		}},
+		{"comparison bad git sha", "comparison.baseline.git.sha", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Baseline.Git = &Git{SHA: "main"}
+		}},
 		{"cancellation late > cancels", "lateResponses", func(r *Report) {
 			r.Cancellation = sampleCancellation()
 			r.Cancellation.LateResponses = 99
@@ -358,6 +424,29 @@ func sampleCancellation() *Cancellation {
 	return &Cancellation{Cancels: 10, ByOutcome: map[string]int64{"cancelled": 2, "late_response": 8, "completed": 3}, ByReason: map[string]int64{"client": 10},
 		ByTool: map[string]int64{"slow": 10}, LateResponses: 8, SendMs: &Latency{Count: 10, P50: 1, P95: 2, P99: 2, Max: 3},
 		Server: &CancelServer{Cancelled: 10, Observed: 10, WorkAfterCancelP50Ms: F(1800), WorkAfterCancelP95Ms: F(2400), WorkAfterCancelTotalS: 18}}
+}
+
+func sampleComparison() *Comparison {
+	s := func(p95 float64) *ToolSample {
+		return &ToolSample{Reqs: 1000, Errors: 1, ErrorRate: 0.001, P50: p95 / 2, P95: p95, P99: 400, RPS: 16.7}
+	}
+	return &Comparison{
+		Baseline: BaselineRef{Source: "baseline/report.json", RunID: "r1", StartedAt: "2026-09-29T13:00:00Z", Scenario: "agent-session", Protocol: "2025-11-25",
+			Git: &Git{SHA: "4a1b2c3d", Ref: "refs/heads/main"}},
+		Rules:     CompareRules{MaxP95Increase: 0.2, MaxP99Increase: 0.3, MaxErrorIncrease: 0.5, MinErrorDelta: 0.005, MinDeltaMs: 25, MinCalls: 50, MaxLeakSlopeIncrease: 1},
+		Regressed: true,
+		Reasons:   []string{"`search` p95 210 ms → 284 ms (+35%, +74 ms)"},
+		Warnings:  []string{},
+		Tools: []ToolDelta{
+			{Name: "search", Status: DeltaRegressed, Base: s(210), Current: s(284), Regressed: []string{"p95"}},
+			{Name: "new", Status: DeltaAdded, Current: s(20)},
+			{Name: "old", Status: DeltaRemoved, Base: s(20)},
+		},
+		Metrics: []MetricDelta{
+			{ID: "errorRate", Label: "error rate", Unit: "rate", Base: F(0.001), Current: F(0.0012), Status: DeltaOK},
+			{ID: "memoryGrowthMiB", Label: "memory growth", Unit: "MiB", Base: F(0.2), Current: F(4.8), Status: DeltaNA, Note: "not judged"},
+		},
+	}
 }
 
 func sampleCapacity() *Capacity {

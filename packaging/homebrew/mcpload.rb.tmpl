@@ -1,0 +1,41 @@
+# Generated from packaging/homebrew/mcpload.rb.tmpl in atul121001/mcpload by
+# the release workflow. Do not edit by hand: changes are overwritten on the
+# next release.
+class Mcpload < Formula
+  desc "Load and soak testing for remote MCP servers"
+  homepage "https://github.com/atul121001/mcpload"
+  version "{{VERSION}}"
+  license "Apache-2.0"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/atul121001/mcpload/releases/download/v{{VERSION}}/mcpload_{{VERSION}}_darwin_arm64.tar.gz"
+      sha256 "{{SHA256_DARWIN_ARM64}}"
+    else
+      url "https://github.com/atul121001/mcpload/releases/download/v{{VERSION}}/mcpload_{{VERSION}}_darwin_amd64.tar.gz"
+      sha256 "{{SHA256_DARWIN_AMD64}}"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.arm?
+      url "https://github.com/atul121001/mcpload/releases/download/v{{VERSION}}/mcpload_{{VERSION}}_linux_arm64.tar.gz"
+      sha256 "{{SHA256_LINUX_ARM64}}"
+    else
+      url "https://github.com/atul121001/mcpload/releases/download/v{{VERSION}}/mcpload_{{VERSION}}_linux_amd64.tar.gz"
+      sha256 "{{SHA256_LINUX_AMD64}}"
+    end
+  end
+
+  def install
+    # The whole release folder (mcpload, scenarios/, README, LICENSE) goes into
+    # libexec; only mcpload is linked into bin. mcpload resolves the symlink and
+    # finds scenarios/ next to its real location.
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"mcpload"
+  end
+
+  test do
+    assert_match "mcpload v#{version}", shell_output("#{bin}/mcpload version")
+  end
+end
