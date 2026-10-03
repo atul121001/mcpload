@@ -167,18 +167,30 @@ Each step is judged against the budgets the scenarios use for thresholds, read f
 - **Estimate**: between the last passing step (held) and the breaking step (broke), every breached metric that was measured at both steps (a tool's p95, p99 or error rate, connect p95, failed session starts) is followed in a straight line from its value at the held step to its value at the broken one, to where it reaches its budget. The lowest crossing is the estimate, rounded to 2 significant figures and kept below the breaking step. Latency usually grows faster than linearly near saturation, so the line crosses the budget early and the estimate errs low. It is an estimate, not a measured step; `--refine` measures inside the gap. When nothing broke the terminal says "at least <highest step> agents"; when the first step broke, "below <first step> agents"; when k6 was saturated, "inconclusive".
 - **Markers** in the step table: `<- degradation` on the first step after the first that still held its budgets but got clearly worse: the p95 of all `tools/call` at least 2× the first step's, or a tool's error rate (or failed session starts) at least half its budget and at least twice the first step's. `<- breaks budget` on the breaking step, with its worst breach. `<- failure` on the first step whose error rate reached `ABORT_ERR_RATE` (0.5 when unset or 0) or that completed no `tools/call`, or else on the last step when the guard stopped the run. Later breached steps show `over budget:` without an arrow.
 
-The terminal shows one line per step (p95/p99 of all successful `tools/call`, the error rate of all requests, req/s and the slowest tool), the max sustainable concurrency and the estimate. A real run against the ts-pooled demo server:
+The terminal shows one line per step, the max sustainable concurrency and the estimate. Each line has the p95/p99 of all successful `tools/call`, the error rate of all requests followed by its two most frequent error classes (`error_type`, with counts), req/s and the slowest tool. `tool_iserror` (a tool answering `isError`) is left out of the classes unless a tool with such errors went over its error budget in that step: the demo `flaky` tool fails about 10% of its calls by design, within its 20% budget, and would otherwise be named on every line. Its errors still count in the rate. A real run against the ts-pooled demo server:
 
 ```text
 mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
   Agents     p95     p99  Errors  req/s  Slowest tool p95
-       5  306 ms  488 ms   0.94%   42.5  slow 511 ms
-      10  415 ms  572 ms   0.56%   79.4  slow 597 ms
-      20  1.04 s  1.21 s   0.76%   95.0  slow 1.26 s       <- breaks budget: `slow` p95 1.26 s > 800 ms (+4 more)
-      40  2.05 s  2.22 s   0.61%   91.8  slow 2.15 s       over budget: `slow` p95 2.15 s > 800 ms (+9 more)
-      80  4.61 s  4.82 s   0.74%   71.5  slow 4.76 s       over budget: `slow` p95 4.76 s > 800 ms (+9 more)
+       5  306 ms  488 ms  0.94%    42.5  slow 511 ms
+      10  415 ms  572 ms  0.56%    79.4  slow 597 ms
+      20  1.04 s  1.21 s  0.76%    95.0  slow 1.26 s       <- breaks budget: `slow` p95 1.26 s > 800 ms (+4 more)
+      40  2.05 s  2.22 s  0.61%    91.8  slow 2.15 s       over budget: `slow` p95 2.15 s > 800 ms (+9 more)
+      80  4.61 s  4.82 s  0.74%    71.5  slow 4.76 s       over budget: `slow` p95 4.76 s > 800 ms (+9 more)
 max sustainable concurrency: 10 agents (budgets broke at 20)
 Estimated sustainable capacity: ~13 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` p95 to its 800 ms budget (the lowest of 5 breached metrics); an estimate, not a measured step)
+```
+
+The same server with a 1 s client timeout (`--env MCP_TIMEOUT=1s`, `--from 5 --to 40 --step-duration 15s`) breaks on timeouts instead, and the Errors column names them:
+
+```text
+  Agents     p95     p99  Errors             req/s  Slowest tool p95
+       5  306 ms  413 ms  0.31%               42.2  slow 529 ms
+      10  513 ms  643 ms  0.41%               78.7  slow 673 ms
+      20  849 ms  941 ms  1.38% timeout 8    108.3  slow 966 ms       <- breaks budget: `slow` error rate 6.93% > 1%, all `timeout` (+5 more)
+      40  984 ms  997 ms  7.06% timeout 153  148.8  flaky 989 ms      over budget: `slow` error rate 68.39% > 1%, all `timeout` (+8 more)
+max sustainable concurrency: 10 agents (budgets broke at 20)
+Estimated sustainable capacity: ~11 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` error rate to its 1% budget (the lowest of 6 breached metrics); an estimate, not a measured step)
 ```
 
 Every breach of every step is in `report.json` (`capacity.steps[].breaches`) and in the HTML report, which shows the estimate at the top of its capacity section.
@@ -225,13 +237,13 @@ mcpload: refine: second k6 run with steps 13, 17 agents (between the last passin
 ...
 mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
   Agents     p95     p99  Errors  req/s  Slowest tool p95
-       5  304 ms  417 ms   0.64%   55.0  slow 500 ms
-      10  438 ms  552 ms   0.69%   86.3  slow 582 ms
-     13*  697 ms  897 ms   0.62%   87.5  slow 897 ms       <- breaks budget: `slow` p95 897 ms > 800 ms
-     17*  771 ms  891 ms   0.48%   98.8  slow 958 ms       over budget: `slow` p95 958 ms > 800 ms
-      20  902 ms  1.42 s   0.69%  114.1  slow 1.19 s       over budget: `slow` p95 1.19 s > 800 ms (+4 more)
-      40   2.9 s  3.07 s   0.37%   73.6  slow 3.08 s       over budget: `slow` p95 3.08 s > 800 ms (+9 more)
-      80  3.61 s  3.77 s   0.99%   88.2  slow 3.81 s       over budget: `slow` p95 3.81 s > 800 ms (+9 more)
+       5  304 ms  417 ms  0.64%    55.0  slow 500 ms
+      10  438 ms  552 ms  0.69%    86.3  slow 582 ms
+     13*  697 ms  897 ms  0.62%    87.5  slow 897 ms       <- breaks budget: `slow` p95 897 ms > 800 ms
+     17*  771 ms  891 ms  0.48%    98.8  slow 958 ms       over budget: `slow` p95 958 ms > 800 ms
+      20  902 ms  1.42 s  0.69%   114.1  slow 1.19 s       over budget: `slow` p95 1.19 s > 800 ms (+4 more)
+      40   2.9 s  3.07 s  0.37%    73.6  slow 3.08 s       over budget: `slow` p95 3.08 s > 800 ms (+9 more)
+      80  3.61 s  3.77 s  0.99%    88.2  slow 3.81 s       over budget: `slow` p95 3.81 s > 800 ms (+9 more)
   * refinement step (second k6 run between the last passing and the first breaking step)
 max sustainable concurrency: 10 agents (budgets broke at 13)
 Estimated sustainable capacity: ~12 agents (between 10 (held) and 13 (broke); linear interpolation of `slow` p95 to its 800 ms budget; an estimate, not a measured step)

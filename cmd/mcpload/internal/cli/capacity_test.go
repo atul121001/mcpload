@@ -84,15 +84,44 @@ func TestBuildStepsAndPrint(t *testing.T) {
 	printSteps(&buf, cp, capacityStepHints)
 	out := buf.String()
 	for _, want := range []string{
-		"  Agents     p95     p99  Errors  req/s  Slowest tool p95\n",
-		"       5  300 ms  390 ms   1.00%   20.0  slow 320 ms       (k6 CPU 95%: load generator saturated)\n",
-		"      10       -       -  50.00%   30.0  -                 <- breaks budget: `slow` error rate 100% > 1%, mostly `timeout` (90 of 100) (+1 more); <- failure: error rate 50% >= 50%, mostly `timeout` (260 of 300)\n",
+		"  Agents     p95     p99  Errors                                req/s  Slowest tool p95\n",
+		"       5  300 ms  390 ms   1.00%                                 20.0  slow 320 ms       (k6 CPU 95%: load generator saturated)\n",
+		"      10       -       -  50.00% timeout 260, http 30, +1 more   30.0  -                 <- breaks budget: `slow` error rate 100% > 1%, mostly `timeout` (90 of 100) (+1 more); <- failure: error rate 50% >= 50%, mostly `timeout` (260 of 300)\n",
 		"max sustainable concurrency: 5 agents (budgets broke at 10)",
 		"Estimated sustainable capacity: ~5 agents (between 5 (held) and 10 (broke); linear interpolation of `slow` error rate to its 1% budget (the lowest of 2 breached metrics); an estimate, not a measured step)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestStepErrorClasses(t *testing.T) {
+	flaky := func(breached ...string) report.StepTool {
+		return report.StepTool{Name: "flaky", Errors: 10, ByErrorType: map[string]int64{"tool_iserror": 10}, Breached: breached}
+	}
+	cases := []struct {
+		name string
+		st   report.Step
+		want string
+	}{
+		{"no errors", report.Step{}, ""},
+		{"one class", report.Step{ByErrorType: map[string]int64{"timeout": 12}}, "timeout 12"},
+		{"top two", report.Step{ByErrorType: map[string]int64{"timeout": 14, "http": 3}}, "timeout 14, http 3"},
+		{"more than two", report.Step{ByErrorType: map[string]int64{"timeout": 14, "http": 3, "auth": 1}}, "timeout 14, http 3, +1 more"},
+		{"tool_iserror within budget is hidden", report.Step{ByErrorType: map[string]int64{"tool_iserror": 10}, Tools: []report.StepTool{flaky()}}, ""},
+		{"and hidden next to other classes", report.Step{ByErrorType: map[string]int64{"tool_iserror": 10, "timeout": 2}, Tools: []report.StepTool{flaky("p95")}}, "timeout 2"},
+		{"tool_iserror over budget is shown", report.Step{ByErrorType: map[string]int64{"tool_iserror": 10, "timeout": 2}, Tools: []report.StepTool{flaky("errorRate")}}, "tool_iserror 10, timeout 2"},
+	}
+	for _, tc := range cases {
+		if got := stepErrorClasses(tc.st); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	m := map[string]int64{"tool_iserror": 10, "timeout": 2}
+	stepErrorClasses(report.Step{ByErrorType: m, Tools: []report.StepTool{flaky()}})
+	if m["tool_iserror"] != 10 {
+		t.Error("the step's map must not be changed")
 	}
 }
 

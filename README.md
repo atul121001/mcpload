@@ -79,7 +79,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **Next call built from the previous result** | ✅ `agent-workflow` scenario with `$from` references | Possible with JMeter extractors, by hand | Possible in your script, by hand | ❌ |
 | **Latency per tool** | ✅ p50/p95/p99 and error rate for every tool | ✅ one sampler per tool | ❌ metrics are tagged by `method` only, so every `tools/call` is mixed together | Not in docs |
 | **Budget per tool, with PASS/FAIL** | ✅ `P95_MS`, `TOOL_BUDGETS` | With assertions you configure | ❌ no per-tool tag to set a threshold on | ❌ exports results, no pass/fail |
-| **"How many agents can it take?"** | ✅ `mcpload capacity`: a step table, "breaks budget: `slow` p95 1.26 s > 800 ms" at 20 agents, "Estimated sustainable capacity: ~13 agents" | Ramp threads and read the graphs yourself | Ramp VUs and read the graphs yourself | Stress mode that scales up |
+| **"How many agents can it take?"** | ✅ `mcpload capacity`: a step table with tail latency and error classes, "breaks budget: `slow` p95 1.26 s > 800 ms" at 20 agents, "Estimated sustainable capacity: ~13 agents" | Ramp threads and read the graphs yourself | Ramp VUs and read the graphs yourself | Stress mode that scales up |
 | **Does one slow tool block the others?** | ✅ `isolation` scenario and verdict | ❌ | ❌ | ❌ |
 | **Leak detection** | ✅ memory, sessions and open files; slope over steady load plus a cool-down check; Docker or Prometheus | ❌ | ❌ | Watches memory, goroutines and GC of the server process |
 | **Load balancer "session not found"** | ✅ dedicated scenario and verdict | ❌ one shared session can't reproduce it | ❌ | ❌ |
@@ -324,19 +324,20 @@ Instead of running `--vus 10`, then 50, then 100 by hand, let mcpload step throu
   --from 10 --to 1000 --step-duration 1m --refine 2 --html capacity.html
 ```
 
-It runs 10, 20, 40, ... agents up to `--to` (`--factor` changes the ratio, `--steps 10,25,50` sets them yourself), holds each level for `--step-duration`, judges every step against your budgets, and stops early once the server has clearly fallen over. A real run against the demo server with a small connection pool (`--from 5 --to 80 --step-duration 20s`):
+It runs 10, 20, 40, ... agents up to `--to` (`--factor` changes the ratio, `--steps 10,25,50` sets them yourself), holds each level for `--step-duration`, judges every step against your budgets, and stops early once the server has clearly fallen over. A real run against the demo server with a small connection pool, with a 1 s client timeout (`--from 5 --to 40 --step-duration 15s --env MCP_TIMEOUT=1s`):
 
 ```text
 mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
-  Agents     p95     p99  Errors  req/s  Slowest tool p95
-       5  306 ms  488 ms   0.94%   42.5  slow 511 ms
-      10  415 ms  572 ms   0.56%   79.4  slow 597 ms
-      20  1.04 s  1.21 s   0.76%   95.0  slow 1.26 s       <- breaks budget: `slow` p95 1.26 s > 800 ms (+4 more)
-      40  2.05 s  2.22 s   0.61%   91.8  slow 2.15 s       over budget: `slow` p95 2.15 s > 800 ms (+9 more)
-      80  4.61 s  4.82 s   0.74%   71.5  slow 4.76 s       over budget: `slow` p95 4.76 s > 800 ms (+9 more)
+  Agents     p95     p99  Errors             req/s  Slowest tool p95
+       5  306 ms  413 ms  0.31%               42.2  slow 529 ms
+      10  513 ms  643 ms  0.41%               78.7  slow 673 ms
+      20  849 ms  941 ms  1.38% timeout 8    108.3  slow 966 ms       <- breaks budget: `slow` error rate 6.93% > 1%, all `timeout` (+5 more)
+      40  984 ms  997 ms  7.06% timeout 153  148.8  flaky 989 ms      over budget: `slow` error rate 68.39% > 1%, all `timeout` (+8 more)
 max sustainable concurrency: 10 agents (budgets broke at 20)
-Estimated sustainable capacity: ~13 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` p95 to its 800 ms budget (the lowest of 5 breached metrics); an estimate, not a measured step)
+Estimated sustainable capacity: ~11 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` error rate to its 1% budget (the lowest of 6 breached metrics); an estimate, not a measured step)
 ```
+
+The Errors column shows the error rate and the most frequent error classes. Tool errors from a tool failing within its own error budget (here the demo `flaky` tool) are counted in the rate but not named.
 
 The estimate follows each breached metric in a straight line from the last step that held to the first that broke, and takes the earliest crossing of its budget. `--refine 2` then measures two more steps inside that gap (in a second k6 run) to narrow it. Add `--target 200` to fail the run when the server can't hold 200 agents. Details in [cmd/mcpload/README.md](cmd/mcpload/README.md#capacity).
 

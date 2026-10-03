@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -198,6 +200,34 @@ func stepNotes(c *report.Capacity, st report.Step) []string {
 	return notes
 }
 
+// stepErrorClasses formats the two most frequent error classes of a step for
+// the Errors cell, e.g. "timeout 14, http 3" ("" without errors). tool_iserror
+// (a tool that answered isError, such as the demo `flaky`) is left out unless
+// a tool with such errors went over its error budget in the step: a tool
+// failing at its usual, budgeted rate would otherwise fill every row.
+func stepErrorClasses(st report.Step) string {
+	m := st.ByErrorType
+	if m[k6run.ErrorTypeToolIsError] > 0 {
+		keep := false
+		for _, t := range st.Tools {
+			if t.ByErrorType[k6run.ErrorTypeToolIsError] > 0 && slices.Contains(t.Breached, "errorRate") {
+				keep = true
+			}
+		}
+		if !keep {
+			m = maps.Clone(m)
+			delete(m, k6run.ErrorTypeToolIsError)
+		}
+	}
+	if len(m) == 0 {
+		return ""
+	}
+	if s := analysis.TopErrorTypes(m, 2); s != "-" {
+		return s
+	}
+	return ""
+}
+
 // printSteps prints the per-step table of a step-load run (p95/p99 of all
 // tools/call, error rate of all requests, req/s, the slowest tool and the
 // markers of stepNotes), the max sustainable concurrency and the estimate.
@@ -214,6 +244,11 @@ func printSteps(w io.Writer, c *report.Capacity, h stepHints) {
 	rows := [][]string{{"Agents", "p95", "p99", "Errors", "req/s", "Slowest tool p95"}}
 	var notes [][]string
 	refined := false
+	// Errors: the rate, right-aligned within the cell, then its top classes.
+	rateW := 0
+	for _, st := range c.Steps {
+		rateW = max(rateW, len(fmt.Sprintf("%.2f%%", 100*st.ErrorRate)))
+	}
 	for _, st := range c.Steps {
 		ag := strconv.Itoa(st.VUs)
 		if st.Refinement {
@@ -230,7 +265,11 @@ func printSteps(w io.Writer, c *report.Capacity, h stepHints) {
 		if worst != nil {
 			slowest = worst.Name + " " + analysis.FormatMs(*worst.P95)
 		}
-		rows = append(rows, []string{ag, msOr(st.P95Ms), msOr(st.P99Ms), fmt.Sprintf("%.2f%%", 100*st.ErrorRate), fmt.Sprintf("%.1f", st.RPS), slowest})
+		errs := fmt.Sprintf("%*s", rateW, fmt.Sprintf("%.2f%%", 100*st.ErrorRate))
+		if cls := stepErrorClasses(st); cls != "" {
+			errs += " " + cls
+		}
+		rows = append(rows, []string{ag, msOr(st.P95Ms), msOr(st.P99Ms), errs, fmt.Sprintf("%.1f", st.RPS), slowest})
 		notes = append(notes, stepNotes(c, st))
 	}
 	width := make([]int, len(rows[0]))
@@ -243,7 +282,7 @@ func printSteps(w io.Writer, c *report.Capacity, h stepHints) {
 	for i, r := range rows {
 		var b strings.Builder
 		for j, cell := range r {
-			if j == len(r)-1 { // last column left-aligned, the numbers right-aligned
+			if j == 3 || j == len(r)-1 { // Errors and the slowest tool left-aligned, the numbers right-aligned
 				fmt.Fprintf(&b, "  %-*s", width[j], cell)
 			} else {
 				fmt.Fprintf(&b, "  %*s", width[j], cell)
