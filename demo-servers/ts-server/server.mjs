@@ -7,6 +7,10 @@
 //                                     given RFC 7662 introspection endpoint reports as active
 //   ts-pooled    POOL_SIZE=N          every tool call holds one of N shared slots (like one small DB
 //                                     connection pool for all tools): fast tools queue behind slow ones
+//   skew-hang-old HANG_UNKNOWN=1      a request this build can't serve (no session and not initialize, e.g. a
+//                                     2026-07-28 stateless request; an unknown session id; a tools/call for a
+//                                     tool it doesn't have) is accepted and never answered, instead of a 400/404
+//                                     or a "tool not found" error: the hang of a rolling deploy gone wrong
 //
 // Other env: PORT (3000), FLAKY_RATE (0.1), BIG_BYTES (200000), LEAK_BYTES (1048576),
 //            SESSION_IDLE_MS (300000; 0 disables idle reaping), SERVER_NAME.
@@ -25,6 +29,7 @@ const FLAKY_RATE = Number(process.env.FLAKY_RATE ?? 0.1);
 const BIG_BYTES = Number(process.env.BIG_BYTES ?? 200_000);
 const LEAK_BYTES = Number(process.env.LEAK_BYTES ?? 1024 * 1024);
 const POOL_SIZE = Number(process.env.POOL_SIZE ?? 0); // 0: no shared pool
+const HANG_UNKNOWN = process.env.HANG_UNKNOWN === '1';
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
 const SERVER_NAME = process.env.SERVER_NAME ?? (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
@@ -55,11 +60,23 @@ async function pooled(fn) {
   }
 }
 
+const knownTools = new Set(); // filled by registerTool
+
+// HANG_UNKNOWN=1: keep the request open without ever answering (the client's timeout ends it).
+let hanging = 0;
+function hang(req, why) {
+  hanging++;
+  if (hanging <= 5 || hanging % 100 === 0) console.warn(`HANG_UNKNOWN: not answering ${why} (${hanging} so far)`);
+}
+
 // ---- MCP server factory (one McpServer per session, as in the SDK examples) ----
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: '0.1.0' });
   const register = server.registerTool.bind(server);
-  server.registerTool = (name, meta, handler) => register(name, meta, (...a) => pooled(() => handler(...a)));
+  server.registerTool = (name, meta, handler) => {
+    knownTools.add(name);
+    return register(name, meta, (...a) => pooled(() => handler(...a)));
+  };
 
   server.registerTool('fast', { description: 'Returns immediately.', inputSchema: {} }, async () => text('ok'));
 
@@ -239,11 +256,20 @@ app.post('/mcp', express.json({ limit: '4mb' }), async (req, res) => {
   try {
     if (sid) {
       const s = sessions.get(sid);
-      if (!s) { sessionNotFound.inc(); return rpcError(res, 404, -32001, 'Session not found'); }
+      if (!s) {
+        sessionNotFound.inc();
+        if (HANG_UNKNOWN) return hang(req, 'a request for an unknown session');
+        return rpcError(res, 404, -32001, 'Session not found');
+      }
       s.lastSeen = Date.now();
+      const b = req.body;
+      if (HANG_UNKNOWN && b && b.method === 'tools/call' && !knownTools.has(b.params?.name)) {
+        return hang(req, `tools/call ${b.params?.name}`);
+      }
       return await s.transport.handleRequest(req, res, req.body);
     }
     if (!isInitializeRequest(req.body)) {
+      if (HANG_UNKNOWN) return hang(req, `${req.body?.method ?? 'a request'} without a session (protocol ${req.headers['mcp-protocol-version'] ?? 'unset'})`);
       return rpcError(res, 400, -32000, 'Bad Request: no Mcp-Session-Id header and body is not an initialize request');
     }
     const server = createMcpServer();

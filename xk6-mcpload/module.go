@@ -126,6 +126,8 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 		case "includePayloads":
 			b, _ := val.(bool)
 			c.includePayloads = b
+		case "servedByHeader":
+			o.ServedByHeader = fmt.Sprint(val)
 		case "rememberProtocol":
 			if b, ok := val.(bool); ok {
 				c.rememberProtocol = b
@@ -421,6 +423,7 @@ func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool) *
 	must(rt, obj.Set("protocol", s.Protocol()))
 	must(rt, obj.Set("sessionId", s.SessionID()))
 	must(rt, obj.Set("stateless", s.Stateless()))
+	must(rt, obj.Set("servedBy", s.ServedBy()))
 	must(rt, obj.Set("listTools", js.listTools))
 	must(rt, obj.Set("callTool", js.callTool))
 	must(rt, obj.Set("callParallel", js.callParallel))
@@ -512,6 +515,9 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 		"content":    content,
 		"durationMs": float64(r.Duration) / float64(time.Millisecond),
 	}
+	if r.ServedBy != "" {
+		out["servedBy"] = r.ServedBy
+	}
 	if len(r.StructuredContent) > 0 {
 		out["structuredContent"] = r.StructuredContent
 	}
@@ -522,6 +528,9 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 		}
 		if r.Err.Code != 0 {
 			e["code"] = r.Err.Code
+		}
+		if r.Err.ServedBy != "" {
+			e["servedBy"] = r.Err.ServedBy
 		}
 		out["error"] = e
 	}
@@ -561,6 +570,9 @@ func throwMCP(rt *sobek.Runtime, e *client.Error) {
 	_ = obj.Set("status", e.HTTPStatus)
 	if e.Code != 0 {
 		_ = obj.Set("code", e.Code)
+	}
+	if e.ServedBy != "" {
+		_ = obj.Set("servedBy", e.ServedBy)
 	}
 	panic(obj)
 }

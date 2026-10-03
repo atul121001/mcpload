@@ -17,6 +17,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
 | `isolation.js` | Do fast tools wait behind slow ones? Runs agent sessions twice at the same concurrency: `solo` (the mix without `SLOW_TOOLS`), then `mixed` (the full mix). mcpload compares each tool's p95 between the two (verdict `tool_isolation`). | 20 VUs, 1m per phase |
 | `step-load.js` | How many agents at once before the server breaks its budgets? Agent sessions with concurrency rising in steps (`STEPS`); each step ramps for `RAMP`, then holds for `STEP_DURATION`. mcpload judges every step against the per-tool budgets (verdict `capacity`). See [Step load](#step-load). | steps 10, 25, 50, 100, 200 VUs, 5s ramp + 1m hold each (about 5.5 min) |
+| `version-skew.js` | Replicas on different builds behind one LB (a rolling deploy halfway through). Agent sessions negotiate (`auto`), list tools and make sequential calls; every failed request is classified as a fast typed error or a hang. mcpload turns it into the `version_skew` verdict. See [Version skew](#version-skew). | 10 VUs for 1m |
 | `oauth-refresh.js` | 50 VUs on short-lived client-credentials tokens. Measures `mcp_oauth_refresh_duration` and counts auth errors. | 3m |
 
 ## Demo targets (`demo-servers/`, `docker compose up -d --build`)
@@ -29,9 +30,11 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | 3004 | lb-stateful (2 replicas, no sticky sessions) | `./k6 run -e MCP_URL=http://localhost:3004/mcp scenarios/lb-check.js` (expected to fail) |
 | 3005 | stateless-2026 (2 replicas) | `./k6 run -e MCP_URL=http://localhost:3005/mcp -e MCP_PROTOCOL=2026-07-28 scenarios/lb-check.js` (expected to pass) |
 | 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes). `--scenario step-load --env STEPS=5,10,20,40 --env STEP_DURATION=20s` breaks at 20 agents. |
+| 3009 | skew (old TS build + new Go build, typed errors) | `./mcpload run --url http://localhost:3009/mcp --scenario version-skew` (expected to warn `version_skew`) |
+| 3010 | skew-hang (old build never answers what it can't serve) | `./mcpload run --url http://localhost:3010/mcp --scenario version-skew --env MCP_TIMEOUT=5s` (expected to fail `version_skew`) |
 | 3006 / 3007 | mock-oauth / ts-oauth | `./k6 run -e MCP_URL=http://localhost:3007/mcp -e OAUTH_TOKEN_URL=http://localhost:3006/token -e OAUTH_CLIENT_ID=mcpload -e OAUTH_CLIENT_SECRET=secret scenarios/oauth-refresh.js` |
 
-Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`.
+Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`. The new build of the skew targets (`skew-new`) also lists `new_tool`.
 
 ## Which tools get called
 
@@ -105,6 +108,7 @@ Each scenario adds its own thresholds on top:
 - `isolation` adds `checks{check:slow tools in mix}: rate>0.999`, so a `SLOW_TOOLS` name that isn't in the tool mix fails the run instead of comparing two identical phases. `SLOW_TOOLS` (comma-separated, default `slow`) names your slow tools; `DURATION` is per phase.
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
 - `agent-workflow` adds per-tool thresholds for every tool its plan calls, plus `mcp_workflow_duration: p(95)<WORKFLOW_P95_MS` (and `p(99)<WORKFLOW_P99_MS` when set), `mcp_workflow_complete: rate>=WORKFLOW_MIN_COMPLETE`, and `mcp_workflow_step_duration{step:<name>}: p(95)<STEP_P95_MS` for each step (`STEP_BUDGETS` overrides per step). See [Agent workflows](#agent-workflows).
+- `version-skew` replaces the default set with `mcp_skew_failures{kind:hang}: count<1` (any hang fails the run) and `mcp_skew_ok: rate>0` (fails a run where no request succeeded at all, e.g. a wrong URL). It has no latency or error budgets: failures are expected under skew, and mcpload judges how they fail (verdict `version_skew`, a warning when all failed fast).
 - `step-load` sets **no** thresholds. Its budgets are judged per step by mcpload (see below), because a breach at the top step is what a step-load run is looking for, not a failed run.
 
 If any threshold fails, k6 exits with code 99, which gates CI.
@@ -163,6 +167,46 @@ mcpload writes them to `report.json` as `workflow` (per-step and end-to-end p50/
 | `STEP_BUDGETS` | `{}` | per-step overrides, e.g. `{"inspect":{"p95":300,"p99":500}}` |
 | `WORKFLOW_MIN_COMPLETE` | `0.95` | minimum `mcp_workflow_complete` rate |
 
+## Version skew
+
+During a rolling deploy, replicas on the old and the new build sit behind the same load balancer, so one client's requests reach both. That is harmless when both builds speak the same protocol revision and list the same tools. When they don't (for example a rollout from the stateful protocol to the stateless 2026-07-28 one, or a build that adds a tool), what matters is how the mismatched requests fail: a typed error that comes back at once can be caught and retried, while a request that is never answered hangs every client until its timeout, for as long as the deploy lasts.
+
+`version-skew.js` runs agent sessions against the LB. Each session connects with `MCP_PROTOCOL` (default `auto`, so every session goes through negotiation, including the retry after an `Unsupported protocol version` error), lists tools and makes `STEPS` sequential calls, each its own trip through the LB, then closes. Every failed request is classified (`lib/skew.js`):
+
+| Kind | Meaning |
+|---|---|
+| `fast` | a typed error (HTTP 4xx/5xx, a JSON-RPC error code such as -32022 Unsupported protocol version or -32601 Method not found, an "unknown tool" error) returned in under `FAIL_FAST_MS` |
+| `hang` | error type `timeout` (no answer within `MCP_TIMEOUT`), or a failure that took `HANG_MS` or longer |
+| `slow` | anything else: a typed error slower than `FAIL_FAST_MS`, or a failure without an HTTP response |
+
+Ordinary tool errors (`isError` results such as the demo `flaky` tool) are not failures. A session ends at its first hang, as an agent would give up. The `reason` tag says what went wrong: `unsupported_protocol`, `method_not_found`, `unknown_tool`, `session_not_found`, `header_mismatch`, `auth`, `http_<status>`, `jsonrpc_error`, `timeout` or `transport`.
+
+With `TOOLS_CACHE_TTL` set (e.g. `5m`), a VU reuses the `tools/list` result of an earlier session for that long instead of listing again, like a client that honours a list's cache TTL. It may then call a tool the replica serving the call doesn't have (`unknown_tool`). The tool mix is uniform over every listed tool unless `TOOL_MIX` is set.
+
+Which replica answered comes from a response header (`SERVED_BY_HEADER`, default `X-Served-By`; the demo LBs also set `X-Upstream`), through the client's `servedBy` fields. Requests that got no response are counted as `no answer`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `mcp_skew_requests{op, outcome, replica, protocol}` | Counter | every request (`op`: connect, list, call, close) |
+| `mcp_skew_failures{op, kind, reason}` | Counter | failed requests |
+| `mcp_skew_failure_duration{op, kind, reason}` | Trend (ms) | time until the failure surfaced |
+| `mcp_skew_negotiated{protocol, replica}` | Counter | successful connects by negotiated protocol and the replica that answered the handshake |
+| `mcp_skew_ok` | Rate | requests that did not fail |
+
+| Var | Default | Meaning |
+|---|---|---|
+| `VUS`, `DURATION` | `10`, `1m` | load |
+| `STEPS` | `6` | sequential `tools/call` per session |
+| `TOOLS_CACHE_TTL` | off | reuse a VU's earlier `tools/list` for this long (`5m`, `30s`, `500ms`) |
+| `FAIL_FAST_MS` | `2000` | a typed error faster than this is `fast` |
+| `HANG_MS` | `10000` | a failure this slow is a `hang` even with an answer. Timeouts always are; lower `MCP_TIMEOUT` (default 30s) to keep runs short. |
+| `SERVED_BY_HEADER` | `X-Served-By` | response header that names the replica |
+| `REMEMBER_PROTOCOL` | `0` | `1` reuses the protocol an earlier connect resolved (process-wide) instead of negotiating per session |
+
+mcpload's verdict `version_skew` passes when nothing failed, warns when every failure was fast or slow (clients see errors they can handle), and fails when any request hung. The message reads like: "3540 of 7525 requests (47.0%) failed on a replica running a different build; 3540 failed fast with typed errors (good: clients can catch them): 3196 × HTTP 400, 344 × Unsupported protocol version (-32022)…". The demo targets on 3009 (warn) and 3010 (fail) show both outcomes, and a single build behind an LB (`stateless-2026` on 3005) passes.
+
+Attribute failures with care: the scenario counts every failed request as a skew failure, so run it against a deployment that is otherwise healthy (`lb-check` first).
+
 ## Soak phases
 
 `soak.js` has three phases:
@@ -201,9 +245,10 @@ Keep `STEP_DURATION` long enough for a few hundred calls per step (sessions last
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules, version-skew classification) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
 node scenarios/lib/workflow.test.mjs
+node scenarios/lib/skew.test.mjs
 ```

@@ -67,6 +67,7 @@ type exchange struct {
 type exchangeResult struct {
 	result    json.RawMessage
 	sessionID string // Mcp-Session-Id response header
+	servedBy  string // Options.ServedByHeader response header
 	stats     RequestStats
 	err       *Error
 }
@@ -150,6 +151,7 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 		}
 		if res.err != nil {
 			res.stats.ErrorType = res.err.Type
+			res.err.ServedBy = res.servedBy
 		}
 		s.obs(ctx).OnRequest(res.stats)
 	}
@@ -163,6 +165,7 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 	headersAt := time.Now()
 	res.stats.Status = resp.StatusCode
 	res.sessionID = resp.Header.Get(HeaderSessionID)
+	res.servedBy = resp.Header.Get(s.opts.ServedByHeader)
 
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))

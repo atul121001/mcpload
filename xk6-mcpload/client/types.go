@@ -105,6 +105,7 @@ type Error struct {
 	HTTPStatus int             // 0 when no HTTP response was received
 	Code       int             // JSON-RPC error code, when there is one
 	Data       json.RawMessage // JSON-RPC error data, when there is one
+	ServedBy   string          // Options.ServedByHeader of the response; "" when absent or no response
 }
 
 func (e *Error) Error() string {
@@ -144,6 +145,7 @@ type ToolResult struct {
 	Content           json.RawMessage
 	StructuredContent json.RawMessage
 	Duration          time.Duration
+	ServedBy          string // Options.ServedByHeader of the response; "" when absent or no response
 	Err               *Error
 }
 

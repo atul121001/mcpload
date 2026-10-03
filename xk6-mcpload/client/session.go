@@ -49,9 +49,16 @@ type Options struct {
 	// a stateless server, sends nothing on connect). A successful auto
 	// negotiation is stored in it; failed connects are never cached.
 	ProtocolCache *ProtocolCache
+	// ServedByHeader names the response header that identifies the replica
+	// that answered (Error.ServedBy, ToolResult.ServedBy, Session.ServedBy).
+	// Empty means DefaultServedByHeader.
+	ServedByHeader string
 	// Observer receives timings; nil means NopObserver.
 	Observer Observer
 }
+
+// DefaultServedByHeader is the default Options.ServedByHeader.
+const DefaultServedByHeader = "X-Served-By"
 
 // Session is a connected MCP session. All methods are safe for concurrent
 // use.
@@ -61,6 +68,7 @@ type Session struct {
 	protocol  string
 	stateless bool
 	sessionID string
+	servedBy  string // replica that answered the handshake
 
 	ServerInfo   json.RawMessage
 	Capabilities json.RawMessage
@@ -96,6 +104,11 @@ func (s *Session) SessionID() string { return s.sessionID }
 
 // Stateless reports whether the session uses the stateless protocol.
 func (s *Session) Stateless() bool { return s.stateless }
+
+// ServedBy returns the ServedByHeader value of the response that completed
+// the handshake (server/discover or initialize), or "" (header absent, or a
+// cached stateless resolution that sent nothing).
+func (s *Session) ServedBy() string { return s.servedBy }
 
 func (s *Session) protocolTag(ex exchange) string {
 	if s.protocol != "" {
@@ -137,6 +150,9 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 	}
 	if opts.ClientInfo.Name == "" {
 		opts.ClientInfo = Implementation{Name: "mcpload", Version: Version}
+	}
+	if opts.ServedByHeader == "" {
+		opts.ServedByHeader = DefaultServedByHeader
 	}
 	s := &Session{opts: opts, hc: opts.HTTPClient}
 	obs := s.obs(ctx)
@@ -193,7 +209,9 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 // answers -32022 (UnsupportedProtocolVersion) listing a newer stateless
 // version in error.data.supported is probed once more with that version; the
 // stateful handshake is used only when the server doesn't speak any stateless
-// protocol revision we can use.
+// protocol revision we can use. If initialize is in turn rejected with -32022
+// offering a stateless version (replicas on different builds), that version
+// is probed once more.
 func (s *Session) connectAuto(ctx context.Context, cs *ConnectStats) (int, *Error) {
 	cs.Method = "server/discover"
 	obs := s.obs(ctx)
@@ -229,7 +247,21 @@ func (s *Session) connectAuto(ctx context.Context, cs *ConnectStats) (int, *Erro
 	}
 	s.protocol, s.stateless = "", false
 	cs.Method = "initialize"
-	return s.initialize(ctx, s.opts.FallbackVersion)
+	status, err = s.initialize(ctx, s.opts.FallbackVersion)
+	if err != nil {
+		// Behind a load balancer in the middle of a rolling deploy, the probe
+		// and the handshake can reach different builds: an old one that
+		// answers the probe like a legacy server, then a new one that rejects
+		// initialize with -32022 and offers a stateless version. Retry once
+		// with that version (the rejected initialize stays counted as an
+		// error: it is what a client sees during the skew).
+		if v := newestStateless(supportedVersions(err), ""); v != "" {
+			cs.Method = "server/discover"
+			s.protocol, s.stateless = v, true
+			return s.discover(ctx, v)
+		}
+	}
+	return status, err
 }
 
 // supportedVersions returns error.data.supported of an
@@ -370,6 +402,7 @@ func (s *Session) discover(ctx context.Context, version string) (int, *Error) {
 	s.protocol = version
 	s.Capabilities = dr.Capabilities
 	s.ServerInfo = dr.Meta["io.modelcontextprotocol/serverInfo"]
+	s.servedBy = r.servedBy
 	return r.stats.Status, nil
 }
 
@@ -400,6 +433,7 @@ func (s *Session) initialize(ctx context.Context, version string) (int, *Error) 
 	}
 	s.sessionID = r.sessionID
 	s.Capabilities, s.ServerInfo = ir.Capabilities, ir.ServerInfo
+	s.servedBy = r.servedBy
 	status := r.stats.Status
 
 	n := s.post(ctx, exchange{
@@ -582,7 +616,7 @@ func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResul
 		params["arguments"] = map[string]any{}
 	}
 	r := s.request(ctx, "tools/call", name, params, true)
-	out := ToolResult{Duration: r.stats.Duration}
+	out := ToolResult{Duration: r.stats.Duration, ServedBy: r.servedBy}
 	if r.err != nil {
 		out.IsError = true
 		out.Err = r.err
@@ -595,12 +629,12 @@ func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResul
 	}
 	if err := json.Unmarshal(r.result, &cr); err != nil {
 		out.IsError = true
-		out.Err = &Error{Type: ErrJSONRPC, HTTPStatus: r.stats.Status, Message: "decoding tools/call result: " + err.Error()}
+		out.Err = &Error{Type: ErrJSONRPC, HTTPStatus: r.stats.Status, Message: "decoding tools/call result: " + err.Error(), ServedBy: r.servedBy}
 		return out
 	}
 	out.Content, out.StructuredContent, out.IsError = cr.Content, cr.StructuredContent, cr.IsError
 	if cr.IsError {
-		out.Err = &Error{Type: ErrToolIsError, HTTPStatus: r.stats.Status, Message: firstText(cr.Content)}
+		out.Err = &Error{Type: ErrToolIsError, HTTPStatus: r.stats.Status, Message: firstText(cr.Content), ServedBy: r.servedBy}
 	}
 	return out
 }

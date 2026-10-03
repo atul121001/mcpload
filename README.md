@@ -325,6 +325,7 @@ The checks, in plain words:
 | `session_not_found` | The server "forgets" an agent's session, which often means a load-balancer problem. |
 | `threshold` | A tool went over your time or error budget. |
 | `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
+| `version_skew` | Version-skew runs only: requests that reached a replica on a different build. A warning when they all fail fast with a typed error clients can handle (e.g. `Unsupported protocol version`), a fail when any of them hangs until the client timeout. |
 | `capacity` | Step-load runs only: how many agents at once the server held within your time and error budgets, and what broke at the next step, e.g. "Held budgets up to 50 agents; at 100 agents `slow` p95 1.9 s > 800 ms". Fails if your `--min-agents` target isn't met (or, without a target, if even the first step breaks). Says "inconclusive" instead of blaming the server when the test machine was maxed out. |
 
 "Soak tests only" means the check is skipped on short runs without a cool-down, or with less than 2 minutes of steady load.
@@ -464,6 +465,7 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | `soak.js` | Steady traffic for a long time, then a quiet period, to find leaks. |
 | `lb-check.js` | Session handling behind a load balancer. |
 | `isolation.js` | Whether fast tools wait behind slow ones (a shared connection pool, worker pool or blocked event loop). Name your slow tools with `--env SLOW_TOOLS=...`. |
+| `version-skew.js` | A rolling deploy caught halfway: replicas on two builds behind one load balancer. Reports whether mismatched requests fail fast with a typed error or hang until the timeout. Add `--env TOOLS_CACHE_TTL=5m` to reuse an earlier tool list. |
 | `step-load.js` | More and more agents at once, in steps (10, 25, 50, 100, 200 by default), to find the breaking point. Set the steps with `--env STEPS=...` and a target with `--min-agents`. |
 | `oauth-refresh.js` | Many agents sharing short-lived login tokens. |
 

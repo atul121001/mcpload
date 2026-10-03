@@ -37,6 +37,8 @@ only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
 | 3005 | `stateless-2026` | nginx round-robin over 2 × Go server, `github.com/modelcontextprotocol/go-sdk` v1.8.0, `StreamableHTTPOptions{Stateless: true}` | 2026-07-28 (stateless, `server/discover`, `Mcp-Method`/`Mcp-Name`) and legacy | **pass** (requests spread 50/50, no errors) |
 | 3006 | `mock-oauth` | dependency-free Node token server: `POST /token` (client_credentials, form-encoded, Basic or body creds `mcpload:secret`), `POST /introspect` (RFC 7662). Tokens are opaque and expire after **30 s** | OAuth 2.0 | n/a (auth server) |
 | 3008 | `ts-pooled` | same image, `POOL_SIZE=2`: every tool call must hold one of 2 process-wide slots (like one small DB connection pool shared by all tools), so `fast` and `search` queue behind `slow` | 2025-11-25 (stateful) | **`tool_isolation` flagged** with `--scenario isolation` (ts-healthy passes it) |
+| 3009 | `skew` | nginx round-robin over two replicas on **different builds** (a rolling deploy caught halfway): `skew-old` = the TS image (stateful 2025-11-25 only), `skew-new` = the Go image with `STATELESS_ONLY=1` (2026-07-28 only: `initialize` or an older `Mcp-Protocol-Version` gets HTTP 400 `-32022` Unsupported protocol version, `data.supported: ["2026-07-28"]`) and `NEW_TOOL=1` (also lists `new_tool`) | mixed | **`version_skew` warns** with `--scenario version-skew` (every mismatch fails fast: HTTP 400 from the old build, -32022 from the new one, `Tool new_tool not found` with `TOOLS_CACHE_TTL`) |
+| 3010 | `skew-hang` | the same, but the old replica is `skew-hang-old` (`HANG_UNKNOWN=1`): a request it can't serve (no session and not `initialize`, e.g. a 2026-07-28 request; an unknown session; a `tools/call` for a tool it doesn't have) is accepted and never answered | mixed | **`version_skew` fails** (requests hang until the client timeout) |
 | 3007 | `ts-oauth` | `ts-healthy` with `REQUIRE_AUTH_URL=http://mock-oauth:3000/introspect`: every `/mcp` request must carry a Bearer token that introspects as active, otherwise **401** | 2025-11-25 (stateful) | **refresh storm measured** (clients must refresh every 30 s) |
 
 Side endpoints:
@@ -44,7 +46,7 @@ Side endpoints:
   - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, plus prom-client default metrics.
   - Python / Go: `process_resident_memory_bytes`, `mcp_active_sessions` (always 0); Go also `go_memstats_heap_alloc_bytes`, `go_goroutines`.
   - mock-oauth: `oauth_tokens_issued_total`, `oauth_introspect_total{active}`, `oauth_live_tokens`.
-  - Behind the two nginx LBs (3004, 3005), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
+  - Behind the nginx LBs (3004, 3005, 3009, 3010), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
 - `GET /healthz` on every server.
 - Responses carry `X-Served-By: <replica hostname>`; the LBs also add `X-Upstream: <ip:port>`.
 
@@ -54,7 +56,7 @@ Memory limits (`docker stats` shows them): TS / Python 256 MiB, **ts-leaky 512 M
 
 ```bash
 cd demo-servers
-docker compose up -d --build      # builds 4 images: ts-server, py-server, go-server, mock-oauth
+docker compose up -d --build      # builds ts-server, py-server, go-server, mock-oauth (+ the :skew tags of ts-server and go-server)
 docker compose ps
 ./smoke.sh                        # asserting smoke test of every target, exits non-zero on failure (or: ./smoke.sh lb-stateful)
 docker compose restart ts-leaky   # reset the leak between runs
@@ -67,7 +69,11 @@ No local Node, Python or Go is needed: everything builds inside Docker (`node:22
 
 Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK_BYTES` (1 MiB),
 `SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
-`JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE).
+`JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE), `SERVER_NAME`, `NEW_TOOL=1` and `STATELESS_ONLY=1` (Go),
+`HANG_UNKNOWN=1` (TS).
+
+The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcpload-demo/go-server:skew`), so
+`docker compose up -d --build skew skew-hang` never rebuilds the images the other targets run.
 
 ## curl examples
 
@@ -146,6 +152,9 @@ On 3003, `server/discover` advertises only `2026-07-28`, but legacy stateless ca
   | ts-leaky (`docker stats`) | 30.2 MiB | **351 MiB** | **301** (`mcp_leaked_bytes` 315621376) |
 - `ts-oauth`: no token → 401; fresh token → 200; the same token after 31 s → 401; a refreshed token → 200.
 - `flaky` at the default 0.1: 12/100 errors (Python), 7/100 (TS). `big` is ~202 KB on the wire. `slow` takes ~0.31 s.
+
+- `skew` (3 Oct 2026): `server/discover` alternates between `skew-old` (400 `-32000` "no Mcp-Session-Id header") and `skew-new` (200, `supportedVersions: ["2026-07-28"]`); `initialize` alternates between `skew-old` (200, session id) and `skew-new` (400 `-32022`); in a `skew-old` session, `tools/call new_tool` returns `isError: true` "MCP error -32602: Tool new_tool not found".
+- `skew-hang`: `server/discover` on `skew-hang-old` gets no answer (curl `-m 3` gives up after 3.0 s); on `skew-new` it returns 200 in 0.2 s.
 
 ## Implementation notes
 

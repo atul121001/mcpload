@@ -41,13 +41,14 @@ const (
 	VerdictGenerator       = "generator"
 	VerdictToolIsolation   = "tool_isolation"
 	VerdictCapacity        = "capacity"
+	VerdictVersionSkew     = "version_skew"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
 var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
-	VerdictToolIsolation, VerdictCapacity,
+	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew,
 }
 
 // Verdict statuses.

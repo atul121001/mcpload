@@ -149,6 +149,7 @@ type Aggregator struct {
 	// (the 'scenario' system tag) and tool, for phase comparisons.
 	scenarioTools map[string]map[string][]float64
 	wf            workflowAgg
+	sk            skewAgg
 	// steps holds per-step aggregates keyed by the StepTag value (step-load).
 	steps       map[string]*stepAgg
 	first, last time.Time
@@ -300,6 +301,8 @@ func (a *Aggregator) add(l *line) error {
 		if v != 0 {
 			a.wf.completed++
 		}
+	case MetricSkewRequests, MetricSkewFailures, MetricSkewFailureDuration, MetricSkewNegotiated:
+		a.sk.add(l.Metric, v, tags)
 	case MetricConnectDuration:
 		if p := tags["protocol"]; p != "" && tags["error_type"] == "" && strings.HasPrefix(tags["status"], "2") {
 			a.protoOK[p]++

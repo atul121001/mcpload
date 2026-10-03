@@ -50,7 +50,7 @@ xk6-mcpload/            Go module → JS import "k6/x/mcpload"
   client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
-scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, oauth-refresh
+scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, step-load, version-skew, oauth-refresh
 cmd/mcpload/            Go CLI: run → sample → analyse → report.json + report.html
 demo-servers/           docker compose test targets (§7)
 action/                 GitHub Action (composite): build binary, run scenario, gate, upload
@@ -116,6 +116,7 @@ thresholds: {
 - **burst:** VUs ramp quickly to simulate many agents starting at once, including an `initialize` flood.
 - **soak:** agent-session at constant arrival rate for 30–60 minutes (§6).
 - **lb-check:** a session-based flow against more than one replica; checks for `session_not_found` and `header_mismatch`.
+- **version-skew:** agent sessions against a load balancer whose replicas run different builds (a rolling deploy halfway through). Every failed request is classified as a fast typed error or a hang; verdict `version_skew`.
 - **oauth-refresh:** short-lived tokens with many VUs; measures refresh storms and the 401 rate.
 
 ## 6. Soak and leak method (CLI)

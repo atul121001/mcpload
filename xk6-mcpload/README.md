@@ -51,15 +51,16 @@ const client = new mcp.Client({
   elicitation: { action: 'accept', content: { confirm: true }, delayMs: 100 },  // action: 'accept' | 'decline' | 'cancel'
   roots: { roots: [{ uri: 'file:///work', name: 'work' }] },
   // advanced: fallbackVersion ('2025-11-25'), discover (true), rememberProtocol (true),
-  //           clientInfo {name, version}, capabilities {}
+  //           clientInfo {name, version}, capabilities {}, servedByHeader ('X-Served-By')
 });
 
 export default function () {
-  const s = client.connect();     // throws on failure (Error with .type, .status, .code)
+  const s = client.connect();     // throws on failure (Error with .type, .status, .code, .servedBy)
   s.protocol; s.sessionId;        // sessionId is '' in stateless mode
+  s.servedBy;                     // servedByHeader of the handshake response ('' if absent or nothing was sent)
   const tools = s.listTools();    // follows nextCursor; [{name, description, inputSchema}]; throws on failure
   const r = s.callTool('search', { q: 'x' });
-  // never throws: { isError, content, structuredContent?, durationMs, error?: {type, message, status?, code?} }
+  // never throws: { isError, content, structuredContent?, durationMs, servedBy?, error?: {type, message, status?, code?, servedBy?} }
   const rs = s.callParallel([{ name: 'a', args: {} }, { name: 'b', args: {} }]); // goroutines, input order
   s.ping();                       // throws on failure
   s.close();                      // DELETE in stateful mode; no-op on the wire in stateless mode
@@ -118,7 +119,13 @@ supported. `mcp_req_duration` of the call includes the time spent answering. Exa
   `error.data.supported` lists a stateless version (`>= 2026-07-28`) is a modern server: `server/discover` is
   retried once with the newest such version, and only if none is offered does it fall back to `initialize`. A probe
   answered with a fallback-triggering (or retry-triggering) error is recorded in `mcp_reqs`/`mcp_req_duration`
-  (with its real `status` tag) but not in `mcp_errors`.
+  (with its real `status` tag) but not in `mcp_errors`. If the fallback `initialize` is itself rejected with a `-32022`
+  that offers a stateless version (replicas on different builds behind one load balancer: the probe reached an old
+  build, the handshake a new one), `server/discover` is tried once more with that version; the rejected `initialize`
+  stays counted as an error.
+- **servedBy**: the value of the `servedByHeader` response header (default `X-Served-By`; e.g. nginx's
+  `X-Upstream`) on the session (handshake), on each tool result and its `error`, and on thrown errors. Empty when
+  the header is absent or no response arrived (timeout). It is not a metric tag. `scenarios/version-skew.js` uses it.
 - **rememberProtocol** (default `true`, only affects `auto`): the protocol resolved by the first *successful* auto
   connect is cached process-wide, keyed by `url` + `protocol` + `fallbackVersion`, and shared by every VU and
   Client in the k6 process. Later connects skip the `server/discover` probe: a stateless (`2026-07-28`) server

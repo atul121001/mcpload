@@ -593,6 +593,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
 		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
 	}
+	if sk := agg.Skew(); sk != nil || scenario == versionSkewScenario {
+		r.Verdicts = append(r.Verdicts, analysis.VersionSkewVerdict(skewInput(sk)))
+	}
 	if steps := agg.Steps(); len(steps) > 0 || stepLoad {
 		if !stepLoad {
 			if capCfg, err = capacityConfig(envMap); err != nil {
@@ -702,6 +705,22 @@ func roundSeries(s []*float64, d int) []*float64 {
 		}
 	}
 	return s
+}
+
+// versionSkewScenario is the options.tags.scenario_name of scenarios/version-skew.js.
+const versionSkewScenario = "version-skew"
+
+// skewInput converts the version-skew metrics for the version_skew verdict (nil: no requests).
+func skewInput(s *k6run.SkewStats) analysis.SkewInput {
+	if s == nil {
+		return analysis.SkewInput{}
+	}
+	in := analysis.SkewInput{Requests: s.Requests, Failures: s.Failures, Replicas: s.Replicas,
+		Negotiated: s.Negotiated, FailureMedianMs: map[string]float64{}}
+	for k, l := range s.FailureMs {
+		in.FailureMedianMs[k] = l.P50
+	}
+	return in
 }
 
 // phaseP95 converts one k6 scenario's per-tool latency for the tool_isolation verdict.

@@ -107,3 +107,50 @@ services:
       <<: *ts-env
       POOL_SIZE: "2"
     ports: ["127.0.0.1:3008:3000"]
+
+  # 8. rolling deploy caught halfway (version skew): round-robin nginx over two replicas on DIFFERENT builds.
+  #    skew-old = the TS server (stateful 2025-11-25 only); skew-new = the Go server with STATELESS_ONLY=1
+  #    (2026-07-28 only, -32022 for anything older) and NEW_TOOL=1 (lists `new_tool`).
+  #    Own image tags (:skew), so building these never rebuilds the images of the targets above.
+  #    skew (3009): both builds reject what they can't serve with typed errors -> expected: version_skew warns
+  #    skew-hang (3010): the old build never answers what it can't serve -> expected: version_skew fails
+  skew-old:
+    <<: *ts
+    image: mcpload-demo/ts-server:skew
+    build: ./ts-server
+    hostname: skew-old
+    environment:
+      <<: *ts-env
+      SERVER_NAME: "skew-old"
+  skew-hang-old:
+    <<: *ts
+    image: mcpload-demo/ts-server:skew   # built by skew-old
+    hostname: skew-hang-old
+    environment:
+      <<: *ts-env
+      SERVER_NAME: "skew-hang-old"
+      HANG_UNKNOWN: "1"
+  skew-new:
+    <<: *go
+    image: mcpload-demo/go-server:skew
+    build: ./go-server
+    hostname: skew-new
+    environment:
+      PORT: "3000"
+      SERVER_NAME: "skew-new"
+      NEW_TOOL: "1"
+      STATELESS_ONLY: "1"
+  skew:
+    image: nginx:1.29-alpine
+    restart: "no"
+    mem_limit: 64m
+    volumes: ["./nginx/skew.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [skew-old, skew-new]
+    ports: ["127.0.0.1:3009:80"]
+  skew-hang:
+    image: nginx:1.29-alpine
+    restart: "no"
+    mem_limit: 64m
+    volumes: ["./nginx/skew-hang.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [skew-hang-old, skew-new]
+    ports: ["127.0.0.1:3010:80"]

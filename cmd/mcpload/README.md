@@ -97,6 +97,9 @@ Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It look
 ./mcpload run --url http://localhost:3008/mcp --scenario step-load \
   --env STEPS=5,10,20,40 --env STEP_DURATION=20s --min-agents 20 --html steps.html
 
+# Rolling deploy with two builds behind one LB: do mismatched requests fail fast or hang?
+./mcpload run --url http://localhost:3010/mcp --scenario version-skew --env MCP_TIMEOUT=5s --sampler none
+
 # Plain load test, client-side signals only
 ./mcpload run --scenario scenarios/agent-session.js --url http://localhost:3001/mcp --vus 5 --duration 1m
 
@@ -122,9 +125,27 @@ MCPLOAD_KEY=... ./mcpload upload --url https://reports.example.com report.json
 6. Server points are averaged into the same buckets: `t` = bucket start in seconds from run start. Docker fills only `rssBytes`. Prometheus fills `rssBytes`, `heapBytes` (`nodejs_heap_size_used_bytes`, the prom-client default, falling back to `nodejs_heap_used_bytes`), `openFds` and `activeSessions`, with `null` where a metric is missing.
    There are `ceil(durationS / interval)` buckets. A trailing bucket that covers less than half an interval is dropped from every series, client and server alike. Its rps would otherwise show a false drop and skew the fits. The samples in it still count in `summary` and `tools[]`, and the other buckets don't change.
 7. Phases: for `soak`, they come from `SOAK_MIN`, `WARMUP_MIN` and `COOLDOWN_MIN`. Any other scenario uses `warmupEndS = 0` and `loadEndS = cooldownEndS = durationS`.
-8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found`, then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
+8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found`, then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. In a `version-skew` run (or any run that emits the `mcp_skew_*` metrics) it adds `version_skew` (see below). mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
 
 Docker (`MemUsage`, which is the cgroup) and Prometheus (`process_resident_memory_bytes`) report RSS on different scales. Compare slopes only within one sampler.
+
+## Version skew and the version_skew verdict
+
+`--scenario version-skew` runs agent sessions against a load balancer whose replicas run different builds and classifies every failed request as `fast` (a typed error in under `FAIL_FAST_MS`, default 2000), `slow` or `hang` (a timeout, or at least `HANG_MS`, default 10000); see [scenarios/README.md](../../scenarios/README.md#version-skew). mcpload reads the scenario's `mcp_skew_*` metrics and judges:
+
+| | Status |
+|---|---|
+| no request failed | `pass` |
+| requests failed, none hung | `warn`: clients see errors they can handle; the exit code stays 0 |
+| any request hung | `fail` (exit 1). The scenario's own `mcp_skew_failures{kind:hang}` threshold fails too. |
+| the scenario recorded no requests | `skipped` |
+
+The message names the share of failed requests, the counts per kind and reason, the median time to failure, which protocol sessions negotiated with which replica, and how requests spread over the replicas (from the `X-Served-By` response header, or `SERVED_BY_HEADER`):
+
+```text
+  WARN     version_skew       3540 of 7525 requests (47.0%) failed on a replica running a different build; 3540 failed fast with typed errors (good: clients can catch them): 3196 × HTTP 400, 344 × Unsupported protocol version (-32022). ...
+  FAIL     version_skew       90 of 180 requests (50.0%) failed on a replica running a different build; 90 hung for a median 5 s (bad: clients will hang during a rolling deploy): 90 × no answer before the client timeout. ...
+```
 
 ## Step load and the capacity verdict
 
