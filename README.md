@@ -103,11 +103,11 @@ You can reproduce every row below with the bundled demo servers. The messages ar
 |---|---|
 | 🔀 **Sessions lost behind a load balancer**<br>`--scenario lb-check` | `FAIL` 2525 of 6669 requests (37.862%) got 404 session-not-found: requests reached a replica that does not hold the session |
 | 🚦 **Rolling deploys that hang clients**<br>`--scenario version-skew` | `FAIL` 90 of 180 requests (50.0%) failed on a replica running a different build; 90 hung for a median 5 s |
-| 🔁 **Restarts: recovery, lost and duplicated calls**<br>`--chaos-restart`, `--calls-url` | `PASS` the server accepted sessions again after 1.3 s and 10 agents reconnected within 2.0 s. `call_integrity` fails when a tool call ran twice |
+| 🔁 **Restarts: recovery, lost and duplicated calls**<br>`--chaos-restart`, `--calls-url` | `PASS` after the restart, 20 agents reconnected within 1.9 s and errors were under 1% after 1.4 s. `FAIL call_integrity` 6 tool calls ran twice (client retries) |
 | 📈 **Memory and session leaks**<br>`--scenario soak` with a sampler | `FAIL` RSS grew 64.14 MiB/min (R²=1.00) under constant load and did not recover in cool-down |
 | 🧱 **The breaking point**<br>`mcpload capacity` | max sustainable concurrency: 10 agents (budgets broke at 20); estimated ~11 agents |
 | 🐢 **One slow tool starving the others**<br>`--scenario isolation` | `FAIL` `fast` p95 38 ms alone → 936 ms next to `slow` (×24.6): every tool waits behind it |
-| ✋ **Cancelled work that keeps running**<br>`--env CANCEL_RATE=0.3` | the server kept running `slow` for a median 2.1 s after 480 cancels: cancelled work still uses capacity |
+| ✋ **Cancelled work that keeps running**<br>`--env CANCEL_RATE=0.3` | `FAIL` the server kept running `slow` for a median 1.75 s after 44 cancels: cancelled work still uses capacity |
 | 📉 **Regressions against `main`**<br>`mcpload compare` | `search` p95 5.4 ms → 364 ms (+6606%, +359 ms) |
 | 🧾 **Business flows over budget**<br>`--workload flows.yaml` | `FAIL` flow `lookup-orders` p95 2.11 s > 2 s budget |
 
