@@ -50,7 +50,7 @@ xk6-mcpload/            Go module → JS import "k6/x/mcpload"
   client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
-scenarios/              JS library: agent-session, agent-workflow, burst, soak, lb-check, isolation, step-load, version-skew, oauth-refresh
+scenarios/              JS library: agent-session, agent-workflow, burst, soak, long-lived, reconnect-storm, lb-check, isolation, step-load, version-skew, oauth-refresh
 cmd/mcpload/            Go CLI: run → sample → analyse → report.json + report.html
 demo-servers/           docker compose test targets (§7)
 action/                 GitHub Action (composite): build binary, run scenario, gate, upload
@@ -118,6 +118,8 @@ thresholds: {
 - **lb-check:** a session-based flow against more than one replica; checks for `session_not_found` and `header_mismatch`.
 - **version-skew:** agent sessions against a load balancer whose replicas run different builds (a rolling deploy halfway through). Every failed request is classified as a fast typed error or a hang; verdict `version_skew`.
 - **oauth-refresh:** short-lived tokens with many VUs; measures refresh storms and the 401 rate.
+- **long-lived:** one session per agent held for `SESSION_MIN` minutes with think time and pings; sessions that die early (`session_not_found`) and late-vs-early latency within a session (verdict `session_survival`). Soak-style phases, so the leak verdicts apply.
+- **reconnect-storm:** agents that reconnect as soon as their session breaks; with `mcpload run --chaos-restart` the CLI restarts the server container mid-run (`docker restart`) and measures recovery (verdict `recovery`). Calls carry a call id in `params._meta["io.mcpload/callId"]`, so a server that records executions (`--calls-url`) shows calls lost or run twice (verdict `call_integrity`).
 
 ## 6. Soak and leak method (CLI)
 **Samplers** (set with `--sampler`):

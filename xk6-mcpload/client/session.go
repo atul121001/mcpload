@@ -609,11 +609,20 @@ func (s *Session) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes tools/call. MCP-level failures are reported in the
 // result's Err, never as a Go error.
 func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResult {
+	return s.CallToolMeta(ctx, name, args, nil)
+}
+
+// CallToolMeta is CallTool with params._meta set to meta when it is not
+// empty. In stateless mode the protocol's own _meta keys are added to it.
+func (s *Session) CallToolMeta(ctx context.Context, name string, args any, meta map[string]any) ToolResult {
 	params := map[string]any{"name": name}
 	if args != nil {
 		params["arguments"] = args
 	} else {
 		params["arguments"] = map[string]any{}
+	}
+	if len(meta) > 0 {
+		params["_meta"] = meta
 	}
 	r := s.request(ctx, "tools/call", name, params, true)
 	out := ToolResult{Duration: r.stats.Duration, ServedBy: r.servedBy}
@@ -663,7 +672,7 @@ func (s *Session) CallParallel(ctx context.Context, calls []ToolCall) []ToolResu
 		wg.Add(1)
 		go func(i int, c ToolCall) {
 			defer wg.Done()
-			out[i] = s.CallTool(ctx, c.Name, c.Args)
+			out[i] = s.CallToolMeta(ctx, c.Name, c.Args, c.Meta)
 		}(i, c)
 	}
 	wg.Wait()

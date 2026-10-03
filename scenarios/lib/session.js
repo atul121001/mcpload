@@ -63,10 +63,11 @@ function runGroup(s, batch, idx, results, tagDefault) {
   const tags = exec.vu.metrics.tags;
   if (tagDefault) tags.budget = 'default';
   try {
+    const one = batch[idx[0]];
     const rs =
       idx.length === 1
-        ? [s.callTool(batch[idx[0]].name, batch[idx[0]].args)]
-        : s.callParallel(idx.map((i) => ({ name: batch[i].name, args: batch[i].args })));
+        ? [s.callTool(one.name, one.args, one.meta ? { meta: one.meta } : undefined)]
+        : s.callParallel(idx.map((i) => ({ name: batch[i].name, args: batch[i].args, meta: batch[i].meta })));
     for (let j = 0; j < idx.length; j++) results[idx[j]] = rs[j];
   } finally {
     if (tagDefault) delete tags.budget;
@@ -74,7 +75,8 @@ function runGroup(s, batch, idx, results, tagDefault) {
 }
 
 /**
- * Call a batch of [{name, args, ownBudget}] (entries from toolTable()/pick()). Calls to tools without their own
+ * Call a batch of [{name, args, ownBudget, meta?}] (entries from toolTable()/pick(); meta is sent as params._meta).
+ * Calls to tools without their own
  * threshold run as a separate callParallel group with the VU tag budget=default, so the catch-all thresholds
  * mcp_req_duration{budget:default} / mcp_tool_error_rate{budget:default} cover them (and only them).
  * Returns results in input order.

@@ -75,6 +75,20 @@ Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK
 The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcpload-demo/go-server:skew`), so
 `docker compose up -d --build skew skew-hang` never rebuilds the images the other targets run.
 
+### Call tracking and chaos restarts (TS image, off in compose)
+
+`TRACK_CALLS=1` makes the TS server record every `tools/call` that carries a call id in `params._meta["io.mcpload/callId"]` (sent by `scenarios/reconnect-storm.js`). The id is recorded when the tool's handler starts, the point where a non-idempotent tool would act. Records are appended to `CALL_LOG` (default `/tmp/mcpload-calls.log`, inside the container, which survives `docker restart`) and reloaded on start. `GET /calls?prefix=<p>` returns `{"executions": {"<call id>": <times run>}}`, and `/metrics` adds `mcp_tool_executions_total` and `mcp_tool_duplicate_executions_total`. `DEDUPE=atomic` skips a call id that already ran (an idempotency key); `DEDUPE=racy` makes the same check but records the id only after an `await` (`DEDUPE_RACE_MS`, 20), so two concurrent calls with one id both pass it: the non-atomic duplicate check.
+
+None of the compose services set these, and `mcpload run --chaos-restart` restarts a container, so run a private copy for chaos tests rather than a shared target:
+
+```sh
+docker build -t mcpload-chaos/ts-server:local demo-servers/ts-server
+docker run -d --rm --name mcpload-chaos-ts -p 127.0.0.1:3019:3000 -e TRACK_CALLS=1 mcpload-chaos/ts-server:local
+./mcpload run --scenario reconnect-storm --url http://localhost:3019/mcp --vus 10 --duration 60s \
+  --chaos-restart 20s --chaos-container mcpload-chaos-ts --calls-url http://localhost:3019/calls
+docker stop mcpload-chaos-ts
+```
+
 ## curl examples
 
 Every POST needs `Content-Type: application/json` and `Accept: application/json, text/event-stream`.

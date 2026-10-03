@@ -327,6 +327,9 @@ The checks, in plain words:
 | `generator` | The test machine couldn't keep up: it dropped more than 1% of the planned load (a warning) or more than 10% (a fail), or k6 itself went over 90% CPU at its busiest, so the speed numbers may include the test machine's own delay. See [Getting trustworthy results](#getting-trustworthy-results). |
 | `version_skew` | Version-skew runs only: requests that reached a replica on a different build. A warning when they all fail fast with a typed error clients can handle (e.g. `Unsupported protocol version`), a fail when any of them hangs until the client timeout. |
 | `capacity` | Step-load runs only: how many agents at once the server held within your time and error budgets, and what broke at the next step, e.g. "Held budgets up to 50 agents; at 100 agents `slow` p95 1.9 s > 800 ms". Fails if your `--min-agents` target isn't met (or, without a target, if even the first step breaks). Says "inconclusive" instead of blaming the server when the test machine was maxed out. |
+| `session_survival` | Long-lived runs only: fails when sessions die before their planned end, e.g. "18 of 50 sessions died after a median 5m02s with session_not_found"; warns when calls late in a session are much slower than early ones. |
+| `recovery` | Runs with `--chaos-restart`: how long the server took to serve normally again after mcpload restarted its container, e.g. "20 agents reconnected within 2.0 s; errors returned to under 1% 2.0 s after the restart (budget 30 s)". Fails over `RECOVERY_BUDGET`. |
+| `call_integrity` | Runs whose calls carry call ids, with `--calls-url`: fails when the server ran a call twice (a client retry or a racy duplicate check), warns when calls failed on the client but ran on the server. |
 
 "Soak tests only" means the check is skipped on short runs without a cool-down, or with less than 2 minutes of steady load.
 
@@ -467,6 +470,8 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | `isolation.js` | Whether fast tools wait behind slow ones (a shared connection pool, worker pool or blocked event loop). Name your slow tools with `--env SLOW_TOOLS=...`. |
 | `version-skew.js` | A rolling deploy caught halfway: replicas on two builds behind one load balancer. Reports whether mismatched requests fail fast with a typed error or hang until the timeout. Add `--env TOOLS_CACHE_TTL=5m` to reuse an earlier tool list. |
 | `step-load.js` | More and more agents at once, in steps (10, 25, 50, 100, 200 by default), to find the breaking point. Set the steps with `--env STEPS=...` and a target with `--min-agents`. |
+| `long-lived.js` | Agents that each keep one session open for a long time (10 minutes by default), calling tools now and then and pinging when quiet, to catch servers that drop live sessions or slow down as a session ages. |
+| `reconnect-storm.js` | Agents that reconnect as soon as their session breaks. With `--chaos-restart` mcpload restarts the server mid-run and measures how fast it recovers, and with `--calls-url` whether any call was lost or ran twice. Only on servers you own. |
 | `oauth-refresh.js` | Many agents sharing short-lived login tokens. |
 
 Settings for each: [scenarios/README.md](scenarios/README.md).

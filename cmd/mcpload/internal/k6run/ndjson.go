@@ -151,7 +151,9 @@ type Aggregator struct {
 	wf            workflowAgg
 	sk            skewAgg
 	// steps holds per-step aggregates keyed by the StepTag value (step-load).
-	steps       map[string]*stepAgg
+	steps map[string]*stepAgg
+	// res holds what the long-lived and reconnect-storm verdicts need.
+	res         resilienceAgg
 	first, last time.Time
 	points      int
 }
@@ -239,6 +241,7 @@ func (a *Aggregator) add(l *line) error {
 			s.values = append(s.values, v)
 		}
 	}
+	a.addResilience(l.Metric, t, v, tags)
 	if st := tags[StepTag]; st != "" {
 		a.addStep(st, l.Metric, t, v, tags)
 	}
