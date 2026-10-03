@@ -12,6 +12,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 |---|---|---|
 | `agent-session.js` | Each VU loops through agent sessions: connect, `tools/list`, 1–5 rounds of `callParallel` with think time, then close. | 10 VUs for 2m |
 | `agent-workflow.js` | Each VU loops through a multi-step agent plan (`WORKFLOW`): parallel fan-out, a think pause, then calls whose arguments come from earlier results (optionally one call per result), up to a final call. Measures each step's wall time and the end-to-end workflow time. See [Agent workflows](#agent-workflows). | 10 VUs for 2m |
+| `workload.js` | A workload profile (`mcpload run --workload <file.yaml>`): each VU iteration is one agent session that picks a business flow by weight, takes a row from each test data pool and runs the flow's steps. Measures every flow's end-to-end time, completion rate and step times against the flow's own budgets. See [Workload profiles](#workload-profiles). | the profile's `agents` (10) for its `duration` (2m) |
 | `burst.js` | Two phases. `init_flood` runs bare connect/close at 100/s to test the initialize storm. `agents` then ramps VUs from 0 to 200 in 10s. | about 1.5 min |
 | `soak.js` | Agent sessions at a constant arrival rate (`RATE` per `TIME_UNIT`; fractional rates work). A warm-up ramp comes first and a zero-load cool-down comes last. | 3m warm-up + 30m load + 5m cool-down |
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
@@ -111,6 +112,7 @@ Each scenario adds its own thresholds on top:
 - `isolation` adds `checks{check:slow tools in mix}: rate>0.999`, so a `SLOW_TOOLS` name that isn't in the tool mix fails the run instead of comparing two identical phases. `SLOW_TOOLS` (comma-separated, default `slow`) names your slow tools; `DURATION` is per phase.
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
 - `agent-workflow` adds per-tool thresholds for every tool its plan calls, plus `mcp_workflow_duration: p(95)<WORKFLOW_P95_MS` (and `p(99)<WORKFLOW_P99_MS` when set), `mcp_workflow_complete: rate>=WORKFLOW_MIN_COMPLETE`, and `mcp_workflow_step_duration{step:<name>}: p(95)<STEP_P95_MS` for each step (`STEP_BUDGETS` overrides per step). See [Agent workflows](#agent-workflows).
+- `workload` adds per-tool thresholds for every tool the profile calls, plus, per flow, `mcp_workload_flow_duration{flow:<name>}: p(95)<…` (and `p(99)` when budgeted), `mcp_workload_flow_complete{flow:<name>}: rate>=…`, and `mcp_workload_step_duration{flow:<name>,flow_step:<step>}` for each step with a budget. The numbers come from the profile's `budgets`. See [Workload profiles](#workload-profiles).
 - `version-skew` replaces the default set with `mcp_skew_failures{kind:hang}: count<1` (any hang fails the run) and `mcp_skew_ok: rate>0` (fails a run where no request succeeded at all, e.g. a wrong URL). It has no latency or error budgets: failures are expected under skew, and mcpload judges how they fail (verdict `version_skew`, a warning when all failed fast).
 - `step-load` sets **no** thresholds. Its budgets are judged per step by mcpload (see below), because a breach at the top step is what a step-load run is looking for, not a failed run.
 - `long-lived` adds `mcp_session_survived: rate>=SURVIVAL_MIN` (default 1: any session that dies early fails the run).
@@ -171,6 +173,69 @@ mcpload writes them to `report.json` as `workflow` (per-step and end-to-end p50/
 | `STEP_P95_MS`, `STEP_P99_MS` | `1000`, unset | budget for every step's `mcp_workflow_step_duration{step:<name>}` |
 | `STEP_BUDGETS` | `{}` | per-step overrides, e.g. `{"inspect":{"p95":300,"p99":500}}` |
 | `WORKFLOW_MIN_COMPLETE` | `0.95` | minimum `mcp_workflow_complete` rate |
+
+## Workload profiles
+
+`agent-workflow` runs one plan over and over. Real traffic is a mix: most agents look something up, fewer change something. A workload profile describes that mix in one YAML (or JSON) file: named flows with weights, each a list of steps in the agent-workflow format, test data to fill in, and a budget per flow.
+
+```sh
+./mcpload run --url http://localhost:3001/mcp --workload examples/workloads/customer-support.yaml   # PASS
+./mcpload run --url http://localhost:3008/mcp --workload examples/workloads/customer-support.yaml   # ts-pooled: FAIL
+```
+
+`--workload` picks `scenarios/workload.js` (unless you pass `--scenario`). mcpload checks the whole file before k6 starts and stops with the flow, step and field at fault, e.g. ``flow `lookup-orders` step 2 (get_orders, tool search) args.query: 'custmer' is not the `as` name of a call in an earlier step (known: customer)``. It reads the CSV files (relative to the profile) and hands k6 a normalized JSON copy in `WORKLOAD_FILE` (format at the top of `lib/workload.js`). `--env WORKFLOW=...` and the `agent-workflow` scenario are unchanged.
+
+```yaml
+workload:
+  name: customer-support
+  agents: 20            # VUs (--vus wins; default 10)
+  duration: 1m          # (--duration wins; default 2m)
+  thinkMs: 300          # mean pause between steps (a flow or step can set its own; default THINK_MS)
+  data:
+    customers: { file: customers.csv, pick: random }   # or pick: sequential; or values: [...]
+  budgets: { p95: 2s, completion: 99% }               # defaults for every flow
+  flows:
+    - name: lookup-orders
+      weight: 60
+      steps:
+        - name: search_customer
+          tool: search
+          args: { query: "customer {{data.customers.email}}", limit: 1 }
+          as: customer
+        - name: get_orders
+          tool: search
+          args: { query: { $from: customer, path: results.0.title }, limit: 3 }
+          as: orders
+        - name: get_order_details
+          parallel:                                 # calls sent together (callParallel)
+            - { tool: search, forEach: { $from: orders, path: results, max: 3 }, args: { query: { $from: $item, path: title } } }
+            - big
+    - name: create-ticket
+      weight: 10
+      budgets: { p95: 3s, completion: 95%, steps: { create_ticket: { p95: 1s } } }
+      steps:
+        - { name: search_customer, tool: search, args: { query: "customer {{data.customers.email}}", limit: 1 } }
+        - { name: create_ticket, tool: slow, args: { ms: 700 } }
+```
+
+(Abridged from `examples/workloads/customer-support.yaml`, which also has a `check-subscription` flow and a `notify_customer` step.)
+
+- **Flow**: `{name, weight, thinkMs?, budgets?, steps}`. Each agent session (one VU iteration) picks a flow with probability `weight / sum of weights`, so 60/30/10 gives 60% of sessions to the first flow.
+- **Step**: a bare tool name (called with `TOOL_ARGS`, the demo args or schema placeholders, like other scenarios), a single call `{name?, thinkMs?, tool, args?, as?, repeat?, forEach?}`, or a parallel batch `{name?, thinkMs?, parallel: [call, ...]}` where each call is a tool name or `{tool, args?, as?, repeat?, forEach?}`. Calls, `as`, `$from`/`path`/`match`, `forEach` and `repeat` work exactly as in [Agent workflows](#agent-workflows). A step is named after its tool unless it has a `name` (`step<N>` for a parallel batch; repeats get `-2`, `-3`).
+- **Data**: `data.<pool>` is `{file: x.csv}` (header row = column names) or `{values: [...]}` (plain values or mappings), with `pick: random` (default) or `sequential` (rows in order across all agents). Each session takes one row per pool. In args, `"{{data.customers.email}}"` (or `"{{data.regions}}"` for plain values) alone in a string becomes the value itself; inside a longer string it is inserted as text. CSV values are text.
+- **Budgets**: `p95`, `p99` (end to end, think time included; `800ms`, `3s` or a number of ms), `completion` (`0.99` or `99%`), `stepP95`/`stepP99` (every step) and, in a flow, `steps: {<step>: {p95, p99}}`. Top-level `budgets` are defaults; a flow's own win. Defaults: p95 5 s, completion 95%, no step budgets. Per-tool budgets still come from `P95_MS`/`P99_MS`/`ERR_RATE`/`TOOL_BUDGETS`.
+
+Unlike agent-workflow, **a failed call ends the flow**: a transport error or `isError: true` means the business task did not get done. A flow is complete when every step ran and every call succeeded. A server that doesn't list a flow's tools gets a failed `workload tools listed` check, as in agent-workflow.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `mcp_workload_flow_duration{flow}` | Trend (ms) | one complete flow, from `connect()` to the end of its last step, think pauses included |
+| `mcp_workload_flow_complete{flow}` | Rate | flows that completed |
+| `mcp_workload_step_duration{flow,flow_step}` | Trend (ms) | wall time of one step's batch. The tag is `flow_step`, not `step`, because `step-load` tags every request with `step`. |
+
+Every request made during a session (connect, `tools/list`, each `tools/call`) also carries the `flow` tag, so `mcp_req_duration{flow:create-ticket,tool:slow}` works in your own thresholds. mcpload prints a per-flow table (weight, runs, completed %, p50/p95/p99 end to end, slowest step), writes `report.json` `workload` and adds the `workload` verdict, which names each flow that broke a budget in plain words: ``flow `create-ticket` p95 4.1 s > 3 s budget; 92% completed (< 99%)``. The HTML report has a "Workload: <name>" table with over-budget cells highlighted.
+
+`examples/workloads/` has the demo profile above (its comments map the business names onto the demo tools), its `customers.csv`, and `template.yaml`, a commented starting point for your own server. Other scenarios can run the same sessions with `import { runWorkloadSession } from './workload.js'` (it needs `WORKLOAD_FILE` too).
 
 ## Version skew
 
@@ -314,11 +379,12 @@ The id is `<CALL_ID_PREFIX>-<vu>-<n>`; mcpload sets a fresh prefix per run. A se
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules, version-skew classification, break detection, reconnect backoff, call ids) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, workload flows and templates, step schedules, version-skew classification, break detection, reconnect backoff, call ids) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
 node scenarios/lib/workflow.test.mjs
+node scenarios/lib/workload.test.mjs
 node scenarios/lib/skew.test.mjs
 node scenarios/lib/resilience.test.mjs
 ```

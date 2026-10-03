@@ -46,6 +46,7 @@ const (
 	VerdictRecovery        = "recovery"
 	VerdictCallIntegrity   = "call_integrity"
 	VerdictCancellation    = "cancellation"
+	VerdictWorkload        = "workload"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
@@ -53,7 +54,7 @@ var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
 	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew, VerdictSessionSurvival,
-	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation,
+	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation, VerdictWorkload,
 }
 
 // Verdict statuses.
@@ -78,6 +79,8 @@ type Report struct {
 	PayloadsIncluded bool        `json:"payloadsIncluded"`
 	// Workflow summarises multi-step agent workflows (scenario agent-workflow); nil otherwise.
 	Workflow *Workflow `json:"workflow,omitempty"`
+	// Workload summarises a workload profile's flows (scenario workload); nil otherwise.
+	Workload *Workload `json:"workload,omitempty"`
 	// Capacity is the per-step result of a step-load run (optional).
 	Capacity *Capacity `json:"capacity,omitempty"`
 	// Sessions summarises long-lived sessions (scenario long-lived); nil otherwise.
@@ -192,6 +195,42 @@ type Workflow struct {
 type WorkflowStep struct {
 	Name string `json:"name"`
 	Latency
+}
+
+// Workload is report.workload: a workload profile's flows (scenario
+// workload, mcpload run --workload), in the profile's order.
+type Workload struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Flows       []WorkloadFlow `json:"flows"`
+}
+
+// WorkloadFlow is one weighted flow. Runs flows started, Completed of them
+// ran every step with every call succeeding; DurationMs covers complete
+// flows (connect to the end of the last step, think time included).
+type WorkloadFlow struct {
+	Name           string         `json:"name"`
+	Weight         float64        `json:"weight"`
+	Runs           int64          `json:"runs"`
+	Completed      int64          `json:"completed"`
+	CompletionRate float64        `json:"completionRate"`
+	DurationMs     Latency        `json:"durationMs"`
+	Budget         *Budget        `json:"budget,omitempty"`
+	Steps          []WorkloadStep `json:"steps"`
+}
+
+// WorkloadStep is the latency of one flow step (its parallel batch).
+type WorkloadStep struct {
+	Name string `json:"name"`
+	Latency
+	Budget *Budget `json:"budget,omitempty"`
+}
+
+// Budget is the latency (ms) and completion budget a flow or step was run with.
+type Budget struct {
+	P95Ms             *float64 `json:"p95Ms,omitempty"`
+	P99Ms             *float64 `json:"p99Ms,omitempty"`
+	MinCompletionRate *float64 `json:"minCompletionRate,omitempty"`
 }
 
 // Capacity is the outcome of a step-load run: one entry per concurrency step
@@ -480,6 +519,16 @@ func (r *Report) Normalize() {
 	}
 	if r.Workflow != nil && r.Workflow.Steps == nil {
 		r.Workflow.Steps = []WorkflowStep{}
+	}
+	if r.Workload != nil {
+		if r.Workload.Flows == nil {
+			r.Workload.Flows = []WorkloadFlow{}
+		}
+		for i := range r.Workload.Flows {
+			if r.Workload.Flows[i].Steps == nil {
+				r.Workload.Flows[i].Steps = []WorkloadStep{}
+			}
+		}
 	}
 	s := &r.Series
 	if s.T == nil {
@@ -778,6 +827,18 @@ func (r *Report) Check() error {
 		}
 	}
 
+	latency := func(path string, l Latency) {
+		if l.Count < 0 {
+			add("%s.count must be >= 0", path)
+		}
+		nonNeg(path+".p50", l.P50)
+		nonNeg(path+".p95", l.P95)
+		nonNeg(path+".p99", l.P99)
+		nonNeg(path+".max", l.Max)
+		if !(l.P50 <= l.P95 && l.P95 <= l.P99 && l.P99 <= l.Max) {
+			add("%s percentiles not monotonic (p50<=p95<=p99<=max)", path)
+		}
+	}
 	if w := r.Workflow; w != nil {
 		if w.Runs < 0 || w.Completed < 0 {
 			add("workflow.runs and workflow.completed must be >= 0")
@@ -786,18 +847,6 @@ func (r *Report) Check() error {
 			add("workflow.completed > workflow.runs")
 		}
 		rate("workflow.completionRate", w.CompletionRate)
-		latency := func(path string, l Latency) {
-			if l.Count < 0 {
-				add("%s.count must be >= 0", path)
-			}
-			nonNeg(path+".p50", l.P50)
-			nonNeg(path+".p95", l.P95)
-			nonNeg(path+".p99", l.P99)
-			nonNeg(path+".max", l.Max)
-			if !(l.P50 <= l.P95 && l.P95 <= l.P99 && l.P99 <= l.Max) {
-				add("%s percentiles not monotonic (p50<=p95<=p99<=max)", path)
-			}
-		}
 		latency("workflow.durationMs", w.DurationMs)
 		if w.Steps == nil {
 			add("workflow.steps is required")
@@ -810,6 +859,60 @@ func (r *Report) Check() error {
 			}
 			steps[st.Name] = true
 			latency(fmt.Sprintf("workflow.steps[%s]", st.Name), st.Latency)
+		}
+	}
+	if w := r.Workload; w != nil {
+		nonEmpty("workload.name", w.Name)
+		budget := func(path string, b *Budget) {
+			if b == nil {
+				return
+			}
+			for k, v := range map[string]*float64{"p95Ms": b.P95Ms, "p99Ms": b.P99Ms} {
+				if v != nil && !(*v > 0 && finite(*v)) {
+					add("%s.%s must be > 0 (got %v)", path, k, *v)
+				}
+			}
+			if v := b.MinCompletionRate; v != nil && !(*v > 0 && *v <= 1) {
+				add("%s.minCompletionRate must be in (0,1] (got %v)", path, *v)
+			}
+		}
+		if w.Flows == nil {
+			add("workload.flows is required")
+		}
+		flows := map[string]bool{}
+		for _, f := range w.Flows {
+			nonEmpty("workload.flows[].name", f.Name)
+			if flows[f.Name] {
+				add("duplicate workload flow '%s'", f.Name)
+			}
+			flows[f.Name] = true
+			p := fmt.Sprintf("workload.flows[%s]", f.Name)
+			if !(f.Weight > 0 && finite(f.Weight)) {
+				add("%s.weight must be > 0 (got %v)", p, f.Weight)
+			}
+			if f.Runs < 0 || f.Completed < 0 {
+				add("%s.runs and completed must be >= 0", p)
+			}
+			if f.Completed > f.Runs {
+				add("%s.completed > runs", p)
+			}
+			rate(p+".completionRate", f.CompletionRate)
+			latency(p+".durationMs", f.DurationMs)
+			budget(p+".budget", f.Budget)
+			if f.Steps == nil {
+				add("%s.steps is required", p)
+			}
+			steps := map[string]bool{}
+			for _, st := range f.Steps {
+				nonEmpty(p+".steps[].name", st.Name)
+				if steps[st.Name] {
+					add("duplicate step '%s' in %s", st.Name, p)
+				}
+				steps[st.Name] = true
+				sp := fmt.Sprintf("%s.steps[%s]", p, st.Name)
+				latency(sp, st.Latency)
+				budget(sp+".budget", st.Budget)
+			}
 		}
 	}
 

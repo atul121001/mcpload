@@ -51,18 +51,34 @@ export function semanticErrors(r) {
     if (t.errors > t.reqs) errs.push(`tools[${t.name}].errors > reqs`);
     if (!(t.p50 <= t.p95 && t.p95 <= t.p99 && t.p99 <= t.max)) errs.push(`tools[${t.name}] percentiles not monotonic (p50<=p95<=p99<=max)`);
   }
+  const mono = (path, l) => {
+    if (!(l.p50 <= l.p95 && l.p95 <= l.p99 && l.p99 <= l.max)) errs.push(`${path} percentiles not monotonic (p50<=p95<=p99<=max)`);
+  };
   const w = r.workflow;
   if (w) {
     if (w.completed > w.runs) errs.push('workflow.completed > workflow.runs');
-    const mono = (path, l) => {
-      if (!(l.p50 <= l.p95 && l.p95 <= l.p99 && l.p99 <= l.max)) errs.push(`${path} percentiles not monotonic (p50<=p95<=p99<=max)`);
-    };
     mono('workflow.durationMs', w.durationMs);
     const steps = new Set();
     for (const st of w.steps) {
       if (steps.has(st.name)) errs.push(`duplicate workflow step '${st.name}'`);
       steps.add(st.name);
       mono(`workflow.steps[${st.name}]`, st);
+    }
+  }
+  if (r.workload) {
+    const flows = new Set();
+    for (const f of r.workload.flows) {
+      const p = `workload.flows[${f.name}]`;
+      if (flows.has(f.name)) errs.push(`duplicate workload flow '${f.name}'`);
+      flows.add(f.name);
+      if (f.completed > f.runs) errs.push(`${p}.completed > runs`);
+      mono(`${p}.durationMs`, f.durationMs);
+      const steps = new Set();
+      for (const st of f.steps) {
+        if (steps.has(st.name)) errs.push(`duplicate step '${st.name}' in ${p}`);
+        steps.add(st.name);
+        mono(`${p}.steps[${st.name}]`, st);
+      }
     }
   }
   const c = r.capacity;
