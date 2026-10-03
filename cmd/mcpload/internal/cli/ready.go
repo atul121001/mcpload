@@ -115,10 +115,10 @@ func waitReady(ctx context.Context, p *readyProbe, w readyWait, logf func(string
 		var nr *errNotReady
 		switch {
 		case err == nil:
-			logf("%s ready after %.1fs", p.URL, time.Since(start).Seconds())
+			logf("%s ready after %.1fs", redactURL(p.URL), time.Since(start).Seconds())
 			return nil
 		case ctx.Err() != nil:
-			return fmt.Errorf("interrupted while waiting for %s to become ready", p.URL)
+			return fmt.Errorf("interrupted while waiting for %s to become ready", redactURL(p.URL))
 		case !errors.As(err, &nr):
 			return err
 		}
@@ -129,17 +129,17 @@ func waitReady(ctx context.Context, p *readyProbe, w readyWait, logf func(string
 		}
 		now := time.Now()
 		if !now.Before(deadline) {
-			return fmt.Errorf("%s not ready after %s (last: %s)", p.URL, w.Max, last)
+			return fmt.Errorf("%s not ready after %s (last: %s)", redactURL(p.URL), w.Max, last)
 		}
 		if now.Sub(lastLog) >= w.LogEvery {
-			logf("waiting for %s to become ready (%s, last: %s)", p.URL, now.Sub(start).Round(time.Second), last)
+			logf("waiting for %s to become ready (%s, last: %s)", redactURL(p.URL), now.Sub(start).Round(time.Second), last)
 			lastLog = now
 		}
 		t := time.NewTimer(min(delay, deadline.Sub(now)))
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return fmt.Errorf("interrupted while waiting for %s to become ready", p.URL)
+			return fmt.Errorf("interrupted while waiting for %s to become ready", redactURL(p.URL))
 		case <-t.C:
 		}
 		delay = min(delay*2, w.MaxDelay)
@@ -265,7 +265,7 @@ func (p *readyProbe) post(ctx context.Context, version, method string, stateless
 			// up; the test fetches the OAuth token itself.
 			return r
 		}
-		r.err = fmt.Errorf("%s answered HTTP %d to the readiness probe: the server rejected the credentials (check MCP_TOKEN / MCP_HEADERS); not waiting any longer", p.URL, resp.StatusCode)
+		r.err = fmt.Errorf("%s answered HTTP %d to the readiness probe: the server rejected the credentials (check MCP_TOKEN / MCP_HEADERS); not waiting any longer", redactURL(p.URL), resp.StatusCode)
 		r.final = true
 		return r
 	}

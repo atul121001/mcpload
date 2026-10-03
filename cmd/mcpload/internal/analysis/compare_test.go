@@ -65,6 +65,8 @@ func TestCompareToolRules(t *testing.T) {
 		{"too few calls", tool("rare", 30, 0, 100), tool("rare", 30, 0, 900), report.DeltaFewCalls, nil},
 		{"errors 0/1000 -> 10/1000 (+1 pt, z 3.2)", tool("e", 1000, 0, 50), tool("e", 1000, 10, 50), report.DeltaRegressed, []string{"errorRate"}},
 		{"errors 0/60 -> 1/60 (+1.7 pts, z 1.0: chance)", tool("e", 60, 0, 50), tool("e", 60, 1, 50), report.DeltaOK, nil},
+		// Seen on CI: the demo's 10%-flaky tool between two runs of the same commit.
+		{"errors 33/417 -> 52/432 (+4.1 pts, z 2.2: chance)", tool("flaky", 417, 33, 50), tool("flaky", 432, 52, 50), report.DeltaOK, nil},
 		{"errors 1.0% -> 1.4% on 10k calls (under the 0.5 pt floor)", tool("e", 10000, 100, 50), tool("e", 10000, 140, 50), report.DeltaOK, nil},
 		{"errors 10% -> 11% (+1 pt but only +10%)", tool("e", 5000, 500, 50), tool("e", 5000, 550, 50), report.DeltaOK, nil},
 		{"errors 2% -> 4% on 5k calls", tool("e", 5000, 100, 50), tool("e", 5000, 200, 50), report.DeltaRegressed, []string{"errorRate"}},

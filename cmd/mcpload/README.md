@@ -383,7 +383,7 @@ A busy CI runner easily makes a 5 ms call take 8 ms, so a change counts as a reg
 | | Regression when | Flags (defaults) |
 |---|---|---|
 | tool p95 / p99, connect p95 | rose by more than the relative limit **and** by more than the absolute floor | `--max-p95-increase 20%`, `--max-p99-increase 30%`, `--min-delta-ms 25` |
-| tool and overall error rate | rose by more than the floor in percentage points, by more than the relative limit, **and** a one-sided two-proportion z-test gives p < 0.05 (z ≥ 1.645) | `--min-error-delta 0.5`, `--max-error-increase 50%` |
+| tool and overall error rate | rose by more than the floor in percentage points, by more than the relative limit, **and** a one-sided two-proportion z-test gives p < 0.001 (z ≥ 3.09) | `--min-error-delta 0.5`, `--max-error-increase 50%` |
 | any tool rule | only judged when both runs called the tool at least this often (latency: successful calls); otherwise listed as "fewer than N, not judged" | `--min-calls 50` |
 | tools in only one report | never: listed as added or removed | |
 | memory growth | needs both runs to have 2+ min of load after the first 60 s (otherwise shown, not judged). RSS growth over that window (lower-envelope fit, as `memory_leak`) more than 5 MiB above the baseline's with R² ≥ 0.7, or `memory_leak` went from pass/warn to fail | |
@@ -415,7 +415,7 @@ run
   connect p95       11 ms     24 ms     +14 ms   +128%  ·
   memory growth   1.1 MiB  10.5 MiB   +9.4 MiB   +829%
     (not judged: needs 2+ min of load after the first 60 s)
-rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.05; at least 50 calls per tool. ⚠ regression, ✓ improvement, · within noise
+rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.001; at least 50 calls per tool. ⚠ regression, ✓ improvement, · within noise
 Performance regression detected vs baseline run 1c961071:
   - `big` p95 9.1 ms → 426 ms (+4567%, +417 ms)
   ...

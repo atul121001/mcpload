@@ -22,4 +22,4 @@ Baseline `4a1b2c3 (main)` · soak · 2025-06-18 · started 2026-09-29T13:00:00Z
 | leak slope | 0.03 MiB/min | 0.03 MiB/min | 0 MiB/min | · |
 | retained after cool-down | -5.2 MiB | -5.2 MiB | 0 MiB | · |
 
-<sub>Rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.05; at least 50 calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>
+<sub>Rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.001; at least 50 calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>

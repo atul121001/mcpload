@@ -12,7 +12,7 @@ package analysis
 //   - Error rate (per tool and overall): regressed when the rate rises by more
 //     than MinErrorDelta (absolute, 0.5 points by default) AND by more than
 //     MaxErrorIncrease of the baseline rate AND a one-sided two-proportion
-//     z-test says the rise is unlikely to be chance (z >= 1.645, p < 0.05).
+//     z-test says the rise is unlikely to be chance (z >= 3.09, p < 0.001).
 //     The test is what keeps 0/60 -> 1/60 (+1.7 points) from failing a build.
 //   - Per tool, nothing is judged unless both runs made at least MinCalls
 //     calls of it (latency: MinCalls successful calls); the tool is listed as
@@ -66,8 +66,12 @@ func (cc CompareConfig) Rules() report.CompareRules {
 }
 
 const (
-	// errorZ is the one-sided 95% critical value of the two-proportion z-test.
-	errorZ = 1.645
+	// errorZ is the one-sided 99.9% critical value of the two-proportion z-test.
+	// A comparison runs this test for every tool plus the overall rate, so at
+	// p < 0.05 a run of ~7 independent rates raises a false alarm about 30% of
+	// the time (a 10%-flaky tool drifting from 7.9% to 12.0% did, on CI). At
+	// p < 0.001 that is under 1%, and 0/1000 -> 10/1000 still regresses.
+	errorZ = 3.09
 	// durationMismatch: load windows whose ratio exceeds this get a warning. Without
 	// phases the window is the whole run, including k6's graceful stop (up to 30 s
 	// more when calls are slow), so the margin is wide.

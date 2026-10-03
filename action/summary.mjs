@@ -154,7 +154,7 @@ export function renderComparison(c) {
     lines.push('');
   }
   const n = (v) => +(v * 100).toFixed(6);
-  lines.push(`<sub>Rules: p95 +${n(ru.maxP95Increase)}% / p99 +${n(ru.maxP99Increase)}% and +${ru.minDeltaMs} ms; error rate +${n(ru.minErrorDelta)} pts, +${n(ru.maxErrorIncrease)}% and p < 0.05; at least ${ru.minCalls} calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>`, '');
+  lines.push(`<sub>Rules: p95 +${n(ru.maxP95Increase)}% / p99 +${n(ru.maxP99Increase)}% and +${ru.minDeltaMs} ms; error rate +${n(ru.minErrorDelta)} pts, +${n(ru.maxErrorIncrease)}% and p < 0.001; at least ${ru.minCalls} calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>`, '');
   return lines;
 }
 

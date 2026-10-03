@@ -14,7 +14,8 @@
 // On first use the payloads are extracted to the user cache folder
 // (os.UserCacheDir()/mcpload, or $MCPLOAD_CACHE_DIR) under a folder named
 // after their SHA-256, written atomically (temp file or folder + rename) and
-// reused by later runs after checking the hash.
+// reused by later runs after checking the content (the engine's SHA-256, each
+// scenario file byte for byte); a copy that doesn't match is replaced.
 package engine
 
 import (
@@ -179,7 +180,7 @@ func extractTree(fsys fs.FS, root, sub string) (string, error) {
 		return "", fmt.Errorf("engine: scenarios: %w", err)
 	}
 	dst := filepath.Join(root, hex.EncodeToString(sum[:8]))
-	if isFile(filepath.Join(dst, completeMarker)) {
+	if treeMatches(fsys, files, dst, sub) {
 		return dst, nil
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -206,17 +207,39 @@ func extractTree(fsys fs.FS, root, sub string) (string, error) {
 	if err := os.WriteFile(filepath.Join(tmp, completeMarker), nil, 0o644); err != nil {
 		return "", fmt.Errorf("engine: %w", err)
 	}
-	if isFile(filepath.Join(dst, completeMarker)) {
+	if treeMatches(fsys, files, dst, sub) {
 		return dst, nil // extracted by another mcpload meanwhile
 	}
-	_ = os.RemoveAll(dst) // a partial tree from an interrupted older version
+	_ = os.RemoveAll(dst) // a partial or modified tree
 	if err := os.Rename(tmp, dst); err != nil {
-		if isFile(filepath.Join(dst, completeMarker)) {
+		if treeMatches(fsys, files, dst, sub) {
 			return dst, nil
 		}
 		return "", fmt.Errorf("engine: %w", err)
 	}
 	return dst, nil
+}
+
+// treeMatches reports whether dst holds a complete extraction of fsys: the
+// completion marker, and every file of fsys under dst/sub with the same
+// content. The engine runs these scripts, so a copy changed after extraction
+// (by hand, or by anyone else who can write to the cache folder) is not
+// reused; extractTree replaces it.
+func treeMatches(fsys fs.FS, files []string, dst, sub string) bool {
+	if !isFile(filepath.Join(dst, completeMarker)) {
+		return false
+	}
+	for _, name := range files {
+		want, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return false
+		}
+		got, err := os.ReadFile(filepath.Join(dst, sub, filepath.FromSlash(name)))
+		if err != nil || !bytes.Equal(got, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // hashTree lists the regular files of fsys (sorted) and hashes their names
