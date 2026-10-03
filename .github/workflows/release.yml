@@ -59,6 +59,7 @@ jobs:
               go build -tags embedengine -trimpath -ldflags "-s -w -X main.version=$TAG" -o "../../$out/mcpload$ext" .)
             cp -r scenarios "$out/"
             rm -f "$out/scenarios/package.json"
+            mkdir -p "$out/examples" && cp -r examples/workloads "$out/examples/"
             cp LICENSE README.md "$out/"
             if [ "$os" = windows ]; then
               (cd build && zip -qr "../dist/$name.zip" "$name")

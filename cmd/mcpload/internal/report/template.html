@@ -186,7 +186,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   // k6 metric name without the tag selector, e.g. "mcp_req_duration{tool:x}" -> "mcp_req_duration".
   function metricBase(m) { return String(m).split('{')[0]; }
   // Rate metrics (observed value is a 0..1 fraction). A Counter's "rate" is per second, a Trend's values are ms.
-  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || b === 'mcp_workflow_complete' || /_rate$|_failed$/.test(b); }
+  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || b === 'mcp_workflow_complete' || b === 'mcp_workload_flow_complete' || /_rate$|_failed$/.test(b); }
   function isDurationMetric(m) { return /duration|ttfb|_ms$/.test(metricBase(m)); }
 
   // ---------- threshold lookup: tool -> {p95:bool, p99:bool, errorRate:bool} (true = breached) ----------
@@ -419,6 +419,36 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     h.push(wRow('end to end', 'mcp_workflow_duration', W.durationMs, 'total'));
     h.push('</tbody></table><div class="muted small" style="margin-top:8px">' + num(W.completed) + ' of ' + num(W.runs) + ' workflows completed (' + pct(W.completionRate, 1) + '). ' +
       'A step is one parallel batch of <code>tools/call</code>, so its time is its slowest call. End to end runs from <code>connect()</code> to the end of the last step of a complete workflow, think pauses included.</div></section>');
+  }
+
+  // ---------- workload profile (scenario workload) ----------
+  var WL = R.workload;
+  if (WL && WL.flows && WL.flows.length) {
+    var wlTotal = WL.flows.reduce(function (a, f) { return a + f.weight; }, 0);
+    // a cell over its budget is highlighted, with the budget as its title
+    var over = function (text, v, budget, n) {
+      if (!n) return '<td>–</td>';
+      if (budget == null) return '<td>' + text + '</td>';
+      var bad = v > budget;
+      return '<td' + (bad ? ' class="breach"' : '') + ' title="budget ' + ms(budget) + (bad ? ' breached' : ' met') + '">' + text + '</td>';
+    };
+    h.push('<h2>Workload: ' + esc(WL.name) + '</h2><section class="card tablewrap">' +
+      (WL.description ? '<div class="muted small" style="margin-bottom:8px">' + esc(WL.description) + '</div>' : '') +
+      '<table><thead><tr><th>Flow</th><th>Weight</th><th>Runs</th><th>Completed</th><th>p50</th><th>p95</th><th>p99</th><th>Slowest step (p95)</th></tr></thead><tbody>');
+    WL.flows.forEach(function (f) {
+      var b = f.budget || {};
+      var d = f.durationMs;
+      var worst = null;
+      (f.steps || []).forEach(function (st) { if (st.count && (!worst || st.p95 > worst.p95)) worst = st; });
+      var done = f.runs ? pct(f.completionRate, 1) : '–';
+      var doneBad = f.runs && b.minCompletionRate != null && f.completionRate < b.minCompletionRate;
+      h.push('<tr><td class="mono">' + esc(f.name) + '</td><td>' + pct(wlTotal ? f.weight / wlTotal : 0, 0) + '</td><td>' + num(f.runs) + '</td>' +
+        '<td' + (doneBad ? ' class="breach"' : '') + (b.minCompletionRate != null ? ' title="minimum ' + pct(b.minCompletionRate, 1) + '"' : '') + '>' + done + '</td>' +
+        over(ms(d.p50), d.p50, null, d.count) + over(ms(d.p95), d.p95, b.p95Ms, d.count) + over(ms(d.p99), d.p99, b.p99Ms, d.count) +
+        (worst ? over(esc(worst.name) + ' ' + ms(worst.p95), worst.p95, worst.budget && worst.budget.p95Ms, 1) : '<td>–</td>') + '</tr>');
+    });
+    h.push('</tbody></table><div class="muted small" style="margin-top:8px">Each agent session picks a flow by weight and runs its steps. A flow is completed when every step ran and every call succeeded; ' +
+      'p50/p95/p99 are end to end over completed flows, from <code>connect()</code> to the last step, think pauses included. Highlighted cells broke the flow\'s budget (hover for it).</div></section>');
   }
 
   // ---------- charts ----------

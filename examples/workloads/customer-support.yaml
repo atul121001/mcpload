@@ -1,0 +1,79 @@
+# A customer-support desk: agents look up a customer and then their orders, their subscription, or open a
+# ticket. Runs against the demo servers (demo-servers/), whose five tools stand in for the business tools:
+#
+#   search_customer, get_orders, get_order_details  ->  search  (returns {"query", "results": [{title, url}]})
+#   get_invoice                                      ->  big     (a large payload, like a PDF or a long record)
+#   get_subscription                                 ->  fast
+#   create_ticket                                    ->  slow    (a write that takes a while)
+#   notify_customer                                  ->  flaky   (fails now and then, like an email gateway)
+#
+#   ./mcpload run --url http://localhost:3001/mcp --workload examples/workloads/customer-support.yaml
+#
+# For your own server, start from template.yaml: there a step is usually just the tool's real name.
+workload:
+  name: customer-support
+  description: Support agents looking up customers, their orders and subscriptions, and opening tickets.
+  agents: 20
+  duration: 1m
+  thinkMs: 300 # mean pause between steps, while the agent decides what to do next
+
+  data:
+    # One row per agent session; {{data.customers.<column>}} in args uses it.
+    customers:
+      file: customers.csv
+      pick: random
+
+  # Defaults for every flow; a flow's own `budgets` win.
+  budgets:
+    p95: 2s # whole flow, connect to last step, think time included
+    completion: 99% # share of flows where every call succeeded
+
+  flows:
+    - name: lookup-orders
+      weight: 60
+      steps:
+        - name: search_customer
+          tool: search
+          args: { query: "customer {{data.customers.email}}", limit: 1 }
+          as: customer
+        - name: get_orders
+          tool: search
+          args:
+            # Built from the previous result: the first hit's title.
+            query: { $from: customer, path: results.0.title }
+            limit: 3
+          as: orders
+        - name: get_order_details
+          # Sent together: one call per order (up to 3) and the invoice.
+          parallel:
+            - tool: search
+              forEach: { $from: orders, path: results, max: 3 }
+              args: { query: { $from: $item, path: title }, limit: 1 }
+            - tool: big
+
+    - name: check-subscription
+      weight: 30
+      steps:
+        - name: search_customer
+          tool: search
+          args: { query: "customer {{data.customers.email}}", limit: 1 }
+        - name: get_subscription
+          tool: fast
+
+    - name: create-ticket
+      weight: 10
+      budgets:
+        p95: 3s
+        completion: 95% # notify_customer fails 1% of the time by design
+        steps:
+          create_ticket: { p95: 1s }
+      steps:
+        - name: search_customer
+          tool: search
+          args: { query: "customer {{data.customers.email}}", limit: 1 }
+        - name: create_ticket
+          tool: slow
+          args: { ms: 700 }
+        - name: notify_customer
+          tool: flaky
+          args: { rate: 0.01 }

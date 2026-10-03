@@ -45,6 +45,7 @@ Problems like these usually don't show up in a quick manual test. They show up a
 | **Can my server handle many agents at once?** | Simulates many agents opening sessions, listing tools and calling tools in parallel, then measures speed and errors for **each tool separately**. |
 | **How many agents can it take before it breaks?** | Raises the number of agents step by step and tells you the last level where every tool stayed within budget, and which tool broke first. |
 | **Do real multi-step tasks stay fast?** | Runs agents through a plan where each step's calls are built from the previous step's results, and times every step and the whole task. |
+| **Does a realistic business workload hold up?** | Runs a mix of business flows from a YAML file (say 60% "look up orders", 30% "check subscription", 10% "open a ticket") with test data, and checks each flow's end-to-end time and completion rate against its own budget. |
 | **Does one slow tool hold up the others?** | Compares each tool's speed alone and mixed with your slow tools, to catch a shared pool or a blocked event loop. |
 | **Do sampling and elicitation work under load?** | Answers the server's mid-call requests (sampling, elicitation, roots) with a configurable delay, like a real client waiting on an LLM or a person. |
 | **Does it slowly run out of memory?** | Runs a long test (30–60 minutes is typical), samples the server's memory as it goes, and tells you if memory keeps climbing and never comes back down. |
@@ -79,6 +80,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **MCP sessions** | One per simulated agent, each with its own session ID | **One shared client for the whole test run**; every thread uses the same session | One per client your script creates | Concurrent clients |
 | **Several tool calls at once inside one session** | ✅ `callParallel` | ❌ synchronous client, one call per thread | ❌ `callTool` returns before the next call | Not in docs |
 | **Next call built from the previous result** | ✅ `agent-workflow` scenario with `$from` references | Possible with JMeter extractors, by hand | Possible in your script, by hand | ❌ |
+| **Weighted mix of business flows** | ✅ `--workload`: flows with weights, CSV test data and per-flow budgets in one YAML file | Throughput controllers and CSV data sets you wire up by hand | Possible in your script, by hand | ❌ |
 | **Latency per tool** | ✅ p50/p95/p99 and error rate for every tool | ✅ one sampler per tool | ❌ metrics are tagged by `method` only, so every `tools/call` is mixed together | Not in docs |
 | **Budget per tool, with PASS/FAIL** | ✅ `P95_MS`, `TOOL_BUDGETS` | With assertions you configure | ❌ no per-tool tag to set a threshold on | ❌ exports results, no pass/fail |
 | **"How many agents can it take?"** | ✅ `step-load`: "Held budgets up to 10 agents; at 20 agents `slow` p95 1.06 s > 800 ms" | Ramp threads and read the graphs yourself | Ramp VUs and read the graphs yourself | Stress mode that scales up |
@@ -121,6 +123,7 @@ These tools work well alongside mcpload.
 |---|---|---|
 | On every pull request | `agent-session` (the default) in CI, with per-tool budgets, compared with `main` (`baseline-branch: main`) | 1–2 min |
 | Before a release | `step-load` to find how many agents you can take, then `soak` with a sampler to catch leaks | 10–60 min |
+| You know how agents really use your tools | `--workload` with your flows and their weights, budgeted per flow | 2–10 min |
 | You run more than one replica | `lb-check`, then `version-skew` with two builds behind the load balancer | 2–5 min |
 | You changed timeouts, restarts or deploys | `reconnect-storm` with `--chaos-restart`, plus `--calls-url` to count lost and duplicated calls | 2–5 min |
 | Agents keep sessions open for long | `long-lived` | 10+ min |
@@ -372,6 +375,63 @@ docker run --rm -v "${PWD}:/work" ghcr.io/atul121001/mcpload run --url http://ho
 
 `--sampler docker` and `--chaos-restart` call the `docker` command, which the image doesn't include; use `--sampler prometheus` from a container, or run mcpload directly.
 
+## Workload profiles
+
+Testing tools one by one tells you each tool is fast. A workload profile tells you whether the *jobs* your agents do stay fast: describe the flows, how often each one happens, the test data they use and the budget each must meet, in one YAML file.
+
+```yaml
+workload:
+  name: customer-support
+  agents: 20
+  duration: 1m
+  data:
+    customers: { file: customers.csv }        # one row per agent session
+  budgets: { p95: 2s, completion: 99% }       # every flow, end to end
+  flows:
+    - name: lookup-orders
+      weight: 60
+      steps:
+        - { tool: search_customer, args: { email: "{{data.customers.email}}" }, as: customer }
+        - { tool: get_orders, args: { customer_id: { $from: customer, path: id } } }
+    - name: check-subscription
+      weight: 30
+      steps: [search_customer, get_subscription]
+    - name: create-ticket
+      weight: 10
+      budgets: { p95: 3s, completion: 95% }
+      steps: [search_customer, create_ticket]
+```
+
+```bash
+mcpload run --url https://staging.example.com/mcp --workload customer-support.yaml --html report.html
+```
+
+Each agent session picks a flow by weight, runs its steps (calls can run in parallel and use earlier results, as in `agent-workflow`), pauses between steps like an agent deciding what to do, and closes. A flow counts as completed only if every call in it succeeded. mcpload checks the whole file before it starts and points at the exact flow, step and field of any mistake.
+
+[examples/workloads/customer-support.yaml](examples/workloads/customer-support.yaml) maps these business flows onto the demo servers' tools. Here it is against the demo servers for 30 seconds with 20 agents. The healthy server:
+
+```text
+mcpload workload customer-support (3 flows, 1029 runs; end-to-end times of completed flows):
+  flow                weight    runs  completed       p50       p95       p99  slowest step (p95)
+  lookup-orders          60%     601     100.0%    543 ms    1.46 s    1.81 s  get_order_details 13 ms
+  check-subscription     30%     323     100.0%    196 ms    865 ms    1.41 s  search_customer 4.0 ms
+  create-ticket          10%     105      99.0%    1.23 s    2.03 s    2.31 s  create_ticket 705 ms
+  PASS     workload           All 3 flows of `customer-support` held their budgets (closest: `lookup-orders` p95 1.46 s of 2 s).
+mcpload result: PASS
+```
+
+The same profile against the server whose tool calls share a pool of 2 slots, so lookups wait behind ticket writes:
+
+```text
+  lookup-orders          60%     407     100.0%    891 ms    2.11 s    2.74 s  get_orders 620 ms
+  check-subscription     30%     213     100.0%    439 ms    1.45 s    1.83 s  get_subscription 591 ms
+  create-ticket          10%      66     100.0%    1.56 s    2.56 s    3.02 s  create_ticket 1.29 s
+  FAIL     workload           flow `lookup-orders` p95 2.11 s > 2 s budget. flow `create-ticket` step `create_ticket` p95 1.29 s > 1 s budget.
+mcpload result: FAIL
+```
+
+Start from [examples/workloads/template.yaml](examples/workloads/template.yaml), which explains every option. The full format is in [scenarios/README.md](scenarios/README.md#workload-profiles).
+
 ## Getting trustworthy results
 
 A load test measures the server *and* the computer sending the load. A few habits keep the numbers honest:
@@ -604,6 +664,7 @@ Report format: [report/schema/README.md](report/schema/README.md).
 | Scenario | What it simulates |
 |---|---|
 | `agent-session.js` | Agents opening a session, listing tools and calling several in parallel, with pauses in between. |
+| `workload.js` | A workload profile: each agent session picks a business flow by weight and runs its steps with test data. Reports every flow's time and completion rate. Use it with `--workload <file.yaml>`. |
 | `agent-workflow.js` | Agents working through a multi-step plan: parallel calls, a pause to decide, then calls built from the earlier results. Reports each step's time and the whole workflow's time. Set your own plan with `--env WORKFLOW=...`. |
 | `burst.js` | A sudden rush of new agents, including a flood of session starts. |
 | `soak.js` | Steady traffic for a long time, then a quiet period, to find leaks. |

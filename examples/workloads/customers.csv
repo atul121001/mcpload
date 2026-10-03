@@ -1,0 +1,13 @@
+id,name,email,plan
+C-1001,Ada Lovelace,ada@example.com,pro
+C-1002,Alan Turing,alan@example.com,team
+C-1003,Grace Hopper,grace@example.com,enterprise
+C-1004,Edsger Dijkstra,edsger@example.com,free
+C-1005,Barbara Liskov,barbara@example.com,pro
+C-1006,Donald Knuth,donald@example.com,team
+C-1007,Margaret Hamilton,margaret@example.com,enterprise
+C-1008,Ken Thompson,ken@example.com,pro
+C-1009,Frances Allen,frances@example.com,team
+C-1010,John Backus,john@example.com,free
+C-1011,Radia Perlman,radia@example.com,enterprise
+C-1012,Leslie Lamport,leslie@example.com,pro

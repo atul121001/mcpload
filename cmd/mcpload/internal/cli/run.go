@@ -25,6 +25,7 @@ import (
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/k6run"
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/report"
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/sampler"
+	"github.com/atul121001/mcpload/cmd/mcpload/internal/workload"
 )
 
 // multiFlag is a repeatable string flag.
@@ -53,7 +54,11 @@ type runOpts struct {
 	baseline                        string
 	cmp                             analysis.CompareConfig
 	failOnRegression                bool
+	workload                        string
 	set                             map[string]bool
+
+	wl     *workload.Workload // loaded from --workload
+	wlFile string             // its normalized JSON (WORKLOAD_FILE), written by execute
 }
 
 const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]"
@@ -96,6 +101,7 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.baseline, "baseline", "", "compare with this baseline report.json (path or http(s) URL) after the run: adds the regression verdict and report.json comparison")
 	compareFlags(fs, &o.cmp)
 	fs.BoolVar(&o.failOnRegression, "fail-on-regression", true, "with --baseline: a regression fails the run (false: the regression verdict only warns)")
+	fs.StringVar(&o.workload, "workload", "", "workload profile (YAML or JSON): weighted business flows of tool calls, test data and budgets, run by the workload scenario (the default --scenario with this flag)")
 	fs.StringVar(&o.callsURL, "calls-url", "", "server endpoint listing executed call ids (GET ?prefix=, answers {\"executions\": {id: count}}), e.g. http://localhost:3019/calls, for the call_integrity verdict")
 	return fs
 }
@@ -129,6 +135,17 @@ func (o *runOpts) validate(pos []string) error {
 	}
 	if o.url == "" {
 		return errors.New("--url is required")
+	}
+	if o.workload != "" {
+		// Fail before k6 starts, naming the flow, step and field at fault.
+		wl, err := workload.Load(o.workload)
+		if err != nil {
+			return err
+		}
+		o.wl = wl
+		if o.scenario == "" {
+			o.scenario = workloadScenario
+		}
 	}
 	cwd, _ := os.Getwd()
 	scenario, err := resolveScenario(o.scenario, cwd, exeDir())
@@ -247,6 +264,14 @@ func (o *runOpts) k6Env() ([]string, map[string]string) {
 	if o.includePayloads {
 		put("INCLUDE_PAYLOADS", "1")
 	}
+	if o.wlFile != "" {
+		put(workloadFileEnv, o.wlFile)
+	} else if p := m[workloadFileEnv]; p != "" && !filepath.IsAbs(p) {
+		// k6's open() would resolve a relative path against the script's folder.
+		if abs, err := filepath.Abs(p); err == nil {
+			put(workloadFileEnv, abs)
+		}
+	}
 	out := make([]string, 0, len(order))
 	for _, k := range order {
 		out = append(out, k+"="+m[k])
@@ -345,6 +370,15 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	k6Version, err := k6run.Version(ctx, bin)
 	if err != nil {
 		return 0, err
+	}
+	if o.wl != nil {
+		path, cleanup, err := writeWorkloadFile(o.wl)
+		if err != nil {
+			return 0, fmt.Errorf("workload: %w", err)
+		}
+		defer cleanup()
+		o.wlFile = path
+		logf("workload %s: %d flows, %d tools (%s)", o.wl.Name, len(o.wl.Flows), len(o.wl.ToolNames()), strings.Join(o.wl.ToolNames(), ", "))
 	}
 	env, explicitEnv := o.k6Env()
 	envMap := scriptEnv(os.Environ(), explicitEnv)
@@ -625,6 +659,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			r.Workflow.Steps = append(r.Workflow.Steps, report.WorkflowStep{Name: st.Name, Latency: toLatency(st.Latency)})
 		}
 	}
+	if flows := agg.Workload(); flows != nil || scenario == workloadScenario {
+		if def := workloadDef(o, envMap, logf); def != nil {
+			r.Workload = workloadReport(def, flows)
+		}
+	}
 	for _, th := range agg.Thresholds(defs, sum, durationS) {
 		var obs *float64
 		if th.Observed != nil {
@@ -720,6 +759,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
 		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
 	}
+	if r.Workload != nil {
+		r.Verdicts = append(r.Verdicts, analysis.WorkloadVerdict(r.Workload))
+	}
 	if sk := agg.Skew(); sk != nil || scenario == versionSkewScenario {
 		r.Verdicts = append(r.Verdicts, analysis.VersionSkewVerdict(skewInput(sk)))
 	}
@@ -773,6 +815,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintln(stderr)
 		writeCompareText(stderr, r.Comparison, r)
 	}
+	printWorkload(stderr, r.Workload)
 	printVerdicts(stderr, r)
 
 	exit := ExitPass

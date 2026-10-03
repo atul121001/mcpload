@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "burst", "lb-check", "isolation", "step-load", "long-lived", "reconnect-storm", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "agent-workflow", "workload", "burst", "lb-check", "isolation", "step-load", "long-lived", "reconnect-storm", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -197,6 +197,42 @@
             "type": "object",
             "required": ["name"],
             "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "description": "A workload profile's flows (scenario workload, mcpload run --workload), from the k6 custom metrics mcp_workload_flow_complete{flow}, mcp_workload_flow_duration{flow} and mcp_workload_step_duration{flow,flow_step}, merged with the profile's weights and budgets (verdict 'workload'). Absent for other scenarios.",
+      "required": ["name", "flows"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "flows": {
+          "type": "array",
+          "description": "In the profile's order; a flow that never ran has runs 0.",
+          "items": {
+            "type": "object",
+            "required": ["name", "weight", "runs", "completed", "completionRate", "durationMs", "steps"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "weight": { "type": "number", "exclusiveMinimum": 0, "description": "Relative weight from the profile; a session picks this flow with probability weight / sum of weights." },
+              "runs": { "type": "integer", "minimum": 0, "description": "Flows started (samples of mcp_workload_flow_complete)." },
+              "completed": { "type": "integer", "minimum": 0, "description": "Flows where every step ran and every call succeeded." },
+              "completionRate": { "$ref": "#/$defs/rate" },
+              "durationMs": { "$ref": "#/$defs/latency", "description": "End-to-end duration of completed flows: connect to the end of the last step, think pauses included." },
+              "budget": { "$ref": "#/$defs/budget" },
+              "steps": {
+                "type": "array",
+                "description": "Per step, in the flow's order: wall time of the step's parallel batch of calls (count 0 if the flow always stopped earlier).",
+                "items": {
+                  "allOf": [{ "$ref": "#/$defs/latency" }],
+                  "type": "object",
+                  "required": ["name"],
+                  "properties": { "name": { "type": "string", "minLength": 1 }, "budget": { "$ref": "#/$defs/budget" } }
+                }
+              }
+            }
           }
         }
       }
@@ -433,6 +469,15 @@
         "max": { "$ref": "#/$defs/ms" }
       }
     },
+    "budget": {
+      "type": "object",
+      "description": "The budget a workload flow or step ran with; absent fields were not budgeted.",
+      "properties": {
+        "p95Ms": { "type": "number", "exclusiveMinimum": 0 },
+        "p99Ms": { "type": "number", "exclusiveMinimum": 0 },
+        "minCompletionRate": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
     "load": {
       "type": "object",
       "description": "Load shape configuration as passed to k6.",
@@ -490,7 +535,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation", "regression"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation", "regression", "workload"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",
