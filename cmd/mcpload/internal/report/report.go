@@ -40,13 +40,14 @@ const (
 	VerdictThreshold       = "threshold"
 	VerdictGenerator       = "generator"
 	VerdictToolIsolation   = "tool_isolation"
+	VerdictCapacity        = "capacity"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
 var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
-	VerdictToolIsolation,
+	VerdictToolIsolation, VerdictCapacity,
 }
 
 // Verdict statuses.
@@ -71,6 +72,8 @@ type Report struct {
 	PayloadsIncluded bool        `json:"payloadsIncluded"`
 	// Workflow summarises multi-step agent workflows (scenario agent-workflow); nil otherwise.
 	Workflow *Workflow `json:"workflow,omitempty"`
+	// Capacity is the per-step result of a step-load run (optional).
+	Capacity *Capacity `json:"capacity,omitempty"`
 }
 
 // Latency is a set of durations in ms; all zero when Count is 0.
@@ -98,6 +101,75 @@ type Workflow struct {
 type WorkflowStep struct {
 	Name string `json:"name"`
 	Latency
+}
+
+// Capacity is the outcome of a step-load run: one entry per concurrency step
+// and the breaking point (verdict capacity).
+type Capacity struct {
+	// PlannedVUs are the steps the scenario planned; Steps may stop short.
+	PlannedVUs []int `json:"plannedVus,omitempty"`
+	// MinAgents is the MIN_AGENTS target, when set.
+	MinAgents *int `json:"minAgents,omitempty"`
+	// MaxSustainableVUs is the last step before the first breach (or the
+	// highest step when none broke); nil when the first step broke.
+	MaxSustainableVUs *int `json:"maxSustainableVus"`
+	// BreakingVUs is the first step that crossed a budget; nil when none did.
+	BreakingVUs *int `json:"breakingVus"`
+	// Inconclusive is set when the load generator was saturated at the
+	// breaking step, so the breach may be k6's own overhead.
+	Inconclusive bool `json:"inconclusive"`
+	// StoppedEarly is set when the scenario aborted the run (ABORT_ERR_RATE).
+	StoppedEarly bool            `json:"stoppedEarly"`
+	Budgets      CapacityBudgets `json:"budgets"`
+	Steps        []Step          `json:"steps"`
+}
+
+// CapacityBudgets are the budgets each step was judged against.
+type CapacityBudgets struct {
+	ConnectP95Ms     float64               `json:"connectP95Ms"`
+	ConnectErrorRate float64               `json:"connectErrorRate"`
+	Tools            map[string]ToolBudget `json:"tools"`
+}
+
+// ToolBudget is one tool's latency (ms) and error-rate budget.
+type ToolBudget struct {
+	P95Ms     float64 `json:"p95Ms"`
+	P99Ms     float64 `json:"p99Ms"`
+	ErrorRate float64 `json:"errorRate"`
+}
+
+// Step is one concurrency level of a step-load run. StartS/EndS bound its
+// tagged requests (seconds since run start). Breached lists the step-level
+// fields over budget ("connectP95Ms", "connectErrorRate", "toolCalls");
+// Breaches describes every breach in words.
+type Step struct {
+	VUs                int        `json:"vus"`
+	StartS             float64    `json:"startS"`
+	EndS               float64    `json:"endS"`
+	Reqs               int64      `json:"reqs"`
+	Errors             int64      `json:"errors"`
+	ErrorRate          float64    `json:"errorRate"`
+	RPS                float64    `json:"rps"`
+	ConnectP95Ms       *float64   `json:"connectP95Ms"`
+	ConnectErrorRate   *float64   `json:"connectErrorRate"`
+	GeneratorCPUMaxPct *float64   `json:"generatorCpuMaxPct,omitempty"`
+	GeneratorSaturated bool       `json:"generatorSaturated"`
+	Passed             bool       `json:"passed"`
+	Breached           []string   `json:"breached,omitempty"`
+	Breaches           []string   `json:"breaches"`
+	Tools              []StepTool `json:"tools"`
+}
+
+// StepTool is one tool within a step. P95/P99 cover successful calls (nil
+// without one); Breached lists the fields over budget ("p95", "p99", "errorRate").
+type StepTool struct {
+	Name      string   `json:"name"`
+	Reqs      int64    `json:"reqs"`
+	Errors    int64    `json:"errors"`
+	ErrorRate float64  `json:"errorRate"`
+	P95       *float64 `json:"p95"`
+	P99       *float64 `json:"p99"`
+	Breached  []string `json:"breached,omitempty"`
 }
 
 // ToolInfo identifies the program that wrote the report.
@@ -329,6 +401,35 @@ func (r *Report) Normalize() {
 		for _, p := range []**float64{&v.SlopePerMin, &v.R2, &v.Baseline} {
 			if *p != nil && !finite(**p) {
 				*p = nil
+			}
+		}
+	}
+	if c := r.Capacity; c != nil {
+		if c.Steps == nil {
+			c.Steps = []Step{}
+		}
+		if c.Budgets.Tools == nil {
+			c.Budgets.Tools = map[string]ToolBudget{}
+		}
+		for i := range c.Steps {
+			st := &c.Steps[i]
+			if st.Breaches == nil {
+				st.Breaches = []string{}
+			}
+			if st.Tools == nil {
+				st.Tools = []StepTool{}
+			}
+			for _, p := range []**float64{&st.ConnectP95Ms, &st.ConnectErrorRate, &st.GeneratorCPUMaxPct} {
+				if *p != nil && !finite(**p) {
+					*p = nil
+				}
+			}
+			for j := range st.Tools {
+				for _, p := range []**float64{&st.Tools[j].P95, &st.Tools[j].P99} {
+					if *p != nil && !finite(**p) {
+						*p = nil
+					}
+				}
 			}
 		}
 	}
@@ -637,6 +738,91 @@ func (r *Report) Check() error {
 		}
 		if v.R2 != nil && !(*v.R2 >= 0 && *v.R2 <= 1) {
 			add("verdicts[%d].r2 out of [0,1]", i)
+		}
+	}
+
+	if c := r.Capacity; c != nil {
+		if c.Steps == nil {
+			add("capacity.steps is required")
+		}
+		for _, p := range []struct {
+			path string
+			v    *int
+		}{{"capacity.minAgents", c.MinAgents}, {"capacity.maxSustainableVus", c.MaxSustainableVUs}, {"capacity.breakingVus", c.BreakingVUs}} {
+			if p.v != nil && *p.v < 1 {
+				add("%s must be >= 1", p.path)
+			}
+		}
+		for i, v := range c.PlannedVUs {
+			if v < 1 || (i > 0 && v <= c.PlannedVUs[i-1]) {
+				add("capacity.plannedVus must be increasing integers >= 1")
+				break
+			}
+		}
+		nonNeg("capacity.budgets.connectP95Ms", c.Budgets.ConnectP95Ms)
+		rate("capacity.budgets.connectErrorRate", c.Budgets.ConnectErrorRate)
+		for name, b := range c.Budgets.Tools {
+			nonNeg(fmt.Sprintf("capacity.budgets.tools[%s].p95Ms", name), b.P95Ms)
+			nonNeg(fmt.Sprintf("capacity.budgets.tools[%s].p99Ms", name), b.P99Ms)
+			rate(fmt.Sprintf("capacity.budgets.tools[%s].errorRate", name), b.ErrorRate)
+		}
+		for i, st := range c.Steps {
+			path := fmt.Sprintf("capacity.steps[%d]", i)
+			if st.VUs < 1 {
+				add("%s.vus must be >= 1", path)
+			}
+			if i > 0 && st.VUs <= c.Steps[i-1].VUs {
+				add("capacity.steps must be sorted by strictly increasing vus (index %d)", i)
+			}
+			nonNeg(path+".startS", st.StartS)
+			nonNeg(path+".endS", st.EndS)
+			if st.EndS < st.StartS {
+				add("%s.endS is before startS", path)
+			}
+			if st.Reqs < 0 || st.Errors < 0 || st.Errors > st.Reqs {
+				add("%s: errors must be in [0, reqs]", path)
+			}
+			rate(path+".errorRate", st.ErrorRate)
+			nonNeg(path+".rps", st.RPS)
+			if st.ConnectP95Ms != nil {
+				nonNeg(path+".connectP95Ms", *st.ConnectP95Ms)
+			}
+			if st.ConnectErrorRate != nil {
+				rate(path+".connectErrorRate", *st.ConnectErrorRate)
+			}
+			if p := st.GeneratorCPUMaxPct; p != nil && !(*p >= 0 && *p <= 100) {
+				add("%s.generatorCpuMaxPct must be in [0,100]", path)
+			}
+			if st.Breaches == nil || st.Tools == nil {
+				add("%s.breaches and .tools are required", path)
+			}
+			for _, b := range st.Breached {
+				if b != "connectP95Ms" && b != "connectErrorRate" && b != "toolCalls" {
+					add("%s.breached has an invalid entry %q", path, b)
+				}
+			}
+			for _, t := range st.Tools {
+				tp := fmt.Sprintf("%s.tools[%s]", path, t.Name)
+				nonEmpty(path+".tools[].name", t.Name)
+				if t.Reqs < 0 || t.Errors < 0 || t.Errors > t.Reqs {
+					add("%s: errors must be in [0, reqs]", tp)
+				}
+				rate(tp+".errorRate", t.ErrorRate)
+				if t.P95 != nil {
+					nonNeg(tp+".p95", *t.P95)
+				}
+				if t.P99 != nil {
+					nonNeg(tp+".p99", *t.P99)
+				}
+				for _, b := range t.Breached {
+					if b != "p95" && b != "p99" && b != "errorRate" {
+						add("%s.breached has an invalid entry %q", tp, b)
+					}
+				}
+				if t.P95 != nil && t.P99 != nil && *t.P95 > *t.P99 {
+					add("%s percentiles not monotonic (p95<=p99)", tp)
+				}
+			}
 		}
 	}
 	return errors.Join(errs...)

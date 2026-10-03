@@ -93,7 +93,8 @@ export function callTools(s, batch) {
  * Run one agent session.
  * opts: { rounds?: number, parallel?: number, think?: boolean (default true), listTools?: boolean (default true),
  *         onSession?: (s) => void  called after connect (e.g. to add pings),
- *         tableFilter?: (tt) => tt  adjusts the session's tool table before any call (e.g. drop tools) }
+ *         tableFilter?: (tt) => tt  adjusts the session's tool table before any call (e.g. drop tools),
+ *         beforeRound?: (r) => void  called before each round of calls (e.g. to retag the VU) }
  * Returns { ok, protocol, sessionId, calls, toolErrors }.
  */
 export function agentSession(client, opts) {
@@ -127,6 +128,7 @@ export function agentSession(client, opts) {
     if (o.onSession) o.onSession(s);
 
     for (let r = 0; r < rounds; r++) {
+      if (o.beforeRound) o.beforeRound(r);
       const batch = [];
       for (let i = 0; i < parallel; i++) batch.push(pick(tt));
       const results = callTools(s, batch);

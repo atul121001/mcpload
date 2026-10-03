@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { argsFromSchema } from './schema-args.js';
 import { planTools, thresholdToolNames, pick, withoutTools, DEMO_TOOLS } from './tools.js';
+import { stepAt, stepLevels, stepSchedule } from './steps.js';
 
 // config.js reads k6's __ENV at import time.
 globalThis.__ENV = {};
@@ -197,4 +198,31 @@ test('withoutTools drops tools and keeps the other weights', () => {
   assert.equal(tt.total, 6); // input untouched
   assert.equal(pick(w, 0.7).name, 'c');
   assert.equal(withoutTools(tt, ['a', 'b', 'c']).table.length, 0);
+});
+
+test('stepLevels: STEPS list or geometric START/STEP_FACTOR/MAX_VUS', () => {
+  assert.deepEqual(stepLevels({ steps: '10, 25,50' }), [10, 25, 50]);
+  assert.deepEqual(stepLevels({ start: 5, factor: 2, max: 40 }), [5, 10, 20, 40]);
+  assert.deepEqual(stepLevels({ start: 10, factor: 1.5, max: 40 }), [10, 15, 23, 34]);
+  assert.deepEqual(stepLevels({ steps: '', start: 3, factor: 3, max: 30 }), [3, 9, 27]);
+  assert.throws(() => stepLevels({ steps: '10,5' }), /increase/);
+  assert.throws(() => stepLevels({ steps: '10,x' }), /positive integers/);
+  assert.throws(() => stepLevels({ start: 10, factor: 1, max: 40 }), /STEP_FACTOR/);
+});
+
+test('stepSchedule and stepAt: ramps are unmeasured, holds are tagged', () => {
+  const s = stepSchedule([5, 10], 20, 5);
+  assert.deepEqual(s.stages, [
+    { duration: '5s', target: 5 },
+    { duration: '20s', target: 5 },
+    { duration: '5s', target: 10 },
+    { duration: '20s', target: 10 },
+  ]);
+  assert.deepEqual(s.windows, [{ vus: 5, from: 5, to: 25 }, { vus: 10, from: 30, to: 50 }]);
+  assert.equal(s.totalS, 50);
+  assert.equal(stepAt(s.windows, 2), null);
+  assert.equal(stepAt(s.windows, 5).vus, 5);
+  assert.equal(stepAt(s.windows, 27), null);
+  assert.equal(stepAt(s.windows, 49.9).vus, 10);
+  assert.equal(stepAt(s.windows, 50), null);
 });

@@ -63,13 +63,14 @@ jobs:
         run: |
           node examples/generate.mjs
           (cd ../cmd/mcpload && go test ./internal/analysis -run TestExamples -update)
-          git diff --exit-code -- examples/healthy.json examples/leaky.json
+          git diff --exit-code -- examples/healthy.json examples/leaky.json examples/step-load.json
       - name: Validate examples against schema
-        run: node validate.mjs examples/healthy.json examples/leaky.json
+        run: node validate.mjs examples/healthy.json examples/leaky.json examples/step-load.json
       - name: Render HTML reports
         run: |
           node render.mjs examples/healthy.json "$RUNNER_TEMP/healthy.html"
           node render.mjs examples/leaky.json "$RUNNER_TEMP/leaky.html"
+          node render.mjs examples/step-load.json "$RUNNER_TEMP/step-load.html"
           grep -q 'id="report-data">{"schemaVersion":"1"' "$RUNNER_TEMP/leaky.html"
 
   scenarios:
@@ -109,6 +110,7 @@ jobs:
         run: |
           ./mcpload validate ../../report/examples/healthy.json
           ./mcpload validate ../../report/examples/leaky.json
+          ./mcpload validate ../../report/examples/step-load.json
 
   action:
     name: action (summary script + workflow lint)

@@ -36,7 +36,7 @@ type runOpts struct {
 	samplerKind, container, promURL string
 	interval                        time.Duration
 	soakMin, warmupMin, cooldownMin float64
-	vus                             int
+	vus, minAgents                  int
 	duration                        string
 	env                             multiFlag
 	label, gitSHA, gitRef           string
@@ -66,6 +66,7 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.Float64Var(&o.cooldownMin, "cooldown-min", 5, "soak: cool-down minutes (COOLDOWN_MIN)")
 	fs.IntVar(&o.vus, "vus", 0, "VUs, passed to the script as VUS (scenario knob, not k6 --vus)")
 	fs.StringVar(&o.duration, "duration", "", "duration, passed to the script as DURATION (scenario knob, not k6 --duration)")
+	fs.IntVar(&o.minAgents, "min-agents", 0, "step-load: concurrency the server must hold within budgets for the capacity verdict to pass (MIN_AGENTS)")
 	fs.Var(&o.env, "env", "extra K=V passed to k6 with -e (repeatable)")
 	fs.StringVar(&o.label, "label", "", "short display name of the target")
 	fs.StringVar(&o.gitSHA, "git-sha", "", "git sha of the system under test (default $GITHUB_SHA)")
@@ -158,6 +159,9 @@ func (o *runOpts) validate(pos []string) error {
 			return errors.New("--upload-url needs --key or $MCPLOAD_KEY")
 		}
 	}
+	if o.minAgents < 0 {
+		return errors.New("--min-agents must not be negative")
+	}
 	if o.leakSlope <= 0 || o.minR2 < 0 || o.minR2 > 1 {
 		return errors.New("--leak-slope-mb-per-min must be > 0 and --min-r2 in [0,1]")
 	}
@@ -198,6 +202,9 @@ func (o *runOpts) k6Env() ([]string, map[string]string) {
 	}
 	if o.set["duration"] {
 		put("DURATION", o.duration)
+	}
+	if o.set["min-agents"] {
+		put("MIN_AGENTS", strconv.Itoa(o.minAgents))
 	}
 	if o.includePayloads {
 		put("INCLUDE_PAYLOADS", "1")
@@ -311,6 +318,13 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			return 0, err
 		}
 	}
+	stepLoad := scenario == stepLoadScenario
+	var capCfg analysis.CapacityConfig
+	if stepLoad {
+		if capCfg, err = capacityConfig(envMap); err != nil {
+			return 0, err
+		}
+	}
 
 	if o.waitReady > 0 {
 		probe, err := newReadyProbe(envMap)
@@ -403,8 +417,10 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	stopSampler()
 	wg.Wait()
 	var gen *report.Generator
+	var cpuWindows []sampler.CPUWindow
 	if cpuMon != nil {
 		cs := cpuMon.Stop(res.Started, res.CPU, res.Ended)
+		cpuWindows = cs.Windows
 		gen = &report.Generator{Cores: cs.Cores}
 		if cs.Avg != nil {
 			gen.CPUAvgPct = report.F(round3(*cs.Avg))
@@ -423,7 +439,13 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if res.Interrupted {
 		logf("k6 was interrupted (exit code %d); writing the report from the data collected so far", code)
 	}
-	k6Failed := code != k6run.ExitOK && code != k6run.ExitThresholdsFailed
+	// step-load stops itself (exec.test.abort, ABORT_ERR_RATE) once a step has
+	// clearly broken the server: an expected outcome, judged by the capacity verdict.
+	stoppedEarly := stepLoad && code == k6run.ExitScriptAborted
+	if stoppedEarly {
+		logf("step-load stopped k6 early (exit code %d): a step broke the ABORT_ERR_RATE guard", code)
+	}
+	k6Failed := code != k6run.ExitOK && code != k6run.ExitThresholdsFailed && !stoppedEarly
 	if k6Failed {
 		logf("warning: k6 exited with code %d", code)
 	}
@@ -571,6 +593,20 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if solo, mixed := agg.ScenarioTools(analysis.IsolationSoloScenario), agg.ScenarioTools(analysis.IsolationMixedScenario); solo != nil || mixed != nil {
 		r.Verdicts = append(r.Verdicts, analysis.IsolationVerdict(phaseP95(solo), phaseP95(mixed)))
 	}
+	if steps := agg.Steps(); len(steps) > 0 || stepLoad {
+		if !stepLoad {
+			if capCfg, err = capacityConfig(envMap); err != nil {
+				return 0, err
+			}
+		}
+		capCfg.Planned = opts.StepLevels(stepLoadK6Scenario)
+		capCfg.StoppedEarly = stoppedEarly
+		cp, v := analysis.CapacityVerdict(buildSteps(steps, origin, cpuWindows), capCfg)
+		if len(steps) > 0 {
+			r.Capacity = cp
+		}
+		r.Verdicts = append(analysis.SkipDriftForSteps(r.Verdicts), v)
+	}
 
 	r.Normalize()
 	checkErr := r.Check()
@@ -588,6 +624,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		logf("wrote %s", o.html)
 	}
 
+	printSteps(stderr, r.Capacity)
 	printVerdicts(stderr, r)
 
 	exit := ExitPass

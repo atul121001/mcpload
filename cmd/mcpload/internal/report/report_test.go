@@ -33,7 +33,7 @@ func TestEmbeddedTemplateInSync(t *testing.T) {
 func TestRoundTripValidates(t *testing.T) {
 	dir := t.TempDir()
 	var outs []string
-	for _, name := range []string{"healthy.json", "leaky.json"} {
+	for _, name := range []string{"healthy.json", "leaky.json", "step-load.json"} {
 		r, err := ReadJSON(examplePath(name))
 		if err != nil {
 			t.Fatal(err)
@@ -241,6 +241,27 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 		}},
 		{"dropped series length", "client.droppedIterations", func(r *Report) { r.Series.Client.DroppedIterations = r.Series.Client.DroppedIterations[2:] }},
 		{"negative iterations", "summary.iterations", func(r *Report) { r.Summary.Iterations = I64(-1) }},
+		{"capacity valid", "", func(r *Report) { r.Capacity = sampleCapacity() }},
+		{"capacity steps unsorted", "strictly increasing vus", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].VUs = 5
+		}},
+		{"capacity step errors > reqs", "errors must be in [0, reqs]", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[0].Errors = 1000
+		}},
+		{"capacity tool percentiles", "p95<=p99", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].Tools[0].P99 = F(1)
+		}},
+		{"capacity bad breached", "breached has an invalid entry", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].Tools[0].Breached = []string{"latency"}
+		}},
+		{"capacity breaking 0", "capacity.breakingVus", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.BreakingVUs = I(0)
+		}},
 	}
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -269,6 +290,19 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 				t.Fatalf("validate.mjs disagrees with Check (valid=%v):\n%s", ok, out)
 			}
 		})
+	}
+}
+
+func sampleCapacity() *Capacity {
+	return &Capacity{
+		PlannedVUs: []int{10, 20, 40}, MinAgents: I(10), MaxSustainableVUs: I(10), BreakingVUs: I(20),
+		Budgets: CapacityBudgets{ConnectP95Ms: 1500, ConnectErrorRate: 0.01, Tools: map[string]ToolBudget{"slow": {P95Ms: 800, P99Ms: 2000, ErrorRate: 0.01}}},
+		Steps: []Step{
+			{VUs: 10, StartS: 5, EndS: 65, Reqs: 600, Errors: 2, ErrorRate: 0.0033, RPS: 10, ConnectP95Ms: F(8), ConnectErrorRate: F(0), GeneratorCPUMaxPct: F(4), Passed: true, Breaches: []string{},
+				Tools: []StepTool{{Name: "slow", Reqs: 100, ErrorRate: 0, P95: F(320), P99: F(400)}}},
+			{VUs: 20, StartS: 70, EndS: 130, Reqs: 900, Errors: 5, ErrorRate: 0.0056, RPS: 15, ConnectP95Ms: nil, ConnectErrorRate: nil, Breached: []string{"connectP95Ms"},
+				Breaches: []string{"`slow` p95 1.9 s > 800 ms"}, Tools: []StepTool{{Name: "slow", Reqs: 100, P95: F(1900), P99: F(2100), Breached: []string{"p95", "p99"}}}},
+		},
 	}
 }
 

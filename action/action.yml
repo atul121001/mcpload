@@ -16,7 +16,7 @@ inputs:
   scenario:
     description: >-
       Scenario script. Empty = bundled agent-session (or bundled soak when soak-min is set).
-      A bare name (agent-session, agent-workflow, burst, soak, lb-check, isolation, oauth-refresh) picks the bundled script;
+      A bare name (agent-session, agent-workflow, burst, soak, lb-check, isolation, step-load, oauth-refresh) picks the bundled script;
       anything else is a path relative to the workspace.
     required: false
     default: ''

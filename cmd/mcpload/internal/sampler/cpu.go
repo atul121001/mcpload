@@ -26,6 +26,15 @@ type CPUStats struct {
 	Avg, Max *float64
 	Samples  int // interval readings that contributed to Max
 	Errors   int // failed readings
+	// Windows are the readings that contributed to Max, in time order, so a
+	// caller can find the peak within part of the run (e.g. one load step).
+	Windows []CPUWindow
+}
+
+// CPUWindow is the CPU share (0-100) of one sampling window [Start, End).
+type CPUWindow struct {
+	Start, End time.Time
+	Pct        float64
 }
 
 // CPUMonitor samples one process's cumulative CPU time every interval.
@@ -43,6 +52,7 @@ type CPUMonitor struct {
 	lastCPU   time.Duration
 	max       float64
 	samples   int
+	windows   []CPUWindow
 	errs      int
 
 	cancel context.CancelFunc
@@ -104,6 +114,7 @@ func (m *CPUMonitor) add(now time.Time, cpu time.Duration) {
 				m.max = p
 			}
 			m.samples++
+			m.windows = append(m.windows, CPUWindow{Start: m.lastWall, End: now, Pct: p})
 		}
 	}
 	m.lastWall, m.lastCPU = now, cpu
@@ -141,6 +152,7 @@ func (m *CPUMonitor) Stop(start time.Time, finalCPU time.Duration, finalAt time.
 	if m.samples > 0 {
 		st.Max = fp(m.max)
 		st.Samples = m.samples
+		st.Windows = append([]CPUWindow(nil), m.windows...)
 	}
 	if st.Avg != nil && (st.Max == nil || *st.Max < *st.Avg) {
 		// Only possible through short windows; the peak is at least the mean.

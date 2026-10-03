@@ -16,6 +16,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | `soak.js` | Agent sessions at a constant arrival rate (`RATE` per `TIME_UNIT`; fractional rates work). A warm-up ramp comes first and a zero-load cool-down comes last. | 3m warm-up + 30m load + 5m cool-down |
 | `lb-check.js` | A stateful flow with sequential calls. Fails on any `session_not_found` or `header_mismatch`. | 10 VUs for 1m |
 | `isolation.js` | Do fast tools wait behind slow ones? Runs agent sessions twice at the same concurrency: `solo` (the mix without `SLOW_TOOLS`), then `mixed` (the full mix). mcpload compares each tool's p95 between the two (verdict `tool_isolation`). | 20 VUs, 1m per phase |
+| `step-load.js` | How many agents at once before the server breaks its budgets? Agent sessions with concurrency rising in steps (`STEPS`); each step ramps for `RAMP`, then holds for `STEP_DURATION`. mcpload judges every step against the per-tool budgets (verdict `capacity`). See [Step load](#step-load). | steps 10, 25, 50, 100, 200 VUs, 5s ramp + 1m hold each (about 5.5 min) |
 | `oauth-refresh.js` | 50 VUs on short-lived client-credentials tokens. Measures `mcp_oauth_refresh_duration` and counts auth errors. | 3m |
 
 ## Demo targets (`demo-servers/`, `docker compose up -d --build`)
@@ -27,7 +28,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | 3003 | py-healthy (stateless) | `./k6 run -e MCP_URL=http://localhost:3003/mcp scenarios/burst.js` |
 | 3004 | lb-stateful (2 replicas, no sticky sessions) | `./k6 run -e MCP_URL=http://localhost:3004/mcp scenarios/lb-check.js` (expected to fail) |
 | 3005 | stateless-2026 (2 replicas) | `./k6 run -e MCP_URL=http://localhost:3005/mcp -e MCP_PROTOCOL=2026-07-28 scenarios/lb-check.js` (expected to pass) |
-| 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes) |
+| 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes). `--scenario step-load --env STEPS=5,10,20,40 --env STEP_DURATION=20s` breaks at 20 agents. |
 | 3006 / 3007 | mock-oauth / ts-oauth | `./k6 run -e MCP_URL=http://localhost:3007/mcp -e OAUTH_TOKEN_URL=http://localhost:3006/token -e OAUTH_CLIENT_ID=mcpload -e OAUTH_CLIENT_SECRET=secret scenarios/oauth-refresh.js` |
 
 Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`.
@@ -104,6 +105,7 @@ Each scenario adds its own thresholds on top:
 - `isolation` adds `checks{check:slow tools in mix}: rate>0.999`, so a `SLOW_TOOLS` name that isn't in the tool mix fails the run instead of comparing two identical phases. `SLOW_TOOLS` (comma-separated, default `slow`) names your slow tools; `DURATION` is per phase.
 - `oauth-refresh` adds a p95 budget on `mcp_oauth_refresh_duration`.
 - `agent-workflow` adds per-tool thresholds for every tool its plan calls, plus `mcp_workflow_duration: p(95)<WORKFLOW_P95_MS` (and `p(99)<WORKFLOW_P99_MS` when set), `mcp_workflow_complete: rate>=WORKFLOW_MIN_COMPLETE`, and `mcp_workflow_step_duration{step:<name>}: p(95)<STEP_P95_MS` for each step (`STEP_BUDGETS` overrides per step). See [Agent workflows](#agent-workflows).
+- `step-load` sets **no** thresholds. Its budgets are judged per step by mcpload (see below), because a breach at the top step is what a step-load run is looking for, not a failed run.
 
 If any threshold fails, k6 exits with code 99, which gates CI.
 
@@ -174,6 +176,23 @@ The load is `RATE` sessions per `TIME_UNIT` (defaults: `2` per `1s`). k6's arriv
 
 For leak detection, run at least 10 minutes of load (`SOAK_MIN>=10`; the default is 30). In shorter runs there are too few samples for a reliable memory slope, and warm-up effects such as caches, JIT and connection pools dominate.
 
+## Step load
+
+`step-load.js` runs agent sessions (as in `agent-session.js`) on one `ramping-vus` scenario named `steps`. Each step ramps for `RAMP` and then holds its level for `STEP_DURATION`. Every request made during a hold is tagged `step=<VUs>` (the tag is refreshed before each round of calls, so a session that crosses a step boundary is split correctly). Ramps are left untagged and are not judged.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `STEPS` | `10,25,50,100,200` | VU levels, strictly increasing |
+| `START`, `STEP_FACTOR`, `MAX_VUS` | `10`, `2`, `200` | used instead of `STEPS` when `STEPS` is unset and any of them is set: `START`, `START×STEP_FACTOR`, … up to `MAX_VUS` |
+| `STEP_DURATION` | `1m` | hold per step |
+| `RAMP` | `5s` | ramp before each step |
+| `ABORT_ERR_RATE` | `0.5` | stop the whole run (`exec.test.abort`, k6 exit code 108) once a VU sees more than this share of its calls fail within one step, after at least `ABORT_MIN_CALLS` (20) calls. A session that fails before its first call counts as one failed call. `0` turns the guard off. |
+| `MIN_AGENTS` | – | read by mcpload (`--min-agents`): the concurrency the server must hold for the `capacity` verdict to pass |
+
+mcpload judges each step against the same budgets the other scenarios turn into thresholds: per tool (with at least 10 calls in the step) p95 and p99 of successful calls against `P95_MS`/`P99_MS` and the error rate against `ERR_RATE`, with `TOOL_BUDGETS` overrides; connect p95 against `CONNECT_P95_MS` and the share of failed session starts against `ERR_RATE`. A step without any `tools/call` is a breach too. The first step with a breach is the breaking point and the step before it is the max sustainable concurrency. The latency and error drift verdicts are skipped in step-load runs, since the rising load is on purpose. Details: [cmd/mcpload/README.md](../cmd/mcpload/README.md#step-load-and-the-capacity-verdict).
+
+Keep `STEP_DURATION` long enough for a few hundred calls per step (sessions last a few seconds). With very short steps, a tool with a 10% error rate, such as the demo `flaky`, can cross its 20% budget by chance.
+
 ## Syntax check and unit tests
 
 `package.json` sets `"type": "module"`, so Node can parse these files. It doesn't run them.
@@ -182,7 +201,7 @@ For leak detection, run at least 10 minutes of load (`SOAK_MIN>=10`; the default
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, step schedules) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
