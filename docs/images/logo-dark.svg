@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="370" height="84" viewBox="0 0 370 84" role="img" aria-label="mcpload">
+  <title>mcpload</title>
+  <!-- Mark: one agent fanning out into parallel tool calls. -->
+  <rect x="0" y="11" width="64" height="64" rx="15" fill="#0d9488"/>
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 43 H25 M25 43 L44 28 M25 43 H44 M25 43 L44 58"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="48" cy="28" r="4.5"/>
+    <circle cx="48" cy="43" r="4.5"/>
+    <circle cx="48" cy="58" r="4.5"/>
+  </g>
+  <!-- Wordmark: monoline geometric letters drawn as strokes (no fonts). -->
+  <g fill="none" stroke="#e6edf3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M88 29.5 V56.5 M88 39.5 A10 10 0 0 1 108 39.5 V56.5 M108 39.5 A10 10 0 0 1 128 39.5 V56.5"/>
+    <path d="M168.84 51.68 A13.5 13.5 0 1 1 168.84 34.32"/>
+    <path d="M186 29.5 V76"/><circle cx="199.5" cy="43" r="13.5"/>
+    <path d="M230 10 V56.5"/>
+    <circle cx="260.5" cy="43" r="13.5"/>
+    <circle cx="304.5" cy="43" r="13.5"/><path d="M318 29.5 V56.5"/>
+    <circle cx="348.5" cy="43" r="13.5"/><path d="M362 10 V56.5"/>
+  </g>
+</svg>

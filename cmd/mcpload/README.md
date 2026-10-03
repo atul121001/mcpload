@@ -1,6 +1,6 @@
 # mcpload CLI
 
-`mcpload` drives a load engine: k6 built with [`xk6-mcpload`](../../xk6-mcpload). It runs a scenario, samples the server's resources while the run is going, computes leak and drift verdicts, and writes `report.json` ([schema v1](../../report/schema/README.md)) and a self-contained `report.html`. Release builds embed the engine and the bundled scenarios, so users install one program (see the [README](../../README.md#try-it-in-5-minutes)).
+`mcpload` drives a load engine: k6 built with [`xk6-mcpload`](../../xk6-mcpload). It runs a scenario, samples the server's resources while the run is going, computes leak and drift verdicts, and writes `report.json` ([schema v1](../../report/schema/README.md)) and a self-contained `report.html`. Release builds embed the engine and the bundled scenarios, so users install one program (see [Install and try mcpload](../../docs/guide/getting-started.md#try-it-in-5-minutes)).
 
 ## Build
 

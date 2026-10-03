@@ -2,7 +2,7 @@
 
 From a fresh clone to an HTML report in about five minutes (most of it is the first Docker build).
 
-> **No clone needed to just try it.** With a release of mcpload installed, `mcpload demo up` starts the demo servers from published images and `mcpload demo down` stops them; see [Try it in 5 minutes](../README.md#try-it-in-5-minutes). There is also a Docker image, `ghcr.io/atul121001/mcpload` ([Run with Docker](../README.md#run-with-docker)). This guide builds everything from source.
+> **No clone needed to just try it.** With a release of mcpload installed, `mcpload demo up` starts the demo servers from published images and `mcpload demo down` stops them; see [Install and try mcpload](guide/getting-started.md#try-it-in-5-minutes). There is also a Docker image, `ghcr.io/atul121001/mcpload` ([Run with Docker](guide/testing-your-server.md#run-with-docker)). This guide builds everything from source.
 
 ## Prerequisites
 
@@ -57,7 +57,7 @@ irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex
 mcpload version
 ```
 
-Other terminals that were already open on Windows only see `mcpload` after you restart them. With Homebrew, `brew install atul121001/tap/mcpload` works once the tap is published.
+Other terminals that were already open on Windows only see `mcpload` after you restart them. With Homebrew: `brew install atul121001/tap/mcpload`.
 
 `mcpload version` also shows the engine and the scenarios folder mcpload will use, so you can check an install from any folder.
 
@@ -131,7 +131,7 @@ With no `--scenario`, mcpload runs the built-in `agent-session` scenario. Name a
 
 Exit code `0` means pass, `1` means a verdict or budget failed, `2` means an error (bad flags, the test could not start, target unreachable).
 
-Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when it dropped more than 1% of the planned iterations (fails above 10%), or when the load generator went over 90% CPU at its busiest, in which case the measured latency may include its own overhead. If it fires, lower the load or run mcpload on another machine before trusting the numbers. The full list of verdicts is in the README under [Reading the result](../README.md#reading-the-result).
+Besides the leak, drift, session and budget checks, mcpload also reports a `generator` verdict about the load generator itself. It warns when it dropped more than 1% of the planned iterations (fails above 10%), or when the load generator went over 90% CPU at its busiest, in which case the measured latency may include its own overhead. If it fires, lower the load or run mcpload on another machine before trusting the numbers. The full list of verdicts is in [Scenarios and verdicts](guide/scenarios-and-verdicts.md#reading-the-result).
 
 ## 4. Open the report
 
@@ -209,7 +209,7 @@ mcpload upload --url https://<your-endpoint> report.json
 
 ## In CI
 
-Use the GitHub Action (see [Run it on every pull request](../README.md#run-it-on-every-pull-request) in the README and [action/action.yml](../action/action.yml)). The
+Use the GitHub Action (see [Use mcpload in CI](guide/ci.md) and [action/action.yml](../action/action.yml)). The
 [PR gate example](../.github/workflows/example-pr-gate.yml) starts the demo servers in the job and gates on them.
 
 ## Clean up
