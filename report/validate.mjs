@@ -112,6 +112,27 @@ export function semanticErrors(r) {
       errs.push('cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)');
     }
   }
+  const cmp = r.comparison;
+  if (cmp) {
+    let regressed = false;
+    const seen = new Set();
+    for (const t of cmp.tools) {
+      const tp = `comparison.tools[${t.name}]`;
+      if (seen.has(t.name)) errs.push(`duplicate comparison tool '${t.name}'`);
+      seen.add(t.name);
+      if (t.status === 'added' && (t.base !== null || t.current === null)) errs.push(`${tp}: an added tool has current and no base`);
+      else if (t.status === 'removed' && (t.base === null || t.current !== null)) errs.push(`${tp}: a removed tool has base and no current`);
+      else if (t.status !== 'added' && t.status !== 'removed' && (t.base === null || t.current === null)) errs.push(`${tp}.base and .current are required for status "${t.status}"`);
+      regressed = regressed || t.status === 'regressed';
+      for (const s of [t.base, t.current]) {
+        if (!s) continue;
+        if (s.errors > s.reqs) errs.push(`${tp}: errors must be in [0, reqs]`);
+        if (!(s.p50 <= s.p95 && s.p95 <= s.p99)) errs.push(`${tp} percentiles not monotonic (p50<=p95<=p99)`);
+      }
+    }
+    for (const m of cmp.metrics) regressed = regressed || m.status === 'regressed';
+    if (regressed !== cmp.regressed) errs.push('comparison.regressed must be true exactly when a tool or metric has status "regressed"');
+  }
   return errs;
 }
 

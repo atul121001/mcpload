@@ -1,0 +1,182 @@
+{
+  "baseline": {
+    "source": "base.json",
+    "runId": "example_synthetic_ts-healthy",
+    "startedAt": "2026-09-29T13:00:00Z",
+    "scenario": "soak",
+    "protocol": "2025-06-18",
+    "git": {
+      "sha": "4a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+      "ref": "refs/heads/main"
+    }
+  },
+  "rules": {
+    "maxP95Increase": 0.2,
+    "maxP99Increase": 0.3,
+    "maxErrorIncrease": 0.5,
+    "minErrorDelta": 0.005,
+    "minDeltaMs": 25,
+    "minCalls": 50,
+    "maxLeakSlopeIncreaseMiBPerMin": 1
+  },
+  "regressed": true,
+  "reasons": [
+    "`search` p95 372 ms → 500 ms (+34%, +128 ms)"
+  ],
+  "warnings": [],
+  "tools": [
+    {
+      "name": "search",
+      "status": "regressed",
+      "base": {
+        "reqs": 16560,
+        "errors": 3,
+        "errorRate": 0.00018,
+        "p50": 118,
+        "p95": 372,
+        "p99": 716,
+        "rps": 7.667
+      },
+      "current": {
+        "reqs": 16560,
+        "errors": 3,
+        "errorRate": 0.00018,
+        "p50": 118,
+        "p95": 500,
+        "p99": 716,
+        "rps": 7.667
+      },
+      "regressed": [
+        "p95"
+      ]
+    },
+    {
+      "name": "fast",
+      "status": "ok",
+      "base": {
+        "reqs": 9936,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 11,
+        "p95": 29,
+        "p99": 54,
+        "rps": 4.6
+      },
+      "current": {
+        "reqs": 9936,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 11,
+        "p95": 29,
+        "p99": 54,
+        "rps": 4.6
+      }
+    },
+    {
+      "name": "slow",
+      "status": "ok",
+      "base": {
+        "reqs": 3312,
+        "errors": 2,
+        "errorRate": 0.0006,
+        "p50": 303,
+        "p95": 331,
+        "p99": 372,
+        "rps": 1.533
+      },
+      "current": {
+        "reqs": 3312,
+        "errors": 2,
+        "errorRate": 0.0006,
+        "p50": 303,
+        "p95": 331,
+        "p99": 372,
+        "rps": 1.533
+      }
+    },
+    {
+      "name": "flaky",
+      "status": "few_calls",
+      "base": {
+        "reqs": 3312,
+        "errors": 325,
+        "errorRate": 0.09813,
+        "p50": 39,
+        "p95": 118,
+        "p99": 262,
+        "rps": 1.533
+      },
+      "current": {
+        "reqs": 30,
+        "errors": 3,
+        "errorRate": 0.1,
+        "p50": 39,
+        "p95": 118,
+        "p99": 262,
+        "rps": 0.014
+      }
+    },
+    {
+      "name": "new",
+      "status": "added",
+      "base": null,
+      "current": {
+        "reqs": 400,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 3,
+        "p95": 8,
+        "p99": 12,
+        "rps": 0.185
+      }
+    },
+    {
+      "name": "big",
+      "status": "removed",
+      "base": {
+        "reqs": 3312,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 205,
+        "p95": 518,
+        "p99": 902,
+        "rps": 1.533
+      },
+      "current": null
+    }
+  ],
+  "metrics": [
+    {
+      "id": "errorRate",
+      "label": "error rate",
+      "unit": "rate",
+      "base": 0.007456,
+      "current": 0.007456,
+      "status": "ok"
+    },
+    {
+      "id": "memoryGrowthMiB",
+      "label": "memory growth",
+      "unit": "MiB",
+      "base": 0.97,
+      "current": 0.97,
+      "status": "ok"
+    },
+    {
+      "id": "leakSlopeMiBPerMin",
+      "label": "leak slope",
+      "unit": "MiB/min",
+      "base": 0.03,
+      "current": 0.03,
+      "status": "ok"
+    },
+    {
+      "id": "retainedMiB",
+      "label": "retained after cool-down",
+      "unit": "MiB",
+      "base": -5.22,
+      "current": -5.22,
+      "status": "ok"
+    }
+  ]
+}

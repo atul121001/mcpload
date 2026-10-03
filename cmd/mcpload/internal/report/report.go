@@ -46,6 +46,7 @@ const (
 	VerdictRecovery        = "recovery"
 	VerdictCallIntegrity   = "call_integrity"
 	VerdictCancellation    = "cancellation"
+	VerdictRegression      = "regression"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
@@ -53,7 +54,7 @@ var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
 	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew, VerdictSessionSurvival,
-	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation,
+	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation, VerdictRegression,
 }
 
 // Verdict statuses.
@@ -89,6 +90,93 @@ type Report struct {
 	CallIntegrity *CallIntegrity `json:"callIntegrity,omitempty"`
 	// Cancellation summarises cancelled calls (optional; runs that cancelled calls).
 	Cancellation *Cancellation `json:"cancellation,omitempty"`
+	// Comparison is this run against a baseline report (--baseline); nil otherwise.
+	Comparison *Comparison `json:"comparison,omitempty"`
+}
+
+// Comparison statuses (tools[].status, metrics[].status).
+const (
+	DeltaRegressed = "regressed" // worse beyond every noise rule
+	DeltaImproved  = "improved"  // better beyond the same rules
+	DeltaOK        = "ok"        // within noise
+	DeltaAdded     = "added"     // tool only in the current run
+	DeltaRemoved   = "removed"   // tool only in the baseline
+	DeltaFewCalls  = "few_calls" // fewer than MinCalls calls in either run
+	DeltaNA        = "n/a"       // not comparable (missing in a run, or the run is too short)
+)
+
+// Comparison is report.comparison: this run compared with a baseline report
+// (mcpload run --baseline). Regressed is true when any tool or metric has
+// status "regressed"; Reasons say which, in words. Warnings list differences
+// that may make the comparison unfair (scenario, protocol, load, sampler).
+type Comparison struct {
+	Baseline  BaselineRef   `json:"baseline"`
+	Rules     CompareRules  `json:"rules"`
+	Regressed bool          `json:"regressed"`
+	Reasons   []string      `json:"reasons"`
+	Warnings  []string      `json:"warnings"`
+	Tools     []ToolDelta   `json:"tools"`
+	Metrics   []MetricDelta `json:"metrics"`
+}
+
+// BaselineRef identifies the baseline report. Source is the path or URL it was read from.
+type BaselineRef struct {
+	Source    string `json:"source"`
+	RunID     string `json:"runId"`
+	StartedAt string `json:"startedAt"`
+	Scenario  string `json:"scenario"`
+	Protocol  string `json:"protocol"`
+	Git       *Git   `json:"git,omitempty"`
+}
+
+// CompareRules are the noise rules the comparison used. Relative increases
+// are fractions (0.2 = +20%); MinErrorDelta is absolute (0.005 = 0.5 points).
+type CompareRules struct {
+	MaxP95Increase       float64 `json:"maxP95Increase"`
+	MaxP99Increase       float64 `json:"maxP99Increase"`
+	MaxErrorIncrease     float64 `json:"maxErrorIncrease"`
+	MinErrorDelta        float64 `json:"minErrorDelta"`
+	MinDeltaMs           float64 `json:"minDeltaMs"`
+	MinCalls             int64   `json:"minCalls"`
+	MaxLeakSlopeIncrease float64 `json:"maxLeakSlopeIncreaseMiBPerMin"`
+}
+
+// ToolDelta is one tool in both runs. Base is nil for an added tool, Current
+// for a removed one. Regressed/Improved name the fields that moved beyond
+// the rules ("p95", "p99", "errorRate").
+type ToolDelta struct {
+	Name      string      `json:"name"`
+	Status    string      `json:"status"`
+	Base      *ToolSample `json:"base"`
+	Current   *ToolSample `json:"current"`
+	Regressed []string    `json:"regressed,omitempty"`
+	Improved  []string    `json:"improved,omitempty"`
+}
+
+// ToolSample is one tool's numbers in one run. RPS is calls per second of
+// warm-up plus load (phases.loadEndS; cool-down has no load).
+type ToolSample struct {
+	Reqs      int64   `json:"reqs"`
+	Errors    int64   `json:"errors"`
+	ErrorRate float64 `json:"errorRate"`
+	P50       float64 `json:"p50"`
+	P95       float64 `json:"p95"`
+	P99       float64 `json:"p99"`
+	RPS       float64 `json:"rps"`
+}
+
+// MetricDelta is one run-level value in both runs. ID is errorRate,
+// connectP95Ms, memoryGrowthMiB, leakSlopeMiBPerMin, retainedMiB or
+// maxSustainableVus; Unit is rate, ms, MiB, MiB/min or agents. Base and
+// Current are nil when a run lacks the value.
+type MetricDelta struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	Unit    string   `json:"unit"`
+	Base    *float64 `json:"base"`
+	Current *float64 `json:"current"`
+	Status  string   `json:"status"`
+	Note    string   `json:"note,omitempty"`
 }
 
 // Sessions is report.sessions: long-lived sessions and how they ended.
@@ -549,6 +637,27 @@ func (r *Report) Normalize() {
 		for _, p := range []**float64{&rc.RecoveryS, &rc.ServerBackS, &rc.LastReconnectS} {
 			if *p != nil && !finite(**p) {
 				*p = nil
+			}
+		}
+	}
+	if cmp := r.Comparison; cmp != nil {
+		if cmp.Reasons == nil {
+			cmp.Reasons = []string{}
+		}
+		if cmp.Warnings == nil {
+			cmp.Warnings = []string{}
+		}
+		if cmp.Tools == nil {
+			cmp.Tools = []ToolDelta{}
+		}
+		if cmp.Metrics == nil {
+			cmp.Metrics = []MetricDelta{}
+		}
+		for i := range cmp.Metrics {
+			for _, p := range []**float64{&cmp.Metrics[i].Base, &cmp.Metrics[i].Current} {
+				if *p != nil && !finite(**p) {
+					*p = nil
+				}
 			}
 		}
 	}
@@ -1107,6 +1216,90 @@ func (r *Report) Check() error {
 			if a, b := s.WorkAfterCancelP50Ms, s.WorkAfterCancelP95Ms; a != nil && b != nil && *a > *b {
 				add("cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)")
 			}
+		}
+	}
+	if cmp := r.Comparison; cmp != nil {
+		nonEmpty("comparison.baseline.source", cmp.Baseline.Source)
+		if cmp.Baseline.Git != nil && !reGitSHA.MatchString(cmp.Baseline.Git.SHA) {
+			add("comparison.baseline.git.sha must match ^[0-9a-f]{7,64}$ (got %q)", cmp.Baseline.Git.SHA)
+		}
+		ru := cmp.Rules
+		for _, p := range []struct {
+			path string
+			v    float64
+		}{{"maxP95Increase", ru.MaxP95Increase}, {"maxP99Increase", ru.MaxP99Increase}, {"maxErrorIncrease", ru.MaxErrorIncrease},
+			{"minErrorDelta", ru.MinErrorDelta}, {"minDeltaMs", ru.MinDeltaMs}, {"maxLeakSlopeIncreaseMiBPerMin", ru.MaxLeakSlopeIncrease}} {
+			nonNeg("comparison.rules."+p.path, p.v)
+		}
+		if ru.MinCalls < 0 {
+			add("comparison.rules.minCalls must be >= 0")
+		}
+		if cmp.Reasons == nil || cmp.Warnings == nil || cmp.Tools == nil || cmp.Metrics == nil {
+			add("comparison.reasons, .warnings, .tools and .metrics are required")
+		}
+		regressed := false
+		seen := map[string]bool{}
+		for _, t := range cmp.Tools {
+			tp := fmt.Sprintf("comparison.tools[%s]", t.Name)
+			nonEmpty("comparison.tools[].name", t.Name)
+			if seen[t.Name] {
+				add("duplicate comparison tool '%s'", t.Name)
+			}
+			seen[t.Name] = true
+			switch t.Status {
+			case DeltaRegressed, DeltaImproved, DeltaOK, DeltaFewCalls:
+				if t.Base == nil || t.Current == nil {
+					add("%s.base and .current are required for status %q", tp, t.Status)
+				}
+			case DeltaAdded:
+				if t.Base != nil || t.Current == nil {
+					add("%s: an added tool has current and no base", tp)
+				}
+			case DeltaRemoved:
+				if t.Base == nil || t.Current != nil {
+					add("%s: a removed tool has base and no current", tp)
+				}
+			default:
+				add("%s.status invalid: %q", tp, t.Status)
+			}
+			regressed = regressed || t.Status == DeltaRegressed
+			for _, s := range []*ToolSample{t.Base, t.Current} {
+				if s == nil {
+					continue
+				}
+				if s.Reqs < 0 || s.Errors < 0 || s.Errors > s.Reqs {
+					add("%s: errors must be in [0, reqs]", tp)
+				}
+				rate(tp+".errorRate", s.ErrorRate)
+				nonNeg(tp+".rps", s.RPS)
+				if !(s.P50 >= 0 && s.P50 <= s.P95 && s.P95 <= s.P99) {
+					add("%s percentiles not monotonic (p50<=p95<=p99)", tp)
+				}
+			}
+			for _, f := range append(append([]string{}, t.Regressed...), t.Improved...) {
+				if f != "p95" && f != "p99" && f != "errorRate" {
+					add("%s has an invalid regressed/improved entry %q", tp, f)
+				}
+			}
+		}
+		for i, m := range cmp.Metrics {
+			mp := fmt.Sprintf("comparison.metrics[%d]", i)
+			nonEmpty(mp+".id", m.ID)
+			nonEmpty(mp+".label", m.Label)
+			switch m.Unit {
+			case "rate", "ms", "MiB", "MiB/min", "agents":
+			default:
+				add("%s.unit invalid: %q", mp, m.Unit)
+			}
+			switch m.Status {
+			case DeltaRegressed, DeltaImproved, DeltaOK, DeltaNA:
+			default:
+				add("%s.status invalid: %q", mp, m.Status)
+			}
+			regressed = regressed || m.Status == DeltaRegressed
+		}
+		if regressed != cmp.Regressed {
+			add("comparison.regressed must be true exactly when a tool or metric has status \"regressed\"")
 		}
 	}
 	return errors.Join(errs...)

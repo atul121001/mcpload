@@ -20,6 +20,7 @@ mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
 mcpload render <report.json> <out.html>
 mcpload validate <report.json>
 mcpload upload --url <upload server base url> --key <api key> <report.json>
+mcpload compare <baseline.json> <current.json> [--max-p95-increase 20%] [--min-delta-ms 25] [--min-calls 50] [--format text|markdown|json]
 mcpload version
 ```
 
@@ -28,7 +29,7 @@ mcpload version
 | Code | Meaning |
 |---|---|
 | 0 | The run passed: no verdict is `fail` and every threshold passed. Warnings are allowed. |
-| 1 | The run failed: a verdict is `fail` or a k6 threshold failed. `report.json` and `report.html` are still written. |
+| 1 | The run failed: a verdict is `fail` (including `regression` with `--baseline`) or a k6 threshold failed. `report.json` and `report.html` are still written. For `compare`: the current report regressed. |
 | 2 | Usage or runtime error, such as bad flags, k6 not found, the sampler probe failing, k6 crashing, a failed upload, or a report that fails its semantic checks. |
 
 ### `run` flags
@@ -62,6 +63,9 @@ mcpload version
 | `--wait-ready` | `0` (off) | before starting, wait up to this long (e.g. `2m`) for the server to answer an MCP handshake. See [How `run` works](#how-run-works). |
 | `--chaos-restart` | `0` (off) | run `docker restart` on `--chaos-container` this long after k6 starts (e.g. `30s`). **Only on servers you own.** See [Chaos restart and the recovery verdict](#chaos-restart-and-the-recovery-verdict). |
 | `--chaos-container` | `--container` | the container `--chaos-restart` restarts. mcpload never restarts a container that wasn't named. |
+| `--baseline` | | a baseline `report.json` (path or http(s) URL) to compare with after the run: adds the `regression` verdict, `report.json` `comparison` and a "Compared with baseline" section in the HTML. Read before k6 starts, so a bad one exits 2 at once. See [Comparing with a baseline](#comparing-with-a-baseline). |
+| `--fail-on-regression` | true | with `--baseline`: a regression fails the run; `--fail-on-regression=false` makes the `regression` verdict a warning |
+| `--max-p95-increase`, `--max-p99-increase`, `--max-error-increase`, `--min-error-delta`, `--min-delta-ms`, `--min-calls`, `--max-leak-slope-increase` | 20%, 30%, 50%, 0.5, 25, 50, 1 | the comparison rules, as for `compare` |
 | `--calls-url` | | the server's record of executed call ids (`GET <url>?prefix=<p>` → `{"executions": {"<call id>": count}}`), e.g. `http://localhost:3019/calls`, for the `call_integrity` verdict |
 
 `--soak-min`, `--warmup-min`, `--cooldown-min`, `--vus` and `--duration` reach k6 only when you set them. When a flag is left out, the script uses its own default. The CLI computes report phases with the same defaults as `scenarios/soak.js`.
@@ -232,3 +236,59 @@ The step-load script sets no k6 thresholds, so a breach at a high step never fai
 | no call carried an id, or no `--calls-url` (or it could not be read) | `skipped`: "server-side executions not measured ..." |
 
 The TS demo server implements the endpoint with `TRACK_CALLS=1` (see [demo-servers/README.md](../../demo-servers/README.md#call-tracking-and-chaos-restarts-ts-image-off-in-compose)); [scenarios/README.md](../../scenarios/README.md#reconnect-storm) describes how to add the same record to your own server.
+
+## Comparing with a baseline
+
+Budgets say "`search` must stay under 800 ms". A baseline says "`search` must not get slower than it was on `main`". `mcpload compare <baseline.json> <current.json>` compares two reports, and `mcpload run --baseline <file|url>` compares the run it just made, adds the `regression` verdict, writes the comparison to `report.json` `comparison` and shows a "Compared with baseline" section in the HTML report. The GitHub Action does the same with `baseline:` or `baseline-branch: main`.
+
+For each tool it shows p50, p95, p99, error rate and req/s in both runs, the change and a marker: `⚠` regression, `✓` improvement, `·` within noise (p50 and req/s are shown but not judged). Then the run as a whole: error rate, connect p95 (from the `mcp_connect_duration` threshold), memory when both runs had the same sampler, and max sustainable concurrency when both are step-load runs. `--format markdown` prints the table the Action puts in the PR comment, `--format json` the `comparison` object. Exit codes: 1 on a regression, 0 otherwise, 2 when a report can't be read or isn't valid.
+
+A busy CI runner easily makes a 5 ms call take 8 ms, so a change counts as a regression only when it clears every rule:
+
+| | Regression when | Flags (defaults) |
+|---|---|---|
+| tool p95 / p99, connect p95 | rose by more than the relative limit **and** by more than the absolute floor | `--max-p95-increase 20%`, `--max-p99-increase 30%`, `--min-delta-ms 25` |
+| tool and overall error rate | rose by more than the floor in percentage points, by more than the relative limit, **and** a one-sided two-proportion z-test gives p < 0.05 (z ≥ 1.645) | `--min-error-delta 0.5`, `--max-error-increase 50%` |
+| any tool rule | only judged when both runs called the tool at least this often (latency: successful calls); otherwise listed as "fewer than N, not judged" | `--min-calls 50` |
+| tools in only one report | never: listed as added or removed | |
+| memory growth | needs both runs to have 2+ min of load after the first 60 s (otherwise shown, not judged). RSS growth over that window (lower-envelope fit, as `memory_leak`) more than 5 MiB above the baseline's with R² ≥ 0.7, or `memory_leak` went from pass/warn to fail | |
+| leak slope, retained after cool-down | slope up by more than the limit and by 5 MiB over the window; retained memory up by more than 5 MiB | `--max-leak-slope-increase 1` (MiB/min) |
+| max sustainable concurrency | lower than the baseline's, unless either run was inconclusive | |
+
+Improvements use the same rules in the other direction. The z-test is why 0 of 60 failed calls turning into 1 of 60 (+1.7 points) doesn't fail a build, while 0 of 1,000 turning into 10 of 1,000 does.
+
+When the runs differ in scenario, protocol, load shape (executor, VUs, rate), load duration (more than 1.5× apart), sampler (memory is then not compared: docker and Prometheus measure RSS differently), or the load generator was saturated in either run, the comparison still runs but warns that it may be unfair. With no regression, those warnings make the `regression` verdict `warn`.
+
+A real run: a healthy demo server (port 3001) as the baseline, then the same scenario against `ts-pooled` (port 3008, a 2-slot pool every tool call waits for), 10 agents for 30 s each. Every per-tool budget still passes, but each tool is many times slower than the baseline:
+
+```text
+$ ./mcpload run --url http://localhost:3008/mcp --vus 10 --duration 30s --sampler prometheus \
+    --prom-url http://localhost:3008/metrics --interval 5s --baseline base.json
+...
+baseline: run 1c961071 · agent-session · 2025-11-25 · started 2026-10-03T05:30:43Z
+current:  run c62dbf10 · agent-session · 2025-11-25 · started 2026-10-03T05:46:16Z
+                 baseline   current          Δ       %
+search (1,024 → 761 calls)
+  p50              2.7 ms     53 ms     +51 ms  +1891%
+  p95              5.4 ms    484 ms    +479 ms  +8809%  ⚠
+  p99               10 ms    590 ms    +580 ms  +5777%  ⚠
+  error rate           0%        0%      0 pts      0%  ·
+  req/s              29.2      22.4       -6.7    -23%
+...
+run
+  error rate         0.7%     0.56%  -0.15 pts    -21%  ·
+  connect p95       11 ms     24 ms     +14 ms   +128%  ·
+  memory growth   1.1 MiB  10.5 MiB   +9.4 MiB   +829%
+    (not judged: needs 2+ min of load after the first 60 s)
+rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.05; at least 50 calls per tool. ⚠ regression, ✓ improvement, · within noise
+Performance regression detected vs baseline run 1c961071:
+  - `big` p95 9.1 ms → 426 ms (+4567%, +417 ms)
+  ...
+
+mcpload verdicts (agent-session, 2025-11-25, 34s, 2337 reqs, 13 errors):
+  PASS     threshold          All 20 thresholds passed.
+  FAIL     regression         Performance regression vs baseline run 1c961071: `big` p95 9.1 ms → 426 ms (+4567%, +417 ms); `big` p99 36 ms → 598 ms (+1554%, +562 ms); `fast` p95 5.3 ms → 475 ms (+8932%, +470 ms) (+7 more).
+mcpload result: FAIL
+```
+
+The same healthy server run twice compares as "No regression" (exit 0): `search` p99 went from 10 to 21 ms (+110%) and `fast` p99 from 10 to 18 ms (+73%), both under the 25 ms floor, and memory growth of 1.1 → 8.2 MiB in a 30 s run is shown but not judged.

@@ -5,7 +5,10 @@
 # way and pin the Action to a release tag or a full commit SHA, e.g.
 # `uses: atul121001/mcpload/action@vX.Y.Z` or `@<40-char commit SHA>`, rather than a moving branch like @main.
 #
-#  1. ts-healthy (port 3001): agent-session for 1 minute, must stay inside the budgets -> gates the PR.
+#  1. ts-healthy (port 3001): agent-session for 1 minute, must stay inside the budgets and must not be
+#     slower than main (baseline-branch: main) -> gates the PR. Pushes to main run the same job, and
+#     their report artifact (mcpload-ts-healthy) is the baseline the next PRs compare with. Until main
+#     has one, the comparison is skipped with a notice.
 #  2. lb-stateful (port 3004): calibration check. Two replicas without sticky sessions must be
 #     flagged (session_not_found), so this step uses fail-on: never and asserts result == 'fail'.
 name: example-pr-gate
@@ -14,10 +17,15 @@ on:
   pull_request:
     paths-ignore:
       - '**.md'
+  push:
+    branches: [main] # produces the baseline report for PRs
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read # find and download main's report artifact (baseline-branch)
   pull-requests: write # PR comment
 
 concurrency:
@@ -60,6 +68,7 @@ jobs:
           container: mcpload-demo-ts-healthy-1
           label: ts-healthy
           artifact-name: mcpload-ts-healthy
+          baseline-branch: main # per-tool Δ vs main's last successful run; a regression fails the gate
           comment-on-pr: 'true'
           upload-url: ${{ vars.MCPLOAD_URL }}
           api-key: ${{ secrets.MCPLOAD_KEY }}

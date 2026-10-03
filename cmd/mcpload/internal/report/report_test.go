@@ -315,6 +315,38 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 			r.Cancellation = sampleCancellation()
 			r.Cancellation.Server = nil
 		}},
+		{"comparison valid", "", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Verdicts = append(r.Verdicts, Verdict{ID: VerdictRegression, Status: StatusFail, Signal: "comparison", Message: "x"})
+		}},
+		{"comparison not regressed valid", "", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[0].Status, r.Comparison.Tools[0].Regressed, r.Comparison.Regressed = DeltaOK, nil, false
+		}},
+		{"comparison regressed flag", "comparison.regressed must be true exactly", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Regressed = false
+		}},
+		{"comparison added with base", "an added tool has current and no base", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[1].Base = r.Comparison.Tools[0].Base
+		}},
+		{"comparison bad tool status", "status invalid", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[2].Status = "worse"
+		}},
+		{"comparison tool percentiles", "p50<=p95<=p99", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Tools[0].Current.P99 = 1
+		}},
+		{"comparison bad unit", "unit invalid", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Metrics[0].Unit = "%"
+		}},
+		{"comparison bad git sha", "comparison.baseline.git.sha", func(r *Report) {
+			r.Comparison = sampleComparison()
+			r.Comparison.Baseline.Git = &Git{SHA: "main"}
+		}},
 		{"cancellation late > cancels", "lateResponses", func(r *Report) {
 			r.Cancellation = sampleCancellation()
 			r.Cancellation.LateResponses = 99
@@ -358,6 +390,29 @@ func sampleCancellation() *Cancellation {
 	return &Cancellation{Cancels: 10, ByOutcome: map[string]int64{"cancelled": 2, "late_response": 8, "completed": 3}, ByReason: map[string]int64{"client": 10},
 		ByTool: map[string]int64{"slow": 10}, LateResponses: 8, SendMs: &Latency{Count: 10, P50: 1, P95: 2, P99: 2, Max: 3},
 		Server: &CancelServer{Cancelled: 10, Observed: 10, WorkAfterCancelP50Ms: F(1800), WorkAfterCancelP95Ms: F(2400), WorkAfterCancelTotalS: 18}}
+}
+
+func sampleComparison() *Comparison {
+	s := func(p95 float64) *ToolSample {
+		return &ToolSample{Reqs: 1000, Errors: 1, ErrorRate: 0.001, P50: p95 / 2, P95: p95, P99: 400, RPS: 16.7}
+	}
+	return &Comparison{
+		Baseline: BaselineRef{Source: "baseline/report.json", RunID: "r1", StartedAt: "2026-09-29T13:00:00Z", Scenario: "agent-session", Protocol: "2025-11-25",
+			Git: &Git{SHA: "4a1b2c3d", Ref: "refs/heads/main"}},
+		Rules:     CompareRules{MaxP95Increase: 0.2, MaxP99Increase: 0.3, MaxErrorIncrease: 0.5, MinErrorDelta: 0.005, MinDeltaMs: 25, MinCalls: 50, MaxLeakSlopeIncrease: 1},
+		Regressed: true,
+		Reasons:   []string{"`search` p95 210 ms → 284 ms (+35%, +74 ms)"},
+		Warnings:  []string{},
+		Tools: []ToolDelta{
+			{Name: "search", Status: DeltaRegressed, Base: s(210), Current: s(284), Regressed: []string{"p95"}},
+			{Name: "new", Status: DeltaAdded, Current: s(20)},
+			{Name: "old", Status: DeltaRemoved, Base: s(20)},
+		},
+		Metrics: []MetricDelta{
+			{ID: "errorRate", Label: "error rate", Unit: "rate", Base: F(0.001), Current: F(0.0012), Status: DeltaOK},
+			{ID: "memoryGrowthMiB", Label: "memory growth", Unit: "MiB", Base: F(0.2), Current: F(4.8), Status: DeltaNA, Note: "not judged"},
+		},
+	}
 }
 
 func sampleCapacity() *Capacity {
