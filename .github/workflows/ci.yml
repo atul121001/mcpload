@@ -165,3 +165,57 @@ jobs:
         run: docker compose logs --tail=200
       - if: always()
         run: docker compose down -v
+
+  # The images release.yml publishes, built locally (no push): the mcpload
+  # image runs, finds its bundled scenarios and writes reports to /work; and
+  # `mcpload demo up` starts the embedded compose file from the demo images
+  # (tagged locally under MCPLOAD_DEMO_IMAGE_PREFIX/MCPLOAD_DEMO_TAG) and
+  # waits until every target answers /healthz.
+  docker:
+    name: docker (mcpload image + mcpload demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MCPLOAD_DEMO_IMAGE_PREFIX: mcpload-ci/demo
+      MCPLOAD_DEMO_TAG: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/mcpload/go.mod
+          cache-dependency-path: cmd/mcpload/go.*
+      - name: Build the mcpload image
+        run: docker build -t mcpload:ci --build-arg VERSION=v0.0.0-ci .
+      - name: Image runs
+        run: |
+          docker run --rm mcpload:ci version | grep -qx 'mcpload v0.0.0-ci'
+          docker run --rm mcpload:ci run --help
+      - name: Build the demo images
+        run: |
+          docker compose -f demo-servers/docker-compose.yml build
+          docker build -t "$MCPLOAD_DEMO_IMAGE_PREFIX-nginx:$MCPLOAD_DEMO_TAG" demo-servers/nginx
+          docker tag mcpload-demo/ts-server:local "$MCPLOAD_DEMO_IMAGE_PREFIX-ts:$MCPLOAD_DEMO_TAG"
+          docker tag mcpload-demo/py-server:local "$MCPLOAD_DEMO_IMAGE_PREFIX-py:$MCPLOAD_DEMO_TAG"
+          docker tag mcpload-demo/go-server:local "$MCPLOAD_DEMO_IMAGE_PREFIX-go:$MCPLOAD_DEMO_TAG"
+          docker tag mcpload-demo/mock-oauth:local "$MCPLOAD_DEMO_IMAGE_PREFIX-oauth:$MCPLOAD_DEMO_TAG"
+      - name: mcpload demo up
+        run: |
+          (cd cmd/mcpload && go build -o ../../mcpload-cli .)
+          ./mcpload-cli demo up --timeout 2m
+          ./mcpload-cli demo status
+      - name: Run the image against the demo (report lands in the mounted folder)
+        run: |
+          mkdir -p out
+          # The demo ports are bound to 127.0.0.1, so share the host network.
+          code=0
+          docker run --rm --network host --user "$(id -u):$(id -g)" -v "$PWD/out:/work" mcpload:ci \
+            run --url http://localhost:3004/mcp --scenario lb-check --duration 10s --html report.html || code=$?
+          # lb-stateful has no sticky sessions: the run must fail (exit 1) with session_not_found.
+          [ "$code" -eq 1 ] || { echo "::error::expected exit 1, got $code"; exit 1; }
+          grep -q '"session_not_found"' out/report.json
+          test -s out/report.html && test -O out/report.json
+      - name: Demo logs
+        if: failure()
+        run: ./mcpload-cli demo logs --tail 100 || true
+      - if: always()
+        run: ./mcpload-cli demo down || true

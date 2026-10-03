@@ -1,0 +1,149 @@
+# mcpload demo targets, as run by `mcpload demo up` (embedded in the mcpload binary).
+# Local-only, intentionally vulnerable test targets. Do not expose.
+# (Ports are bound to 127.0.0.1 and nothing restarts automatically.)
+#
+# Same services, ports, env and memory limits as demo-servers/docker-compose.yml, but from the published
+# images (ghcr.io/atul121001/mcpload-demo-*) instead of build contexts, and with the nginx configs baked
+# into mcpload-demo-nginx instead of mounted. TestEmbeddedComposeInSync keeps the two files in step.
+# mcpload fills in the MCPLOAD_DEMO_IMAGE_PREFIX and MCPLOAD_DEMO_TAG placeholders before it runs compose
+# (`mcpload demo config` prints the result).
+name: mcpload-demo
+
+x-ts: &ts
+  image: ${MCPLOAD_DEMO_IMAGE_PREFIX:-ghcr.io/atul121001/mcpload-demo}-ts:${MCPLOAD_DEMO_TAG:-latest}
+  restart: "no"
+  mem_limit: 256m
+  environment: &ts-env
+    PORT: "3000"
+    FLAKY_RATE: "0.1"
+    BIG_BYTES: "200000"
+
+x-go: &go
+  image: ${MCPLOAD_DEMO_IMAGE_PREFIX:-ghcr.io/atul121001/mcpload-demo}-go:${MCPLOAD_DEMO_TAG:-latest}
+  restart: "no"
+  mem_limit: 128m
+  environment:
+    PORT: "3000"
+
+x-nginx: &nginx
+  image: ${MCPLOAD_DEMO_IMAGE_PREFIX:-ghcr.io/atul121001/mcpload-demo}-nginx:${MCPLOAD_DEMO_TAG:-latest}
+  restart: "no"
+  mem_limit: 64m
+
+services:
+  # 1. official TS SDK, stateful sessions, cleaned up properly -> expected: pass
+  ts-healthy:
+    <<: *ts
+    ports: ["127.0.0.1:3001:3000"]
+
+  # 2. LEAK=1: ~1MB retained per session, sessions never removed -> expected: leak flagged
+  ts-leaky:
+    <<: *ts
+    mem_limit: 512m
+    environment:
+      <<: *ts-env
+      LEAK: "1"
+    ports: ["127.0.0.1:3002:3000"]
+
+  # 3. official Python SDK, stateless_http -> expected: pass
+  py-healthy:
+    image: ${MCPLOAD_DEMO_IMAGE_PREFIX:-ghcr.io/atul121001/mcpload-demo}-py:${MCPLOAD_DEMO_TAG:-latest}
+    restart: "no"
+    mem_limit: 256m
+    environment:
+      PORT: "3000"
+    ports: ["127.0.0.1:3003:3000"]
+
+  # 4. two ts-healthy replicas behind round-robin nginx, NO sticky sessions -> expected: session_not_found flagged
+  lb-stateful-a:
+    <<: *ts
+    hostname: lb-stateful-a
+  lb-stateful-b:
+    <<: *ts
+    hostname: lb-stateful-b
+  lb-stateful:
+    <<: *nginx
+    command: ["nginx", "-c", "/etc/nginx/mcpload/lb-stateful.conf", "-g", "daemon off;"]
+    depends_on: [lb-stateful-a, lb-stateful-b]
+    ports: ["127.0.0.1:3004:80"]
+
+  # 5. go-sdk stateless (2026-07-28 capable), two replicas, same round-robin LB -> expected: pass
+  stateless-2026-a:
+    <<: *go
+    hostname: stateless-2026-a
+  stateless-2026-b:
+    <<: *go
+    hostname: stateless-2026-b
+  stateless-2026:
+    <<: *nginx
+    command: ["nginx", "-c", "/etc/nginx/mcpload/stateless-2026.conf", "-g", "daemon off;"]
+    depends_on: [stateless-2026-a, stateless-2026-b]
+    ports: ["127.0.0.1:3005:80"]
+
+  # 6. OAuth: token server (30s tokens) + ts-healthy variant that introspects every request
+  mock-oauth:
+    image: ${MCPLOAD_DEMO_IMAGE_PREFIX:-ghcr.io/atul121001/mcpload-demo}-oauth:${MCPLOAD_DEMO_TAG:-latest}
+    restart: "no"
+    mem_limit: 64m
+    environment:
+      PORT: "3000"
+      TOKEN_TTL_SECONDS: "30"
+      CLIENTS: "mcpload:secret"
+    ports: ["127.0.0.1:3006:3000"]
+  ts-oauth:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      REQUIRE_AUTH_URL: "http://mock-oauth:3000/introspect"
+    depends_on: [mock-oauth]
+    ports: ["127.0.0.1:3007:3000"]
+
+  # 7. POOL_SIZE=2: fast tools queue behind `slow` -> expected: tool_isolation fails (scenario isolation)
+  ts-pooled:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      POOL_SIZE: "2"
+    ports: ["127.0.0.1:3008:3000"]
+
+  # 8. rolling deploy caught halfway (version skew): round-robin nginx over two replicas on DIFFERENT builds.
+  #    skew (3009): typed errors -> expected: version_skew warns; skew-hang (3010): hangs -> version_skew fails
+  skew-old:
+    <<: *ts
+    hostname: skew-old
+    environment:
+      <<: *ts-env
+      SERVER_NAME: "skew-old"
+  skew-hang-old:
+    <<: *ts
+    hostname: skew-hang-old
+    environment:
+      <<: *ts-env
+      SERVER_NAME: "skew-hang-old"
+      HANG_UNKNOWN: "1"
+  skew-new:
+    <<: *go
+    hostname: skew-new
+    environment:
+      PORT: "3000"
+      SERVER_NAME: "skew-new"
+      NEW_TOOL: "1"
+      STATELESS_ONLY: "1"
+  skew:
+    <<: *nginx
+    command: ["nginx", "-c", "/etc/nginx/mcpload/skew.conf", "-g", "daemon off;"]
+    depends_on: [skew-old, skew-new]
+    ports: ["127.0.0.1:3009:80"]
+  skew-hang:
+    <<: *nginx
+    command: ["nginx", "-c", "/etc/nginx/mcpload/skew-hang.conf", "-g", "daemon off;"]
+    depends_on: [skew-hang-old, skew-new]
+    ports: ["127.0.0.1:3010:80"]
+
+  # 9. IGNORE_CANCEL=1: cancelled calls keep running -> expected: cancellation warns/fails (CANCEL_RATE)
+  ts-ignore-cancel:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      IGNORE_CANCEL: "1"
+    ports: ["127.0.0.1:3011:3000"]

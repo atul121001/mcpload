@@ -2,6 +2,8 @@
 # (Ports are bound to 127.0.0.1 and nothing restarts automatically.)
 # mcpload demo targets. Start: docker compose up -d --build   (from demo-servers/)
 # Every MCP endpoint is http://localhost:<port>/mcp ; TS/Go/Py targets also expose /metrics and /healthz.
+# `mcpload demo up` runs the same targets from the published images with cmd/mcpload/internal/demo/compose.yml;
+# keep services, ports, env and limits in step there (go test ./internal/demo in cmd/mcpload checks it).
 name: mcpload-demo
 
 x-ts: &ts

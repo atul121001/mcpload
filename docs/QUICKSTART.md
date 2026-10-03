@@ -2,6 +2,8 @@
 
 From a fresh clone to an HTML report in about five minutes (most of it is the first Docker and Go build).
 
+> **No clone needed to just try it.** With a release of mcpload installed, `mcpload demo up` starts the demo servers from published images and `mcpload demo down` stops them; see [Try it in 5 minutes](../README.md#try-it-in-5-minutes). There is also a Docker image, `ghcr.io/atul121001/mcpload` ([Run with Docker](../README.md#run-with-docker)). This guide builds everything from source.
+
 ## Prerequisites
 
 | Tool | Version | Install |
@@ -17,7 +19,7 @@ Make sure `$(go env GOPATH)/bin` (Windows: `%USERPROFILE%\go\bin`) is on your `P
 
 ## 1. Start the demo MCP servers
 
-The demo servers are known-good and known-bad targets on ports 3001–3007. They bind to 127.0.0.1 only and some are intentionally vulnerable, so don't expose them to a network (see [demo-servers/README.md](../demo-servers/README.md)).
+The demo servers are known-good and known-bad targets on ports 3001–3011. They bind to 127.0.0.1 only and some are intentionally vulnerable, so don't expose them to a network (see [demo-servers/README.md](../demo-servers/README.md)).
 
 Linux / macOS:
 
@@ -36,6 +38,8 @@ docker compose up -d --build
 docker compose ps
 cd ..
 ```
+
+If you don't need to change the demo servers, `mcpload demo up` (once mcpload is built, step 2) starts the same servers from the published images without building them, waits until they answer, and lists what each one demonstrates. Both ways use the project name `mcpload-demo`, so the container names (`mcpload-demo-ts-healthy-1`, ...) are the same; run one or the other.
 
 ## 2. Build k6 (with xk6-mcpload) and the mcpload CLI
 
@@ -109,7 +113,7 @@ Start-Process report.html
 
 Leak verdicts (`memory_leak`, `session_leak`, `fd_leak`) are only judged on soak runs, which have a cool-down, and need at least 2 minutes of steady load; on other runs they show as skipped. For real leak hunting use 10 minutes or more of steady load with a sampler. Shorter soaks only reliably catch leaks of about 2 MiB/min or more. `soak.js` takes `RATE` in new sessions per second, and fractions such as `--env RATE=0.05` are fine.
 
-Reset the leaky server between runs with `docker compose -f demo-servers/docker-compose.yml restart ts-leaky`.
+Reset the leaky server between runs with `docker restart mcpload-demo-ts-leaky-1`.
 
 ## Budgets and scenario knobs
 
@@ -167,3 +171,5 @@ Use the GitHub Action (see [Run it on every pull request](../README.md#run-it-on
 ```bash
 docker compose -f demo-servers/docker-compose.yml down -v
 ```
+
+If you started them with `mcpload demo up`, use `./mcpload demo down`.

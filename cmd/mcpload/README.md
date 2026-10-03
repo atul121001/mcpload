@@ -20,6 +20,7 @@ mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
 mcpload render <report.json> <out.html>
 mcpload validate <report.json>
 mcpload upload --url <upload server base url> --key <api key> <report.json>
+mcpload demo up|down|status|logs|config [flags]
 mcpload version
 ```
 
@@ -77,6 +78,49 @@ The first test needs only the endpoint:
 ```
 
 Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It looks for `scenarios/agent-session.js` in the current folder first, then next to the mcpload executable (release archives ship `mcpload`, `k6` and `scenarios/` together, so this works from any folder). A bare name such as `--scenario soak` or `--scenario lb-check` is looked up the same way as `scenarios/<name>.js`. A value that is an existing file, or that looks like a path (has a `/`, `\` or an extension such as `.js`), is used as is, as before. mcpload prints the script it picked (`mcpload: using scenario ...`). If nothing is found it exits 2 and lists the paths it tried.
+
+## Demo servers (`demo`)
+
+`mcpload demo` starts the healthy and deliberately broken [demo servers](../../demo-servers/README.md) without a clone. It runs `docker compose` with a compose file embedded in the binary ([`internal/demo/compose.yml`](internal/demo/compose.yml)) that uses the published `ghcr.io/atul121001/mcpload-demo-*` images, tagged with this mcpload's version (`latest` for development builds). It needs Docker with Compose v2; without them it exits 2 and says what to install.
+
+| Command | What it does |
+|---|---|
+| `mcpload demo up` | Pulls the images if needed, starts the servers on 127.0.0.1:3001-3011, waits until every target answers `/healthz` (`--timeout`, default 3m) and prints each URL with what it demonstrates. Exits 2 if a target doesn't come up. |
+| `mcpload demo status` | `docker compose ps`, then which targets answer. Exits 1 if any doesn't. |
+| `mcpload demo logs [-f] [--tail N] [service...]` | Server logs, e.g. `mcpload demo logs -f ts-leaky`. |
+| `mcpload demo down` | Stops and removes the servers. |
+| `mcpload demo config` | Prints the compose file it runs (no Docker needed). |
+
+| Flag / env | Default | Meaning |
+|---|---|---|
+| `--project-name` | `mcpload-demo` | compose project; containers are named `<project>-<service>-1` (e.g. `mcpload-demo-ts-leaky-1` for `--sampler docker --container`) |
+| `--base-port` | `3001` | host port of the first target; the others use the next 10 ports |
+| `MCPLOAD_DEMO_IMAGE_PREFIX` | `ghcr.io/atul121001/mcpload-demo` | images are `<prefix>-ts`, `-py`, `-go`, `-oauth`, `-nginx` |
+| `MCPLOAD_DEMO_TAG` | the CLI's version, or `latest` | image tag |
+
+`down`, `status` and `logs` must be given the same `--project-name` (and `status` the same `--base-port`) as `up`.
+
+```text
+$ mcpload demo up
+...
+The mcpload demo servers are up (project mcpload-demo). They listen on 127.0.0.1 only; don't expose them.
+
+  URL                          TARGET            DEMONSTRATES
+  http://localhost:3001/mcp    ts-healthy        healthy server (TypeScript SDK): PASS
+  http://localhost:3002/mcp    ts-leaky          leaks ~1 MB per session: memory_leak FAIL (soak + docker sampler)
+  ...
+  http://localhost:3011/mcp    ts-ignore-cancel  ignores cancellation: cancellation WARN/FAIL (CANCEL_RATE)
+```
+
+## Docker image
+
+`ghcr.io/atul121001/mcpload` (built from the [Dockerfile](../../Dockerfile) at the repo root, published by the release workflow for linux/amd64 and linux/arm64) runs `mcpload` as its entrypoint in `/work`, with the bundled scenarios next to the binary in `/opt/mcpload`, so bare scenario names work. Mount a folder at `/work` for the reports:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload run --url http://host.docker.internal:3001/mcp --duration 1m --html report.html
+```
+
+On Linux, reach servers bound to the host's 127.0.0.1 with `--network host` and `localhost`, or servers on all interfaces with `--add-host=host.docker.internal:host-gateway`; add `--user "$(id -u):$(id -g)"` so reports aren't owned by root. The image has no `docker` command, so `--sampler docker` and `--chaos-restart` don't work inside it. Build it locally with `docker build -t mcpload:dev .` (add `--build-arg VERSION=v0.3.0` to stamp a version).
 
 ## Examples
 

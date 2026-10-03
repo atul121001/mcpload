@@ -76,6 +76,47 @@ Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK
 The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcpload-demo/go-server:skew`), so
 `docker compose up -d --build skew skew-hang` never rebuilds the images the other targets run.
 
+### Without a clone: `mcpload demo` and the published images
+
+Each release publishes these servers to GHCR, for `linux/amd64` and `linux/arm64`, tagged with the release version (`0.3.0`) and `latest`:
+
+| Image | Built from | Used by |
+|---|---|---|
+| `ghcr.io/atul121001/mcpload-demo-ts` | `ts-server/` | ts-healthy, ts-leaky, ts-oauth, ts-pooled, ts-ignore-cancel, the lb-stateful and skew-old replicas |
+| `ghcr.io/atul121001/mcpload-demo-py` | `py-server/` | py-healthy |
+| `ghcr.io/atul121001/mcpload-demo-go` | `go-server/` | the stateless-2026 replicas, skew-new |
+| `ghcr.io/atul121001/mcpload-demo-oauth` | `mock-oauth/` | mock-oauth |
+| `ghcr.io/atul121001/mcpload-demo-nginx` | `nginx/` (stock `nginx:1.29-alpine` with the four configs in `/etc/nginx/mcpload/`) | lb-stateful, stateless-2026, skew, skew-hang |
+
+`mcpload demo up` runs them with a compose file embedded in the mcpload binary
+([`cmd/mcpload/internal/demo/compose.yml`](../cmd/mcpload/internal/demo/compose.yml)): the same services, ports, env,
+memory limits and project name (`mcpload-demo`) as `docker-compose.yml` here, with images instead of build
+contexts and the nginx configs baked in instead of mounted. It pulls the tag that matches the CLI's version
+(`latest` for development builds) and waits until every target answers `/healthz`.
+
+```bash
+mcpload demo up        # start, wait, print the URLs and what each one demonstrates
+mcpload demo status    # containers and which targets answer
+mcpload demo logs -f ts-leaky
+mcpload demo down
+mcpload demo config    # print the compose file it runs
+```
+
+`--base-port 13001` moves the targets to 13001-13011 and `--project-name` changes the container names (both are
+needed to run a second copy next to this one). `MCPLOAD_DEMO_IMAGE_PREFIX` and `MCPLOAD_DEMO_TAG` select other images,
+e.g. ones built locally:
+
+```bash
+docker compose build
+docker build -t mcpload-local/demo-nginx:dev nginx
+for s in ts py go; do docker tag mcpload-demo/$s-server:local mcpload-local/demo-$s:dev; done
+docker tag mcpload-demo/mock-oauth:local mcpload-local/demo-oauth:dev
+MCPLOAD_DEMO_IMAGE_PREFIX=mcpload-local/demo MCPLOAD_DEMO_TAG=dev mcpload demo up
+```
+
+When you change a service, port, env var or memory limit here, make the same change in the embedded compose file;
+`go test ./internal/demo` (in `cmd/mcpload`) fails until the two match.
+
 ### Call tracking and chaos restarts (TS image, off in compose)
 
 `TRACK_CALLS=1` makes the TS server record every `tools/call` that carries a call id in `params._meta["io.mcpload/callId"]` (sent by `scenarios/reconnect-storm.js`). The id is recorded when the tool's handler starts, the point where a non-idempotent tool would act. Records are appended to `CALL_LOG` (default `/tmp/mcpload-calls.log`, inside the container, which survives `docker restart`) and reloaded on start. `GET /calls?prefix=<p>` returns `{"executions": {"<call id>": <times run>}}`, and `/metrics` adds `mcp_tool_executions_total` and `mcp_tool_duplicate_executions_total`. `DEDUPE=atomic` skips a call id that already ran (an idempotency key); `DEDUPE=racy` makes the same check but records the id only after an `await` (`DEDUPE_RACE_MS`, 20), so two concurrent calls with one id both pass it: the non-atomic duplicate check.

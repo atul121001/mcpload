@@ -175,16 +175,11 @@ Speed and errors for each tool, from the healthy run. Any cell over its budget i
 
 ## Try it in 5 minutes
 
-The repo includes small demo MCP servers, some healthy and some deliberately broken, so you can see both a pass and a fail without touching a real server.
+mcpload comes with small demo MCP servers, some healthy and some deliberately broken, so you can see both a pass and a fail without touching a real server.
 
-**You need:** [Docker](https://docs.docker.com/get-docker/) (to run the demo servers) and Git. No programming tools are needed.
+**You need:** [Docker](https://docs.docker.com/get-docker/) (to run the demo servers). No Git or programming tools are needed.
 
-**1. Get the code.** This includes the demo servers and ready-made test scenarios.
-
-```bash
-git clone https://github.com/atul121001/mcpload.git
-cd mcpload
-```
+**1. Start Docker.** Open Docker Desktop (Windows, Mac) or make sure the Docker service is running (Linux). `docker compose version` should print a version.
 
 **2. Download mcpload into that folder.** Each download contains two programs: `mcpload` (the command you use) and `k6` (the load generator, with MCP support built in).
 
@@ -218,8 +213,10 @@ For another platform, replace `linux_amd64` or `darwin_arm64` in all three place
 **3. Start the demo servers.** They run only on your own machine (127.0.0.1).
 
 ```bash
-docker compose -f demo-servers/docker-compose.yml up -d --build
+./mcpload demo up
 ```
+
+The first time, this downloads the demo server images (a minute or two). It then starts 11 servers on `localhost:3001` to `3011`, waits until they answer, and lists each URL with what it demonstrates: a healthy server that passes, one that leaks memory, a load balancer that loses sessions, and so on. `./mcpload demo status` shows them again.
 
 **4. Test a healthy server.** One minute of agent traffic:
 
@@ -254,7 +251,22 @@ xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --outpu
 
 </details>
 
-When you're done: `docker compose -f demo-servers/docker-compose.yml down`
+<details>
+<summary><b>Working on mcpload itself? Run the demo servers from source</b></summary>
+
+`mcpload demo up` runs published images. To change the demo servers, clone the repo and build them locally (you need Git and Docker):
+
+```bash
+git clone https://github.com/atul121001/mcpload.git
+cd mcpload
+docker compose -f demo-servers/docker-compose.yml up -d --build
+```
+
+They use the same ports and container names as `mcpload demo up`, so run one or the other. Stop them with `docker compose -f demo-servers/docker-compose.yml down`. See [demo-servers/README.md](demo-servers/README.md).
+
+</details>
+
+When you're done: `./mcpload demo down`
 
 ---
 
@@ -316,6 +328,35 @@ The soak starts 2 new agent sessions per second by default. Change it with `--en
 Without a sampler, mcpload still reports speed and error trends, but it can't judge memory. If your Prometheus endpoint also reports heap size (as Node, Go and Python clients usually do), the memory check looks at the heap as well as total memory.
 
 Every option is listed in [scenarios/README.md](scenarios/README.md) and [cmd/mcpload/README.md](cmd/mcpload/README.md).
+
+### Run with Docker
+
+Nothing to install but Docker: the `ghcr.io/atul121001/mcpload` image contains mcpload and all the bundled scenarios. Mount a folder at `/work` and the reports are written there:
+
+```bash
+docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload \
+  run --url https://staging.example.com/mcp --vus 5 --duration 2m --html report.html
+```
+
+Every `mcpload` command and flag works the same way; scenarios can be named (`--scenario soak`) or read from the mounted folder (`--scenario ./my-test.js`). Pin a version with `ghcr.io/atul121001/mcpload:<version>` (for example `:0.3.0`) in CI.
+
+To test a server on your own machine, such as the demo servers:
+
+- **Windows and Mac (Docker Desktop):** use `host.docker.internal` in place of `localhost`, e.g. `--url http://host.docker.internal:3001/mcp`.
+- **Linux:** add `--network host` and keep `localhost` (the demo servers listen on 127.0.0.1 only). For a server that listens on all interfaces you can instead add `--add-host=host.docker.internal:host-gateway` and use `host.docker.internal`. Add `--user "$(id -u):$(id -g)"` so the reports belong to you, not root.
+
+```bash
+# Linux
+docker run --rm --network host --user "$(id -u):$(id -g)" -v "$PWD:/work" ghcr.io/atul121001/mcpload \
+  run --url http://localhost:3001/mcp --duration 1m --html report.html
+```
+
+```powershell
+# Windows PowerShell
+docker run --rm -v "${PWD}:/work" ghcr.io/atul121001/mcpload run --url http://host.docker.internal:3001/mcp --duration 1m --html report.html
+```
+
+`--sampler docker` and `--chaos-restart` call the `docker` command, which the image doesn't include; use `--sampler prometheus` from a container, or run mcpload directly.
 
 ## Getting trustworthy results
 
