@@ -1,5 +1,6 @@
 # Real output captured 2026-10-02 from the local demo servers (demo-servers/).
 # Omitted: k6 progress bars, the k6 end-of-test summary and the k6 "thresholds ... have been crossed" log line; everything else is verbatim.
+# Scene 3 (step-load, captured 2026-10-03 against 3008 ts-pooled) also omits the per-step breach detail lines, the five SKIPPED verdicts and "PASS threshold  No k6 thresholds were configured."
 # Format: '=== scene' starts a scene, '$ ' is the typed command, other lines are output.
 === scene
 $ ./mcpload run --url http://localhost:3001/mcp --scenario scenarios/agent-session.js --duration 20s
@@ -30,4 +31,21 @@ mcpload verdicts (lb-check, 2025-11-25, 21s, 6669 reqs, 2534 errors):
   FAIL     session_not_found  2525 of 6669 requests (37.862%) got 404 session-not-found: requests for an Mcp-Session-Id reached a replica that does not hold the session (load balancer without sticky sessions or shared session store).
   FAIL     threshold          8 of 23 thresholds failed: checks rate>=0.99 (observed 0.667267); checks{check:lb request ok} rate>=0.99 (observed 0.490727); mcp_errors{error_type:session_not_found} count<1 (observed 2525); mcp_tool_error_rate{tool:big} rate<0.01 (observed 0.543478); mcp_tool_error_rate{tool:fast} rate<0.01 (observed 0.496377); mcp_tool_error_rate{tool:flaky} rate<0.2 (observed 0.538961); mcp_tool_error_rate{tool:search} rate<0.01 (observed 0.517738); mcp_tool_error_rate{tool:slow} rate<0.01 (observed 0.4875).
   PASS     generator          1057 of 1057 planned iterations ran (0.00% dropped). k6 used up to ~4% of CPU of 12 cores, ~3% on average over the run.
+mcpload result: FAIL
+=== scene
+$ ./mcpload run --url http://localhost:3008/mcp --scenario step-load --env STEPS=5,10,20,40 --min-agents 20
+steps ✓ [ 100% ] 00/40 VUs  4m20s
+mcpload: wrote report.json
+
+mcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95, k6 CPU):
+       5  PASS        51.0     0.59%     5.6 ms  slow 428 ms             1%
+      10  PASS        84.7     0.68%     6.7 ms  slow 600 ms             1%
+      20  BREACH      98.7     0.72%     9.2 ms  slow 1.36 s             1%
+      40  BREACH      95.6     0.67%      12 ms  slow 2.37 s             1%
+max sustainable concurrency: 10 agents (budgets broke at 20)
+
+mcpload verdicts (step-load, 2025-11-25, 263s, 21722 reqs, 150 errors):
+  PASS     session_not_found  No 404 session-not-found responses.
+  PASS     generator          1657 of 1657 planned iterations ran (0.00% dropped). k6 used up to ~1% of CPU of 12 cores, ~1% on average over the run.
+  FAIL     capacity           Held budgets up to 10 agents; at 20 agents `slow` p95 1.36 s > 800 ms (+4 more). Target MIN_AGENTS=20 not met.
 mcpload result: FAIL

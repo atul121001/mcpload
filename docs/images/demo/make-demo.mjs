@@ -28,8 +28,8 @@ const PADBOT = 16;
 const WIDTH = PADX * 2 + COLS * CW; // 820
 
 // ---- timing (seconds) ---------------------------------------------------
-const CYCLE = 30;
-const SCENE_STARTS = [0, 14];       // scene i runs [start_i, start_{i+1})
+const CYCLE = 48;
+const SCENE_STARTS = [0, 14, 28];      // scene i runs [start_i, start_{i+1})
 const TYPE_DELAY = 0.8;             // after scene start, before typing
 const TYPE_CPS = 32;                // typing speed, chars per second
 const TYPE_MAX = 3.0;               // cap on typing duration
@@ -44,7 +44,7 @@ const C = {
   fg: '#e6edf3', dim: '#8b949e', msg: '#b1bac4', prompt: '#58a6ff',
   pass: '#3fb950', fail: '#f85149', skip: '#8b949e', warn: '#d29922',
 };
-const STATUS_COLOR = { PASS: C.pass, FAIL: C.fail, SKIPPED: C.skip, WARN: C.warn };
+const STATUS_COLOR = { PASS: C.pass, FAIL: C.fail, SKIPPED: C.skip, WARN: C.warn, BREACH: C.fail };
 
 // ---- parse transcript ---------------------------------------------------
 const scenes = [];
@@ -112,7 +112,16 @@ function outputLine(line) {
       html: `<tspan fill="${C.fg}" font-weight="bold">${esc(r[1])}</tspan><tspan fill="${col}" font-weight="bold">${r[2]}</tspan>${esc(r[3])}`,
     };
   }
-  if (t.startsWith('mcpload verdicts')) return { chars: len(t), html: `<tspan fill="${C.fg}">${esc(t)}</tspan>` };
+  // step-load table row: "<agents>  PASS|BREACH  <numbers>"
+  const st = t.match(/^(\s+\d+\s+)(PASS|BREACH)(.*)$/);
+  if (st) {
+    return {
+      chars: len(t),
+      html: `<tspan fill="${C.fg}">${esc(st[1])}</tspan><tspan fill="${STATUS_COLOR[st[2]]}" font-weight="bold">${st[2]}</tspan><tspan fill="${C.msg}">${esc(st[3])}</tspan>`,
+    };
+  }
+  if (t.startsWith('max sustainable concurrency')) return { chars: len(t), html: `<tspan fill="${C.fg}" font-weight="bold">${esc(t)}</tspan>` };
+  if (t.startsWith('mcpload verdicts') || t.startsWith('mcpload steps')) return { chars: len(t), html: `<tspan fill="${C.fg}">${esc(t)}</tspan>` };
   return { chars: len(t), html: esc(t) }; // dim (inherits)
 }
 
@@ -132,7 +141,7 @@ scenes.forEach((s, si) => {
   const enter = typeB + ENTER_PAUSE;
   const g = [];
 
-  g.push(`<g ${showBetween(start, end, si === 0 ? 's0' : '')}>`);
+  g.push(`<g ${showBetween(start, end, si < scenes.length - 1 ? 's0' : '')}>`);
   // prompt + full command (revealed by the sliding cover)
   g.push(textEl(PADX, 0, '$', 1, ` fill="${C.prompt}" font-weight="bold"`));
   const cmdX = PADX + 2 * CW;
@@ -179,7 +188,7 @@ const dots = [C.fail, C.warn, C.pass]
   .map((c, i) => `<circle cx="${20 + i * 18}" cy="${BAR / 2}" r="5.5" fill="${c}" opacity=".85"/>`)
   .join('');
 
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" aria-label="mcpload demo: a healthy MCP server run ends in PASS; a run behind a load balancer without sticky sessions ends in FAIL session_not_found" xml:space="preserve">
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" aria-label="mcpload demo: a healthy MCP server run ends in PASS; a run behind a load balancer without sticky sessions ends in FAIL session_not_found; a step-load run finds the server holds 10 agents and breaks at 20" xml:space="preserve">
 <title>mcpload demo</title>
 <style>
 ${css}

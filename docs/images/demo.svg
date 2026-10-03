@@ -1,43 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="820" height="328" viewBox="0 0 820 328" role="img" aria-label="mcpload demo: a healthy MCP server run ends in PASS; a run behind a load balancer without sticky sessions ends in FAIL session_not_found" xml:space="preserve">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="366" viewBox="0 0 820 366" role="img" aria-label="mcpload demo: a healthy MCP server run ends in PASS; a run behind a load balancer without sticky sessions ends in FAIL session_not_found; a step-load run finds the server holds 10 agents and breaks at 20" xml:space="preserve">
 <title>mcpload demo</title>
 <style>
-.an{animation-duration:30s;animation-iteration-count:infinite;animation-timing-function:step-end;animation-fill-mode:both}
+.an{animation-duration:48s;animation-iteration-count:infinite;animation-timing-function:step-end;animation-fill-mode:both}
 text{white-space:pre}
 .blink{animation:blink 1s step-end infinite}
 @keyframes blink{0%{opacity:1}50%{opacity:0}}
-@keyframes k0{0%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k1{0%{transform:translateX(0)}2.667%{transform:translateX(0);animation-timing-function:steps(98,end)}12.667%{transform:translateX(735px)}100%{transform:translateX(735px)}}
-@keyframes k2{0%{opacity:1}15%{opacity:0}100%{opacity:0}}
-@keyframes k3{0%{opacity:0}15.833%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k4{0%{opacity:0}16.833%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k5{0%{opacity:0}18.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k6{0%{opacity:0}19.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k7{0%{opacity:0}20.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k8{0%{opacity:0}21.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k9{0%{opacity:0}22.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k10{0%{opacity:0}23.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k11{0%{opacity:0}24.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k12{0%{opacity:0}25.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k13{0%{opacity:0}26.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k14{0%{opacity:0}29.333%{opacity:1}46.667%{opacity:0}100%{opacity:0}}
-@keyframes k15{0%{opacity:0}46.667%{opacity:1}}
-@keyframes k16{0%{transform:translateX(0)}49.333%{transform:translateX(0);animation-timing-function:steps(93,end)}59.021%{transform:translateX(697.5px)}100%{transform:translateX(697.5px)}}
-@keyframes k17{0%{opacity:0}46.667%{opacity:1}61.354%{opacity:0}100%{opacity:0}}
-@keyframes k18{0%{opacity:0}62.187%{opacity:1}}
-@keyframes k19{0%{opacity:0}63.188%{opacity:1}}
-@keyframes k20{0%{opacity:0}64.688%{opacity:1}}
-@keyframes k21{0%{opacity:0}65.688%{opacity:1}}
-@keyframes k22{0%{opacity:0}66.688%{opacity:1}}
-@keyframes k23{0%{opacity:0}67.688%{opacity:1}}
-@keyframes k24{0%{opacity:0}68.688%{opacity:1}}
-@keyframes k25{0%{opacity:0}69.688%{opacity:1}}
-@keyframes k26{0%{opacity:0}70.688%{opacity:1}}
-@keyframes k27{0%{opacity:0}71.688%{opacity:1}}
-@keyframes k28{0%{opacity:0}72.688%{opacity:1}}
-@keyframes k29{0%{opacity:0}75.688%{opacity:1}}
+@keyframes k0{0%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k1{0%{transform:translateX(0)}1.667%{transform:translateX(0);animation-timing-function:steps(98,end)}7.917%{transform:translateX(735px)}100%{transform:translateX(735px)}}
+@keyframes k2{0%{opacity:1}9.375%{opacity:0}100%{opacity:0}}
+@keyframes k3{0%{opacity:0}9.896%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k4{0%{opacity:0}10.521%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k5{0%{opacity:0}11.458%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k6{0%{opacity:0}12.083%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k7{0%{opacity:0}12.708%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k8{0%{opacity:0}13.333%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k9{0%{opacity:0}13.958%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k10{0%{opacity:0}14.583%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k11{0%{opacity:0}15.208%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k12{0%{opacity:0}15.833%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k13{0%{opacity:0}16.458%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k14{0%{opacity:0}18.333%{opacity:1}29.167%{opacity:0}100%{opacity:0}}
+@keyframes k15{0%{opacity:0}29.167%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k16{0%{transform:translateX(0)}30.833%{transform:translateX(0);animation-timing-function:steps(93,end)}36.888%{transform:translateX(697.5px)}100%{transform:translateX(697.5px)}}
+@keyframes k17{0%{opacity:0}29.167%{opacity:1}38.346%{opacity:0}100%{opacity:0}}
+@keyframes k18{0%{opacity:0}38.867%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k19{0%{opacity:0}39.492%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k20{0%{opacity:0}40.43%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k21{0%{opacity:0}41.055%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k22{0%{opacity:0}41.68%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k23{0%{opacity:0}42.305%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k24{0%{opacity:0}42.93%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k25{0%{opacity:0}43.555%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k26{0%{opacity:0}44.18%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k27{0%{opacity:0}44.805%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k28{0%{opacity:0}45.43%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k29{0%{opacity:0}47.305%{opacity:1}58.333%{opacity:0}100%{opacity:0}}
+@keyframes k30{0%{opacity:0}58.333%{opacity:1}}
+@keyframes k31{0%{transform:translateX(0)}60%{transform:translateX(0);animation-timing-function:steps(102,end)}66.25%{transform:translateX(765px)}100%{transform:translateX(765px)}}
+@keyframes k32{0%{opacity:0}58.333%{opacity:1}67.708%{opacity:0}100%{opacity:0}}
+@keyframes k33{0%{opacity:0}68.229%{opacity:1}}
+@keyframes k34{0%{opacity:0}68.854%{opacity:1}}
+@keyframes k35{0%{opacity:0}69.792%{opacity:1}}
+@keyframes k36{0%{opacity:0}70.417%{opacity:1}}
+@keyframes k37{0%{opacity:0}71.042%{opacity:1}}
+@keyframes k38{0%{opacity:0}71.667%{opacity:1}}
+@keyframes k39{0%{opacity:0}72.292%{opacity:1}}
+@keyframes k40{0%{opacity:0}72.917%{opacity:1}}
+@keyframes k41{0%{opacity:0}73.854%{opacity:1}}
+@keyframes k42{0%{opacity:0}74.479%{opacity:1}}
+@keyframes k43{0%{opacity:0}75.104%{opacity:1}}
+@keyframes k44{0%{opacity:0}75.729%{opacity:1}}
+@keyframes k45{0%{opacity:0}77.604%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.an,.blink{animation:none!important}.s0,.cv{display:none}}
 </style>
-<rect x=".5" y=".5" width="819" height="327" rx="9" fill="#0d1117" stroke="#30363d"/>
+<rect x=".5" y=".5" width="819" height="365" rx="9" fill="#0d1117" stroke="#30363d"/>
 <path d="M.5 30V9.5a9 9 0 0 1 9-9h801a9 9 0 0 1 9 9V30z" fill="#161b22"/>
 <line x1=".5" y1="30" x2="819.5" y2="30" stroke="#30363d"/>
 <circle cx="20" cy="15" r="5.5" fill="#f85149" opacity=".85"/><circle cx="38" cy="15" r="5.5" fill="#d29922" opacity=".85"/><circle cx="56" cy="15" r="5.5" fill="#3fb950" opacity=".85"/>
@@ -60,7 +76,7 @@ text{white-space:pre}
 <g class="an" style="animation-name:k13"><text x="20" y="286.5" textLength="780" lengthAdjust="spacingAndGlyphs">  <tspan fill="#3fb950" font-weight="bold">PASS</tspan>     <tspan fill="#e6edf3">generator</tspan>          <tspan fill="#b1bac4">160 of 160 planned iterations ran (0.00% dropped). k6 used up to ~2% of C…</tspan></text></g>
 <g class="an" style="animation-name:k14"><text x="20" y="305.5" textLength="150" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3" font-weight="bold">mcpload result: </tspan><tspan fill="#3fb950" font-weight="bold">PASS</tspan></text></g>
 </g>
-<g class="an" style="animation-name:k15">
+<g class="an s0" style="animation-name:k15">
 <text x="20" y="58.5" textLength="7.5" lengthAdjust="spacingAndGlyphs" fill="#58a6ff" font-weight="bold">$</text>
 <text x="35" y="58.5" textLength="697.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">./mcpload run --url http://localhost:3004/mcp --scenario scenarios/lb-check.js --duration 20s</text>
 <g class="cv"><g class="an" style="animation-name:k16"><rect x="35" y="46" width="712.5" height="19" fill="#0d1117"/><g class="an" style="animation-name:k17"><rect class="blink" x="35" y="48" width="7.5" height="15" fill="#e6edf3"/></g></g></g>
@@ -76,6 +92,24 @@ text{white-space:pre}
 <g class="an" style="animation-name:k27"><text x="20" y="267.5" textLength="780" lengthAdjust="spacingAndGlyphs">  <tspan fill="#f85149" font-weight="bold">FAIL</tspan>     <tspan fill="#e6edf3">threshold</tspan>          <tspan fill="#b1bac4">8 of 23 thresholds failed: checks rate&gt;=0.99 (observed 0.667267); checks{…</tspan></text></g>
 <g class="an" style="animation-name:k28"><text x="20" y="286.5" textLength="780" lengthAdjust="spacingAndGlyphs">  <tspan fill="#3fb950" font-weight="bold">PASS</tspan>     <tspan fill="#e6edf3">generator</tspan>          <tspan fill="#b1bac4">1057 of 1057 planned iterations ran (0.00% dropped). k6 used up to ~4% of…</tspan></text></g>
 <g class="an" style="animation-name:k29"><text x="20" y="305.5" textLength="150" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3" font-weight="bold">mcpload result: </tspan><tspan fill="#f85149" font-weight="bold">FAIL</tspan></text></g>
+</g>
+<g class="an" style="animation-name:k30">
+<text x="20" y="58.5" textLength="7.5" lengthAdjust="spacingAndGlyphs" fill="#58a6ff" font-weight="bold">$</text>
+<text x="35" y="58.5" textLength="765" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">./mcpload run --url http://localhost:3008/mcp --scenario step-load --env STEPS=5,10,20,40 --min-agent…</text>
+<g class="cv"><g class="an" style="animation-name:k31"><rect x="35" y="46" width="780" height="19" fill="#0d1117"/><g class="an" style="animation-name:k32"><rect class="blink" x="35" y="48" width="7.5" height="15" fill="#e6edf3"/></g></g></g>
+<g class="an" style="animation-name:k33"><text x="20" y="77.5" textLength="247.5" lengthAdjust="spacingAndGlyphs">steps ✓ [ 100% ] 00/40 VUs  4m20s</text></g>
+<g class="an" style="animation-name:k34"><text x="20" y="96.5" textLength="195" lengthAdjust="spacingAndGlyphs">mcpload: wrote report.json</text></g>
+<g class="an" style="animation-name:k35"><text x="20" y="134.5" textLength="667.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">mcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95, k6 CPU):</tspan></text></g>
+<g class="an" style="animation-name:k36"><text x="20" y="153.5" textLength="562.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">       5  </tspan><tspan fill="#3fb950" font-weight="bold">PASS</tspan><tspan fill="#b1bac4">        51.0     0.59%     5.6 ms  slow 428 ms             1%</tspan></text></g>
+<g class="an" style="animation-name:k37"><text x="20" y="172.5" textLength="562.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">      10  </tspan><tspan fill="#3fb950" font-weight="bold">PASS</tspan><tspan fill="#b1bac4">        84.7     0.68%     6.7 ms  slow 600 ms             1%</tspan></text></g>
+<g class="an" style="animation-name:k38"><text x="20" y="191.5" textLength="562.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">      20  </tspan><tspan fill="#f85149" font-weight="bold">BREACH</tspan><tspan fill="#b1bac4">      98.7     0.72%     9.2 ms  slow 1.36 s             1%</tspan></text></g>
+<g class="an" style="animation-name:k39"><text x="20" y="210.5" textLength="562.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">      40  </tspan><tspan fill="#f85149" font-weight="bold">BREACH</tspan><tspan fill="#b1bac4">      95.6     0.67%      12 ms  slow 2.37 s             1%</tspan></text></g>
+<g class="an" style="animation-name:k40"><text x="20" y="229.5" textLength="450" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3" font-weight="bold">max sustainable concurrency: 10 agents (budgets broke at 20)</tspan></text></g>
+<g class="an" style="animation-name:k41"><text x="20" y="267.5" textLength="532.5" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3">mcpload verdicts (step-load, 2025-11-25, 263s, 21722 reqs, 150 errors):</tspan></text></g>
+<g class="an" style="animation-name:k42"><text x="20" y="286.5" textLength="487.5" lengthAdjust="spacingAndGlyphs">  <tspan fill="#3fb950" font-weight="bold">PASS</tspan>     <tspan fill="#e6edf3">session_not_found</tspan>  <tspan fill="#b1bac4">No 404 session-not-found responses.</tspan></text></g>
+<g class="an" style="animation-name:k43"><text x="20" y="305.5" textLength="780" lengthAdjust="spacingAndGlyphs">  <tspan fill="#3fb950" font-weight="bold">PASS</tspan>     <tspan fill="#e6edf3">generator</tspan>          <tspan fill="#b1bac4">1657 of 1657 planned iterations ran (0.00% dropped). k6 used up to ~1% of…</tspan></text></g>
+<g class="an" style="animation-name:k44"><text x="20" y="324.5" textLength="780" lengthAdjust="spacingAndGlyphs">  <tspan fill="#f85149" font-weight="bold">FAIL</tspan>     <tspan fill="#e6edf3">capacity</tspan>           <tspan fill="#b1bac4">Held budgets up to 10 agents; at 20 agents `slow` p95 1.36 s &gt; 800 ms (+4…</tspan></text></g>
+<g class="an" style="animation-name:k45"><text x="20" y="343.5" textLength="150" lengthAdjust="spacingAndGlyphs"><tspan fill="#e6edf3" font-weight="bold">mcpload result: </tspan><tspan fill="#f85149" font-weight="bold">FAIL</tspan></text></g>
 </g>
 </g>
 </svg>
