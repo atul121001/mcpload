@@ -42,7 +42,7 @@ func (p pctFlag) Set(s string) error {
 func compareFlags(fs *flag.FlagSet, cc *analysis.CompareConfig) {
 	fs.Var(pctFlag{&cc.MaxP95Increase}, "max-p95-increase", "a tool's p95 regresses when it rose by more than this (and by more than --min-delta-ms)")
 	fs.Var(pctFlag{&cc.MaxP99Increase}, "max-p99-increase", "the same for p99")
-	fs.Var(pctFlag{&cc.MaxErrorIncrease}, "max-error-increase", "an error rate regresses when it rose by more than this share of the baseline rate, by more than --min-error-delta points and significantly (two-proportion z-test, p < 0.05)")
+	fs.Var(pctFlag{&cc.MaxErrorIncrease}, "max-error-increase", "an error rate regresses when it rose by more than this share of the baseline rate, by more than --min-error-delta points and significantly (two-proportion z-test, p < 0.001)")
 	fs.Var(pctFlag{&cc.MinErrorDelta}, "min-error-delta", "absolute error-rate floor in percentage points")
 	fs.Float64Var(&cc.MinDeltaMs, "min-delta-ms", cc.MinDeltaMs, "absolute latency floor: smaller changes are noise")
 	fs.Int64Var(&cc.MinCalls, "min-calls", cc.MinCalls, "a tool is judged only when both runs made at least this many calls of it")
@@ -273,7 +273,7 @@ func describeRun(r *report.Report) string {
 
 // rulesText summarises the noise rules in one line.
 func rulesText(ru report.CompareRules) string {
-	return fmt.Sprintf("p95 +%g%% / p99 +%g%% and +%g ms; error rate +%g pts, +%g%% and p < 0.05; at least %d calls per tool",
+	return fmt.Sprintf("p95 +%g%% / p99 +%g%% and +%g ms; error rate +%g pts, +%g%% and p < 0.001; at least %d calls per tool",
 		round6(ru.MaxP95Increase*100), round6(ru.MaxP99Increase*100), ru.MinDeltaMs, round6(ru.MinErrorDelta*100), round6(ru.MaxErrorIncrease*100), ru.MinCalls)
 }
 

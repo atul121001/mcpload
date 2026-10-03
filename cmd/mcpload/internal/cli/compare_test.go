@@ -104,7 +104,7 @@ run
   memory growth                  1.0 MiB       1.0 MiB      0 MiB    0%  ·
   leak slope                0.03 MiB/min  0.03 MiB/min  0 MiB/min    0%  ·
   retained after cool-down      -5.2 MiB      -5.2 MiB      0 MiB        ·
-rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.05; at least 50 calls per tool. ⚠ regression, ✓ improvement, · within noise
+rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.001; at least 50 calls per tool. ⚠ regression, ✓ improvement, · within noise
 Performance regression detected vs baseline 4a1b2c3 (main):
   - ` + "`search`" + ` p95 372 ms → 500 ms (+34%, +128 ms)
 `
@@ -129,7 +129,7 @@ Performance regression detected vs baseline 4a1b2c3 (main):
 		"| memory growth | 1.0 MiB | 1.0 MiB | 0 MiB | · |\n" +
 		"| leak slope | 0.03 MiB/min | 0.03 MiB/min | 0 MiB/min | · |\n" +
 		"| retained after cool-down | -5.2 MiB | -5.2 MiB | 0 MiB | · |\n\n" +
-		"<sub>Rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.05; at least 50 calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>\n"
+		"<sub>Rules: p95 +20% / p99 +30% and +25 ms; error rate +0.5 pts, +50% and p < 0.001; at least 50 calls per tool. ⚠ regression · ✓ improvement · · within noise</sub>\n"
 	if code != ExitFail || md != wantMd {
 		t.Errorf("markdown: exit %d, got:\n%s\nwant:\n%s", code, md, wantMd)
 	}

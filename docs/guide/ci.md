@@ -80,7 +80,7 @@ Performance regression detected vs baseline run 1c961071:
 Exit code 1 on a regression, 0 otherwise. The same server run twice gives "No regression": `search` p95 went from 5.4 ms to 6.4 ms (+17%) and `fast` p99 from 10 ms to 18 ms (+73%), both under the 25 ms floor. CI runners are noisy, so a change only counts when it clears every floor:
 
 - **Latency** (per tool p95 and p99, connect p95): more than +20% (p99: +30%) **and** more than +25 ms. A 5 ms tool going to 8 ms is not a regression.
-- **Error rate**: more than +0.5 percentage points, more than +50% of the baseline rate, **and** a two-proportion test says it isn't chance (p < 0.05). 0 of 60 calls failing, then 1 of 60, is not a regression.
+- **Error rate**: more than +0.5 percentage points, more than +50% of the baseline rate, **and** a two-proportion test says it isn't chance (p < 0.001). 0 of 60 calls failing, then 1 of 60, is not a regression.
 - **Enough calls**: a tool is only judged when both runs called it at least 50 times. Tools in only one run are listed as added or removed.
 - **Memory**: needs 2+ minutes of load. Fails when RSS grew 5 MiB more than in the baseline, when the leak slope rose by 1 MiB/min, when retained memory after cool-down rose by 5 MiB, or when `memory_leak` went from pass to fail.
 - **Fairness**: a different scenario, protocol, load or sampler, or a saturated load generator, gives a warning that the comparison may be unfair.
