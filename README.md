@@ -330,6 +330,7 @@ The checks, in plain words:
 | `session_survival` | Long-lived runs only: fails when sessions die before their planned end, e.g. "18 of 50 sessions died after a median 5m02s with session_not_found"; warns when calls late in a session are much slower than early ones. |
 | `recovery` | Runs with `--chaos-restart`: how long the server took to serve normally again after mcpload restarted its container, e.g. "20 agents reconnected within 2.0 s; errors returned to under 1% 2.0 s after the restart (budget 30 s)". Fails over `RECOVERY_BUDGET`. |
 | `call_integrity` | Runs whose calls carry call ids, with `--calls-url`: fails when the server ran a call twice (a client retry or a racy duplicate check), warns when calls failed on the client but ran on the server. |
+| `cancellation` | Runs that cancelled calls (`CANCEL_RATE`, or timeouts) only: whether the server stops work it was told to cancel, e.g. "The server kept running `slow` for a median 2.1 s after 480 cancels: cancelled work still uses capacity". Needs `--sampler prometheus` and a server that exposes `mcp_work_after_cancel_seconds` (the TS demo server does) to judge the server side: a warning from a median of 100 ms of work after a cancel, a fail from 1 s. Without it, it reports what the client saw (cancels sent, late responses) and warns when more than 10% of cancelled calls still got a response. |
 
 "Soak tests only" means the check is skipped on short runs without a cool-down, or with less than 2 minutes of steady load.
 
@@ -453,6 +454,9 @@ Full API: [xk6-mcpload/README.md](xk6-mcpload/README.md).
 | `mcp_sessions_open` | Gauge | client-side open sessions |
 | `mcp_server_requests` | Counter | server-to-client requests (sampling, elicitation, ...) answered inside response streams, by `method`; unexpected ones count in `mcp_errors` as `unsupported_request` |
 | `mcp_server_request_duration` | Trend | time to answer a server-to-client request (includes the simulated `delayMs`) |
+| `mcp_cancellations` | Counter | cancelled calls by `reason` (`client`: `cancelAfterMs`; `timeout`) and `outcome` (`cancelled`, `late_response`, `send_failed`, or `completed` when the call beat its cancel deadline). Cancelled calls carry `error_type` `cancelled` in `mcp_reqs` but are not counted in `mcp_errors` |
+| `mcp_cancel_duration` | Trend | time to send a cancel (the `notifications/cancelled` POST, or closing the stream on 2026-07-28) |
+| `mcp_cancel_late_response` | Trend | cancel sent to a late response arriving anyway (stateful only) |
 
 Report format: [report/schema/README.md](report/schema/README.md).
 </details>

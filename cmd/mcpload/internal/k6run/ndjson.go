@@ -21,6 +21,9 @@ const (
 	MetricReqs            = "mcp_reqs"
 	MetricErrors          = "mcp_errors"
 	MetricConnectDuration = "mcp_connect_duration"
+	MetricCancellations   = "mcp_cancellations"
+	MetricCancelDuration  = "mcp_cancel_duration"
+	MetricCancelLate      = "mcp_cancel_late_response"
 	methodToolsCall       = "tools/call"
 
 	// Custom metrics of scenarios/agent-workflow.js.
@@ -125,8 +128,9 @@ func (b *bucket) merge(o bucket) {
 
 type toolAgg struct {
 	reqs, errors float64
-	samples      int       // all duration samples (successful or not)
-	durations    []float64 // successful calls only
+	samples      int                // all duration samples (successful or not)
+	durations    []float64          // successful calls only
+	byErrorType  map[string]float64 // mcp_errors by error_type (steps only)
 }
 
 // Aggregator folds NDJSON points into report aggregates.
@@ -151,7 +155,8 @@ type Aggregator struct {
 	wf            workflowAgg
 	sk            skewAgg
 	// steps holds per-step aggregates keyed by the StepTag value (step-load).
-	steps map[string]*stepAgg
+	steps  map[string]*stepAgg
+	cancel cancelAgg
 	// res holds what the long-lived and reconnect-storm verdicts need.
 	res         resilienceAgg
 	first, last time.Time
@@ -310,8 +315,92 @@ func (a *Aggregator) add(l *line) error {
 		if p := tags["protocol"]; p != "" && tags["error_type"] == "" && strings.HasPrefix(tags["status"], "2") {
 			a.protoOK[p]++
 		}
+	case MetricCancellations, MetricCancelDuration, MetricCancelLate:
+		a.cancel.add(l.Metric, v, tags)
 	}
 	return nil
+}
+
+// cancelAgg collects xk6-mcpload's cancellation metrics.
+type cancelAgg struct {
+	samples              int
+	byOutcome, byReason  map[string]float64
+	byTool               map[string]float64 // sent cancellations per tool
+	durations, lateAfter []float64
+}
+
+func (c *cancelAgg) add(metric string, v float64, tags map[string]string) {
+	switch metric {
+	case MetricCancellations:
+		if c.byOutcome == nil {
+			c.byOutcome, c.byReason, c.byTool = map[string]float64{}, map[string]float64{}, map[string]float64{}
+		}
+		c.samples++
+		o := tags["outcome"]
+		if o == "" {
+			o = "unknown"
+		}
+		c.byOutcome[o] += v
+		if o == CancelOutcomeCompleted {
+			return
+		}
+		if r := tags["reason"]; r != "" {
+			c.byReason[r] += v
+		}
+		if t := tags["tool"]; t != "" {
+			c.byTool[t] += v
+		}
+	case MetricCancelDuration:
+		c.durations = append(c.durations, v)
+	case MetricCancelLate:
+		c.lateAfter = append(c.lateAfter, v)
+	}
+}
+
+// Cancellation outcomes (the outcome tag of mcp_cancellations).
+const (
+	CancelOutcomeCancelled    = "cancelled"
+	CancelOutcomeLateResponse = "late_response"
+	CancelOutcomeCompleted    = "completed"
+	CancelOutcomeSendFailed   = "send_failed"
+)
+
+// CancelStats summarises the client side of cancellations. Cancels counts
+// the cancellations sent (every outcome but completed); ByReason and ByTool
+// split them; ByOutcome has every outcome. SendMs is mcp_cancel_duration
+// (time to send a cancel) and LateMs mcp_cancel_late_response.
+type CancelStats struct {
+	Cancels          int64
+	ByOutcome        map[string]int64
+	ByReason, ByTool map[string]int64
+	SendMs, LateMs   Latency
+}
+
+// Cancellations returns the cancellation stats, or nil when the run emitted
+// no mcp_cancellations sample.
+func (a *Aggregator) Cancellations() *CancelStats {
+	c := a.cancel
+	if c.samples == 0 {
+		return nil
+	}
+	conv := func(m map[string]float64) map[string]int64 {
+		out := make(map[string]int64, len(m))
+		for k, v := range m {
+			out[sanitizeKey(k)] += round(v)
+		}
+		return out
+	}
+	cs := &CancelStats{ByOutcome: conv(c.byOutcome), ByReason: conv(c.byReason), ByTool: map[string]int64{},
+		SendMs: latencyOf(c.durations), LateMs: latencyOf(c.lateAfter)}
+	for k, v := range c.byTool {
+		cs.ByTool[k] += round(v)
+	}
+	for k, v := range cs.ByOutcome {
+		if k != CancelOutcomeCompleted {
+			cs.Cancels += v
+		}
+	}
+	return cs
 }
 
 // Points is the number of samples read.
@@ -351,6 +440,8 @@ type ToolStats struct {
 	Reqs, Errors       int64
 	ErrorRate          float64
 	P50, P95, P99, Max float64
+	// ByErrorType splits Errors by error_type (step tools only; nil otherwise).
+	ByErrorType map[string]int64
 }
 
 // Tools returns per-tool stats sorted by name.
@@ -374,6 +465,9 @@ func toolStats(tools map[string]*toolAgg) []ToolStats {
 			ts.Errors = ts.Reqs
 		}
 		ts.ErrorRate = ratio(ts.Errors, ts.Reqs)
+		if len(t.byErrorType) > 0 {
+			ts.ByErrorType = errorTypes(t.byErrorType)
+		}
 		if len(t.durations) > 0 {
 			ts.P50 = Percentile(t.durations, 0.50)
 			ts.P95 = Percentile(t.durations, 0.95)
@@ -483,13 +577,14 @@ type stepAgg struct {
 	tools                  map[string]*toolAgg
 	connects, connectFails int
 	connect                []float64 // successful connect durations
+	byErrorType            map[string]float64
 }
 
 // addStep folds one sample tagged step=<st> into that step.
 func (a *Aggregator) addStep(st, metric string, t time.Time, v float64, tags map[string]string) {
 	s := a.steps[st]
 	if s == nil {
-		s = &stepAgg{tools: map[string]*toolAgg{}}
+		s = &stepAgg{tools: map[string]*toolAgg{}, byErrorType: map[string]float64{}}
 		a.steps[st] = s
 	}
 	tool := func() *toolAgg {
@@ -509,8 +604,18 @@ func (a *Aggregator) addStep(st, metric string, t time.Time, v float64, tags map
 		}
 	case MetricErrors:
 		s.errors += v
+		et := tags["error_type"]
+		if et == "" {
+			et = "unknown"
+		}
+		s.byErrorType[et] += v
 		if isCall {
-			tool().errors += v
+			ta := tool()
+			ta.errors += v
+			if ta.byErrorType == nil {
+				ta.byErrorType = map[string]float64{}
+			}
+			ta.byErrorType[et] += v
 		}
 	case MetricReqDuration:
 		if isCall {
@@ -550,6 +655,8 @@ type StepStats struct {
 	Tools                   []ToolStats
 	Connects, ConnectErrors int64
 	ConnectP95              *float64
+	// ByErrorType splits Errors by error_type (empty without errors).
+	ByErrorType map[string]int64
 }
 
 // Steps returns the per-step aggregates sorted by VUs (nil when no sample
@@ -562,7 +669,8 @@ func (a *Aggregator) Steps() []StepStats {
 			continue
 		}
 		st := StepStats{VUs: vus, First: s.first, Last: s.last, Reqs: round(s.reqs), Errors: round(s.errors),
-			Tools: toolStats(s.tools), Connects: int64(s.connects), ConnectErrors: int64(s.connectFails)}
+			Tools: toolStats(s.tools), Connects: int64(s.connects), ConnectErrors: int64(s.connectFails),
+			ByErrorType: errorTypes(s.byErrorType)}
 		if st.Errors > st.Reqs {
 			st.Errors = st.Reqs
 		}
@@ -865,6 +973,17 @@ func ratio(a, b int64) float64 {
 		return 1
 	}
 	return r
+}
+
+// errorTypes rounds per-error_type counts into byErrorType keys, dropping zeros.
+func errorTypes(m map[string]float64) map[string]int64 {
+	out := map[string]int64{}
+	for k, v := range m {
+		if n := round(v); n > 0 {
+			out[sanitizeKey(k)] += n
+		}
+	}
+	return out
 }
 
 // sanitizeKey makes an error_type usable as a byErrorType key (^[a-z][a-z0-9_]*$).

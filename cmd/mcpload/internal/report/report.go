@@ -45,6 +45,7 @@ const (
 	VerdictSessionSurvival = "session_survival"
 	VerdictRecovery        = "recovery"
 	VerdictCallIntegrity   = "call_integrity"
+	VerdictCancellation    = "cancellation"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
@@ -52,7 +53,7 @@ var VerdictIDs = []string{
 	VerdictMemoryLeak, VerdictSessionLeak, VerdictFDLeak, VerdictLatencyDrift,
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
 	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew, VerdictSessionSurvival,
-	VerdictRecovery, VerdictCallIntegrity,
+	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation,
 }
 
 // Verdict statuses.
@@ -86,6 +87,8 @@ type Report struct {
 	// CallIntegrity compares the calls the client sent with the ones the
 	// server executed (--calls-url); nil when not measured.
 	CallIntegrity *CallIntegrity `json:"callIntegrity,omitempty"`
+	// Cancellation summarises cancelled calls (optional; runs that cancelled calls).
+	Cancellation *Cancellation `json:"cancellation,omitempty"`
 }
 
 // Sessions is report.sessions: long-lived sessions and how they ended.
@@ -246,6 +249,8 @@ type Step struct {
 	Breached           []string   `json:"breached,omitempty"`
 	Breaches           []string   `json:"breaches"`
 	Tools              []StepTool `json:"tools"`
+	// ByErrorType splits Errors by error_type (optional; omitted without errors).
+	ByErrorType map[string]int64 `json:"byErrorType,omitempty"`
 }
 
 // StepTool is one tool within a step. P95/P99 cover successful calls (nil
@@ -258,6 +263,40 @@ type StepTool struct {
 	P95       *float64 `json:"p95"`
 	P99       *float64 `json:"p99"`
 	Breached  []string `json:"breached,omitempty"`
+	// ByErrorType splits Errors by error_type (optional; omitted without errors).
+	ByErrorType map[string]int64 `json:"byErrorType,omitempty"`
+}
+
+// Cancellation is report.cancellation: the calls the client cancelled
+// (mcp_cancellations) and, when measured, what the server did about it.
+// Cancels counts cancellations sent (every outcome but "completed", a call
+// that finished before its cancel deadline); ByOutcome has every outcome,
+// ByReason ("client", "timeout") and ByTool split Cancels. SendMs is the time
+// to send a cancel, LateAfterMs the time from a cancel to a late response.
+type Cancellation struct {
+	Cancels       int64            `json:"cancels"`
+	ByOutcome     map[string]int64 `json:"byOutcome"`
+	ByReason      map[string]int64 `json:"byReason"`
+	ByTool        map[string]int64 `json:"byTool"`
+	LateResponses int64            `json:"lateResponses"`
+	SendMs        *Latency         `json:"sendMs,omitempty"`
+	LateAfterMs   *Latency         `json:"lateAfterMs,omitempty"`
+	// Server is nil when the server side was not measured (no Prometheus
+	// sampler, or the server exposes no cancellation metrics).
+	Server *CancelServer `json:"server"`
+}
+
+// CancelServer is the server side of cancellations over the run, from the
+// server's mcp_cancelled_total and mcp_work_after_cancel_seconds. The
+// work-after-cancel percentiles (ms) are estimated from histogram buckets;
+// nil without observations. WorkAfterCancelTotalS sums that work (seconds of
+// handler time spent on cancelled calls).
+type CancelServer struct {
+	Cancelled             int64    `json:"cancelled"`
+	Observed              int64    `json:"observed"`
+	WorkAfterCancelP50Ms  *float64 `json:"workAfterCancelP50Ms"`
+	WorkAfterCancelP95Ms  *float64 `json:"workAfterCancelP95Ms"`
+	WorkAfterCancelTotalS float64  `json:"workAfterCancelTotalS"`
 }
 
 // ToolInfo identifies the program that wrote the report.
@@ -592,6 +631,17 @@ func (r *Report) Check() error {
 	nonEmpty := func(path, v string) {
 		if v == "" {
 			add("%s is required and must be non-empty", path)
+		}
+	}
+	// counts checks an optional map of counts keyed like summary.byErrorType.
+	counts := func(path string, m map[string]int64) {
+		for k, v := range m {
+			if !reErrorType.MatchString(k) {
+				add("%s key %q must match ^[a-z][a-z0-9_]*$", path, k)
+			}
+			if v < 0 {
+				add("%s[%s] must be >= 0", path, k)
+			}
 		}
 	}
 	nonNeg := func(path string, v float64) {
@@ -1015,6 +1065,47 @@ func (r *Report) Check() error {
 				if t.P95 != nil && t.P99 != nil && *t.P95 > *t.P99 {
 					add("%s percentiles not monotonic (p95<=p99)", tp)
 				}
+				counts(tp+".byErrorType", t.ByErrorType)
+			}
+			counts(path+".byErrorType", st.ByErrorType)
+		}
+	}
+
+	if c := r.Cancellation; c != nil {
+		if c.ByOutcome == nil || c.ByReason == nil || c.ByTool == nil {
+			add("cancellation.byOutcome, .byReason and .byTool are required")
+		}
+		if c.Cancels < 0 || c.LateResponses < 0 || c.LateResponses > c.Cancels {
+			add("cancellation: lateResponses must be in [0, cancels]")
+		}
+		counts("cancellation.byOutcome", c.ByOutcome)
+		counts("cancellation.byReason", c.ByReason)
+		for k, v := range c.ByTool {
+			if k == "" || v < 0 {
+				add("cancellation.byTool[%q] must be a tool name with a count >= 0", k)
+			}
+		}
+		for _, l := range []struct {
+			path string
+			v    *Latency
+		}{{"cancellation.sendMs", c.SendMs}, {"cancellation.lateAfterMs", c.LateAfterMs}} {
+			if l.v != nil && !(l.v.Count >= 0 && l.v.P50 >= 0 && l.v.P50 <= l.v.P95 && l.v.P95 <= l.v.P99 && l.v.P99 <= l.v.Max) {
+				add("%s percentiles not monotonic (p50<=p95<=p99<=max)", l.path)
+			}
+		}
+		if s := c.Server; s != nil {
+			if s.Cancelled < 0 || s.Observed < 0 {
+				add("cancellation.server counts must be >= 0")
+			}
+			nonNeg("cancellation.server.workAfterCancelTotalS", s.WorkAfterCancelTotalS)
+			if s.WorkAfterCancelP50Ms != nil {
+				nonNeg("cancellation.server.workAfterCancelP50Ms", *s.WorkAfterCancelP50Ms)
+			}
+			if s.WorkAfterCancelP95Ms != nil {
+				nonNeg("cancellation.server.workAfterCancelP95Ms", *s.WorkAfterCancelP95Ms)
+			}
+			if a, b := s.WorkAfterCancelP50Ms, s.WorkAfterCancelP95Ms; a != nil && b != nil && *a > *b {
+				add("cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)")
 			}
 		}
 	}

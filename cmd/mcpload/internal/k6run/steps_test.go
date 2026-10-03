@@ -64,6 +64,9 @@ func TestStepsSplitByStepTag(t *testing.T) {
 	if slow.Name != "slow" || slow.Reqs != 1 || slow.Errors != 1 || slow.ErrorRate != 1 || slow.P95 != 0 {
 		t.Errorf("slow = %+v", slow)
 	}
+	if fmt.Sprint(s10.ByErrorType) != "map[timeout:1]" || fmt.Sprint(slow.ByErrorType) != "map[timeout:1]" || len(s5.ByErrorType) != 0 || s10.Tools[0].ByErrorType != nil {
+		t.Errorf("byErrorType: step %v, slow %v, step 5 %v, fast %v", s10.ByErrorType, slow.ByErrorType, s5.ByErrorType, s10.Tools[0].ByErrorType)
+	}
 	if NewAggregator(origin, time.Second, nil).Steps() != nil {
 		t.Error("no step tags should give nil")
 	}

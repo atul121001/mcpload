@@ -100,6 +100,18 @@ export function semanticErrors(r) {
       errs.push('callIntegrity: executed <= executions, duplicated <= executed and duplicatedAfterRetry <= duplicated must hold');
     }
   }
+  const cx = r.cancellation;
+  if (cx) {
+    if (cx.lateResponses > cx.cancels) errs.push('cancellation: lateResponses must be in [0, cancels]');
+    for (const k of ['sendMs', 'lateAfterMs']) {
+      const l = cx[k];
+      if (l && !(l.p50 <= l.p95 && l.p95 <= l.p99 && l.p99 <= l.max)) errs.push(`cancellation.${k} percentiles not monotonic (p50<=p95<=p99<=max)`);
+    }
+    const sv = cx.server;
+    if (sv && sv.workAfterCancelP50Ms != null && sv.workAfterCancelP95Ms != null && sv.workAfterCancelP50Ms > sv.workAfterCancelP95Ms) {
+      errs.push('cancellation.server work-after-cancel percentiles not monotonic (p50<=p95)');
+    }
+  }
   return errs;
 }
 

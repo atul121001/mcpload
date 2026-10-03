@@ -88,6 +88,7 @@ jobs:
       - run: node scenarios/lib/workflow.test.mjs
       - run: node scenarios/lib/skew.test.mjs
       - run: node scenarios/lib/resilience.test.mjs
+      - run: node scenarios/lib/cancel.test.mjs
 
   cli:
     name: cli (cmd/mcpload vet, test, build)

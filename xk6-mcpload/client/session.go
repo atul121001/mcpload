@@ -27,7 +27,10 @@ type Options struct {
 	Headers         map[string]string
 	Auth            Auth
 	// Timeout bounds every HTTP exchange (0 = no timeout).
-	Timeout    time.Duration
+	Timeout time.Duration
+	// CancelWait is how long the response stream of a cancelled stateful
+	// call is still read to detect a late response (0 = DefaultCancelWait).
+	CancelWait time.Duration
 	HTTPClient *http.Client
 	ClientInfo Implementation
 	// Capabilities sent as client capabilities. nil means {}.
@@ -472,13 +475,13 @@ const abandonTimeout = 5 * time.Second
 // name is the Mcp-Name header value (stateless) and the tool metric tag for
 // tools/call.
 func (s *Session) Request(ctx context.Context, method, name string, params map[string]any) (json.RawMessage, *Error) {
-	r := s.request(ctx, method, name, params, false)
+	r := s.request(ctx, method, name, params, false, CallOptions{})
 	return r.result, r.err
 }
 
-func (s *Session) request(ctx context.Context, method, name string, params map[string]any, toolCall bool) exchangeResult {
+func (s *Session) request(ctx context.Context, method, name string, params map[string]any, toolCall bool, co CallOptions) exchangeResult {
 	id := s.nextID.Add(1)
-	ex := exchange{method: method, id: &id, protoHdr: s.protocol}
+	ex := exchange{method: method, id: &id, protoHdr: s.protocol, cancelAfter: co.CancelAfter}
 	if toolCall {
 		ex.tool = name
 	}
@@ -547,6 +550,8 @@ func (s *Session) postTool(ctx context.Context, ex exchange) exchangeResult {
 // recordingObserver holds back the request event of one exchange (so the
 // caller can adjust its error type) and forwards token fetches to next right
 // away: a background token refresh may report after the exchange is over.
+// Only the first request event is held back; later ones (the
+// notifications/cancelled of a cancelled call) are forwarded.
 type recordingObserver struct {
 	NopObserver
 	next Observer
@@ -556,11 +561,23 @@ type recordingObserver struct {
 
 func (o *recordingObserver) OnRequest(st RequestStats) {
 	o.mu.Lock()
-	o.req = &st
+	if o.req == nil {
+		o.req = &st
+		o.mu.Unlock()
+		return
+	}
 	o.mu.Unlock()
+	o.next.OnRequest(st)
 }
 
 func (o *recordingObserver) OnTokenFetch(st TokenStats) { o.next.OnTokenFetch(st) }
+
+// OnCancel is forwarded right away: it may come after the call returned.
+func (o *recordingObserver) OnCancel(st CancelStats) {
+	if n, ok := o.next.(CancelObserver); ok {
+		n.OnCancel(st)
+	}
+}
 
 // OnServerRequest is forwarded right away too: answers are never held back.
 func (o *recordingObserver) OnServerRequest(st ServerRequestStats) {
@@ -609,12 +626,25 @@ func (s *Session) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes tools/call. MCP-level failures are reported in the
 // result's Err, never as a Go error.
 func (s *Session) CallTool(ctx context.Context, name string, args any) ToolResult {
-	return s.CallToolMeta(ctx, name, args, nil)
+	return s.CallToolMetaWith(ctx, name, args, nil, CallOptions{})
 }
 
 // CallToolMeta is CallTool with params._meta set to meta when it is not
 // empty. In stateless mode the protocol's own _meta keys are added to it.
 func (s *Session) CallToolMeta(ctx context.Context, name string, args any, meta map[string]any) ToolResult {
+	return s.CallToolMetaWith(ctx, name, args, meta, CallOptions{})
+}
+
+// CallToolWith is CallTool with per-call options. With CancelAfter > 0 a
+// call that has no response within that time returns at once with Cancelled
+// set (Err.Type ErrCancelled) and is cancelled on the wire (see cancel.go).
+func (s *Session) CallToolWith(ctx context.Context, name string, args any, co CallOptions) ToolResult {
+	return s.CallToolMetaWith(ctx, name, args, nil, co)
+}
+
+// CallToolMetaWith combines CallToolMeta and CallToolWith: params._meta set
+// to meta (when not empty) and the per-call options co.
+func (s *Session) CallToolMetaWith(ctx context.Context, name string, args any, meta map[string]any, co CallOptions) ToolResult {
 	params := map[string]any{"name": name}
 	if args != nil {
 		params["arguments"] = args
@@ -624,11 +654,12 @@ func (s *Session) CallToolMeta(ctx context.Context, name string, args any, meta 
 	if len(meta) > 0 {
 		params["_meta"] = meta
 	}
-	r := s.request(ctx, "tools/call", name, params, true)
+	r := s.request(ctx, "tools/call", name, params, true, co)
 	out := ToolResult{Duration: r.stats.Duration, ServedBy: r.servedBy}
 	if r.err != nil {
 		out.IsError = true
 		out.Err = r.err
+		out.Cancelled = r.err.Type == ErrCancelled
 		return out
 	}
 	var cr struct {
@@ -672,7 +703,7 @@ func (s *Session) CallParallel(ctx context.Context, calls []ToolCall) []ToolResu
 		wg.Add(1)
 		go func(i int, c ToolCall) {
 			defer wg.Done()
-			out[i] = s.CallToolMeta(ctx, c.Name, c.Args, c.Meta)
+			out[i] = s.CallToolMetaWith(ctx, c.Name, c.Args, c.Meta, c.CallOptions)
 		}(i, c)
 	}
 	wg.Wait()

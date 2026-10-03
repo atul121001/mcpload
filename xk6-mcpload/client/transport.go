@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net"
@@ -62,6 +63,9 @@ type exchange struct {
 	sessionID string
 	protoHdr  string // Mcp-Protocol-Version value; "" to omit
 	stateless bool
+	// cancelAfter > 0: cancel the request when no response arrived within
+	// it (see cancelInFlight).
+	cancelAfter time.Duration
 }
 
 type exchangeResult struct {
@@ -93,10 +97,10 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 
 	// Server-to-client requests on the response stream are answered in
 	// goroutines with the caller's context (each answer POST has its own
-	// timeout); post returns only after every answer has finished.
+	// timeout); post returns only after every answer has finished (except
+	// for a cancelled request, which stops waiting at once).
 	parent := ctx
 	var answers sync.WaitGroup
-	defer answers.Wait()
 	onRequest := func(m *rpcMessage) {
 		answers.Add(1)
 		go func() {
@@ -106,12 +110,6 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 	}
 
 	ctx, cancel := s.withTimeout(ctx)
-	cancelOwned := true
-	defer func() {
-		if cancelOwned {
-			cancel()
-		}
-	}()
 
 	// GotFirstResponseByte runs on the transport's goroutine, which can still
 	// be running when Do has already returned an error (timeout), so the
@@ -121,6 +119,7 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() { ttfb.Store(int64(time.Since(base)) + 1) }}
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, s.opts.URL, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		res.err = &Error{Type: ErrHTTP, Message: "building request: " + err.Error()}
 		return res
 	}
@@ -156,40 +155,142 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 		s.obs(ctx).OnRequest(res.stats)
 	}
 
-	resp, err := s.hc.Do(req)
-	if err != nil {
-		res.err = transportError(ctx, err)
+	if ex.cancelAfter <= 0 {
+		defer answers.Wait()
+		s.settle(&res, s.roundTrip(ctx, cancel, req, ex, authHdr, onRequest, nil))
 		finish()
+		s.cancelOnTimeout(parent, ex, res.err)
 		return res
 	}
+
+	// Cancellable call: the round trip runs in a goroutine so that the
+	// caller can stop waiting when cancelAfter passes without a response.
+	var early earlyHeaders
+	done := make(chan wire, 1)
+	go func() { done <- s.roundTrip(ctx, cancel, req, ex, authHdr, onRequest, &early) }()
+	timer := time.NewTimer(ex.cancelAfter)
+	var w wire
+	select {
+	case w = <-done:
+		timer.Stop()
+	case <-timer.C:
+		select {
+		case w = <-done: // the response won the race after all
+		default:
+			// The response headers may already be in (a slow SSE stream):
+			// keep the status and the replica that answered.
+			res.stats.Status, res.servedBy = early.get()
+			res.err = &Error{Type: ErrCancelled, HTTPStatus: res.stats.Status,
+				Message: fmt.Sprintf("cancelled by the client after %s", ex.cancelAfter)}
+			finish()
+			s.cancelInFlight(parent, cancel, ex, done, &answers)
+			return res
+		}
+	}
+	s.settle(&res, w)
+	finish()
+	answers.Wait()
+	if obs, ok := s.obs(parent).(CancelObserver); ok {
+		obs.OnCancel(CancelStats{Method: ex.method, Tool: ex.tool, Protocol: s.protocolTag(ex),
+			Reason: CancelReasonClient, Outcome: CancelOutcomeCompleted, Start: time.Now()})
+	}
+	s.cancelOnTimeout(parent, ex, res.err)
+	return res
+}
+
+// wire is the outcome of one HTTP round trip (roundTrip).
+type wire struct {
+	status    int
+	sessionID string
+	servedBy  string // Options.ServedByHeader response header
+	streamed  bool
+	stream    time.Duration
+	msg       *rpcMessage // nil for a notification or on error
+	err       *Error
+}
+
+// earlyHeaders publishes what the response headers said as soon as they
+// arrive, while the round trip is still reading the body: a cancelled call
+// reports them without waiting for the round trip to end.
+type earlyHeaders struct {
+	mu       sync.Mutex
+	status   int
+	servedBy string
+}
+
+func (e *earlyHeaders) set(status int, servedBy string) {
+	e.mu.Lock()
+	e.status, e.servedBy = status, servedBy
+	e.mu.Unlock()
+}
+
+func (e *earlyHeaders) get() (int, string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.status, e.servedBy
+}
+
+// settle copies a round trip's outcome into res (without reporting it).
+func (s *Session) settle(res *exchangeResult, w wire) {
+	res.stats.Status = w.status
+	res.sessionID = w.sessionID
+	res.servedBy = w.servedBy
+	res.stats.Streamed, res.stats.Stream = w.streamed, w.stream
+	switch {
+	case w.err != nil:
+		res.err = w.err
+	case w.msg == nil: // notification
+	case w.msg.Error != nil:
+		res.err = rpcToError(w.status, w.msg.Error)
+	default:
+		res.result = w.msg.Result
+	}
+}
+
+// roundTrip sends req and reads the response to ex. It releases ctx (calls
+// cancel) before returning, or after the background drain of an SSE stream.
+// early, when set, receives the HTTP status and served-by header as soon as
+// headers arrive.
+func (s *Session) roundTrip(ctx context.Context, cancel context.CancelFunc, req *http.Request, ex exchange, authHdr string,
+	onRequest func(*rpcMessage), early *earlyHeaders) (w wire) {
+	cancelOwned := true
+	defer func() {
+		if cancelOwned {
+			cancel()
+		}
+	}()
+	resp, err := s.hc.Do(req)
+	if err != nil {
+		w.err = transportError(ctx, err)
+		return w
+	}
 	headersAt := time.Now()
-	res.stats.Status = resp.StatusCode
-	res.sessionID = resp.Header.Get(HeaderSessionID)
-	res.servedBy = resp.Header.Get(s.opts.ServedByHeader)
+	w.status = resp.StatusCode
+	w.sessionID = resp.Header.Get(HeaderSessionID)
+	w.servedBy = resp.Header.Get(s.opts.ServedByHeader)
+	if early != nil {
+		early.set(w.status, w.servedBy)
+	}
 
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		_ = resp.Body.Close()
-		res.err = s.classifyStatus(resp, b, ex.sessionID != "", authHdr)
-		finish()
-		return res
+		w.err = s.classifyStatus(resp, b, ex.sessionID != "", authHdr)
+		return w
 	}
 
 	if ex.id == nil { // notification: 202 Accepted (or any 2xx) with no payload
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
 		_ = resp.Body.Close()
-		finish()
-		return res
+		return w
 	}
 
 	mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	wantID := strconv.FormatInt(*ex.id, 10)
-	var msg *rpcMessage
-	var perr *Error
 	if mt == "text/event-stream" {
-		res.stats.Streamed = true
-		msg, perr = readSSE(resp.Body, wantID, onRequest)
-		res.stats.Stream = time.Since(headersAt)
+		w.streamed = true
+		w.msg, w.err = readSSE(resp.Body, wantID, onRequest)
+		w.stream = time.Since(headersAt)
 		// Drain the rest of the stream in the background so the connection
 		// can be reused, without holding up the caller or its timings.
 		cancelOwned = false
@@ -198,27 +299,18 @@ func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
 		b, rerr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if rerr != nil {
-			perr = transportError(ctx, rerr)
+			w.err = transportError(ctx, rerr)
 		} else {
-			msg, perr = findResponse(b, wantID)
+			w.msg, w.err = findResponse(b, wantID)
 		}
 	}
-	if perr != nil {
+	if w.err != nil {
+		w.msg = nil
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			perr.Type = ErrTimeout
+			w.err.Type = ErrTimeout
 		}
-		res.err = perr
-		finish()
-		return res
 	}
-	if msg.Error != nil {
-		res.err = rpcToError(resp.StatusCode, msg.Error)
-		finish()
-		return res
-	}
-	res.result = msg.Result
-	finish()
-	return res
+	return w
 }
 
 func drainAndClose(body io.ReadCloser, cancel context.CancelFunc) {

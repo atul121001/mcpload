@@ -27,6 +27,9 @@ type mcpMetrics struct {
 	SessionsOpen    *metrics.Metric
 	ServerReqs      *metrics.Metric
 	ServerReqDur    *metrics.Metric
+	Cancellations   *metrics.Metric
+	CancelDuration  *metrics.Metric
+	LateResponse    *metrics.Metric
 
 	root *metrics.TagSet // the registry root tag set (no tags)
 }
@@ -51,6 +54,9 @@ func registerMetrics(r *metrics.Registry) (*mcpMetrics, error) {
 	reg(&m.SessionsOpen, "mcp_sessions_open", metrics.Gauge)
 	reg(&m.ServerReqs, "mcp_server_requests", metrics.Counter)
 	reg(&m.ServerReqDur, "mcp_server_request_duration", metrics.Trend, metrics.Time)
+	reg(&m.Cancellations, "mcp_cancellations", metrics.Counter)
+	reg(&m.CancelDuration, "mcp_cancel_duration", metrics.Trend, metrics.Time)
+	reg(&m.LateResponse, "mcp_cancel_late_response", metrics.Trend, metrics.Time)
 	return m, err
 }
 
@@ -84,6 +90,7 @@ type emitter struct {
 var (
 	_ client.Observer              = (*emitter)(nil)
 	_ client.ServerRequestObserver = (*emitter)(nil)
+	_ client.CancelObserver        = (*emitter)(nil)
 )
 
 func withTag(ts *metrics.TagSet, k, v string) *metrics.TagSet {
@@ -134,13 +141,40 @@ func (e *emitter) OnRequest(st client.RequestStats) {
 	if st.Streamed {
 		ss = append(ss, sample(e.m.StreamDuration, metrics.D(st.Stream)))
 	}
-	if st.ErrorType != "" {
+	// A call the script cancelled itself (error_type cancelled) is not a
+	// server failure: it is left out of mcp_errors and mcp_tool_error_rate.
+	cancelled := st.ErrorType == client.ErrCancelled
+	if st.ErrorType != "" && !cancelled {
 		ss = append(ss, sample(e.m.Errors, 1))
 	}
-	if st.Method == "tools/call" {
+	if st.Method == "tools/call" && !cancelled {
 		ss = append(ss, sample(e.m.ToolErrorRate, metrics.B(st.ErrorType != "")))
 	}
 	e.push(tags, end, ss...)
+}
+
+// OnCancel emits mcp_cancellations (tagged `reason` and `outcome`; `status`
+// is the notification POST's), mcp_cancel_duration for every cancellation
+// that was sent and mcp_cancel_late_response for a late response. A failed
+// notification is already counted in mcp_errors by its own request.
+func (e *emitter) OnCancel(st client.CancelStats) {
+	tags := withTag(e.tags, "method", st.Method)
+	tags = withTag(tags, "tool", st.Tool)
+	tags = withTag(tags, "protocol", st.Protocol)
+	tags = withTag(tags, "reason", st.Reason)
+	tags = withTag(tags, "outcome", st.Outcome)
+	tags = withTag(tags, "error_type", st.ErrorType)
+	if st.Outcome != client.CancelOutcomeCompleted {
+		tags = withTag(tags, "status", statusTag(st.Status))
+	}
+	ss := []metrics.Sample{sample(e.m.Cancellations, 1)}
+	if st.Outcome != client.CancelOutcomeCompleted && st.Outcome != client.CancelOutcomeSendFailed {
+		ss = append(ss, sample(e.m.CancelDuration, metrics.D(st.Duration)))
+	}
+	if st.Outcome == client.CancelOutcomeLateResponse {
+		ss = append(ss, sample(e.m.LateResponse, metrics.D(st.LateAfter)))
+	}
+	e.push(tags, st.Start.Add(st.Duration), ss...)
 }
 
 // OnServerRequest emits the samples for a server-to-client request read from

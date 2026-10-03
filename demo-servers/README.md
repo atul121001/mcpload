@@ -15,7 +15,7 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | Tool | Arguments | Behaviour |
 |---|---|---|
 | `fast` | none | returns `ok` immediately |
-| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns |
+| `slow` | `ms` (int, default 300) | sleeps `ms`, then returns. TS servers stop sleeping when the call is cancelled (`notifications/cancelled`), except `ts-ignore-cancel` |
 | `flaky` | `rate` (0..1, default `FLAKY_RATE` = 0.1) | returns `isError: true` with probability `rate` |
 | `big` | `bytes` (default `BIG_BYTES` = 200000) | returns a ~200 KB text block |
 | `search` | `query` (string, required), `limit` (default 5) | echoes the query with a fake result list (JSON text) |
@@ -40,10 +40,11 @@ only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
 | 3009 | `skew` | nginx round-robin over two replicas on **different builds** (a rolling deploy caught halfway): `skew-old` = the TS image (stateful 2025-11-25 only), `skew-new` = the Go image with `STATELESS_ONLY=1` (2026-07-28 only: `initialize` or an older `Mcp-Protocol-Version` gets HTTP 400 `-32022` Unsupported protocol version, `data.supported: ["2026-07-28"]`) and `NEW_TOOL=1` (also lists `new_tool`) | mixed | **`version_skew` warns** with `--scenario version-skew` (every mismatch fails fast: HTTP 400 from the old build, -32022 from the new one, `Tool new_tool not found` with `TOOLS_CACHE_TTL`) |
 | 3010 | `skew-hang` | the same, but the old replica is `skew-hang-old` (`HANG_UNKNOWN=1`): a request it can't serve (no session and not `initialize`, e.g. a 2026-07-28 request; an unknown session; a `tools/call` for a tool it doesn't have) is accepted and never answered | mixed | **`version_skew` fails** (requests hang until the client timeout) |
 | 3007 | `ts-oauth` | `ts-healthy` with `REQUIRE_AUTH_URL=http://mock-oauth:3000/introspect`: every `/mcp` request must carry a Bearer token that introspects as active, otherwise **401** | 2025-11-25 (stateful) | **refresh storm measured** (clients must refresh every 30 s) |
+| 3011 | `ts-ignore-cancel` | same image, `IGNORE_CANCEL=1`: `notifications/cancelled` is recorded but ignored, so a cancelled call keeps running and still sends its (late) response | 2025-11-25 (stateful) | **`cancellation` flagged** with `CANCEL_RATE` set and `--sampler prometheus` (ts-healthy passes it) |
 
 Side endpoints:
-- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, mock-oauth (3006) and each Go replica.
-  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, plus prom-client default metrics.
+- `GET /metrics` (Prometheus text) on 3001, 3002, 3003, 3007, 3008, 3011, mock-oauth (3006) and each Go replica.
+  - TS: `process_resident_memory_bytes`, `nodejs_heap_used_bytes`, `mcp_active_sessions`, `mcp_leaked_bytes`, `mcp_sessions_created_total`, `mcp_session_not_found_total`, `mcp_auth_rejected_total`, `mcp_cancelled_total{tool}` (calls cancelled while running), `mcp_work_after_cancel_seconds{tool}` (histogram: how long a cancelled call kept running after its cancel arrived; ~0 when honoured), `mcp_cancelled_inflight` (cancelled calls still running), plus prom-client default metrics.
   - Python / Go: `process_resident_memory_bytes`, `mcp_active_sessions` (always 0); Go also `go_memstats_heap_alloc_bytes`, `go_goroutines`.
   - mock-oauth: `oauth_tokens_issued_total`, `oauth_introspect_total{active}`, `oauth_live_tokens`.
   - Behind the nginx LBs (3004, 3005, 3009, 3010), `/metrics` reaches one replica at a time (round-robin). Use `docker stats` for per-replica memory.
@@ -68,7 +69,7 @@ No local Node, Python or Go is needed: everything builds inside Docker (`node:22
 (module `github.com/atul121001/mcpload/demo-servers/go-server`) are committed; the image only runs `go mod download`.
 
 Tunables (env in `docker-compose.yml`): `FLAKY_RATE`, `BIG_BYTES`, `LEAK`, `LEAK_BYTES` (1 MiB),
-`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
+`SESSION_IDLE_MS` (TS, 300000; 0 = off), `REQUIRE_AUTH_URL`, `IGNORE_CANCEL=1` (TS), `TOKEN_TTL_SECONDS` (30), `CLIENTS` (`id:secret,...`),
 `JSON_RESPONSE=1` (Python/Go: reply `application/json` instead of SSE), `SERVER_NAME`, `NEW_TOOL=1` and `STATELESS_ONLY=1` (Go),
 `HANG_UNKNOWN=1` (TS).
 

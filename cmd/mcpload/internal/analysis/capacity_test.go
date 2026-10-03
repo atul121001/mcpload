@@ -159,3 +159,25 @@ func TestSkipDriftForSteps(t *testing.T) {
 		t.Errorf("verdicts = %+v", vs)
 	}
 }
+
+func TestCapacityNamesErrorClass(t *testing.T) {
+	broken := step(40, 20, map[string][4]float64{"fast": {300, 0, 5, 9}, "slow": {100, 12, 320, 400}})
+	broken.Tools[1].ByErrorType = map[string]int64{"timeout": 9, "http": 3}
+	broken.ByErrorType = map[string]int64{"timeout": 9, "http": 3}
+	_, v := CapacityVerdict([]report.Step{healthy(20), broken}, capCfg())
+	if want := "at 40 agents `slow` error rate 12% > 1%, mostly `timeout` (9 of 12)."; !strings.Contains(v.Message, want) {
+		t.Errorf("message %q lacks %q", v.Message, want)
+	}
+	if got := dominantClass(map[string]int64{"http": 2}); got != ", all `http`" {
+		t.Errorf("single class: %q", got)
+	}
+	if got := dominantClass(map[string]int64{"http": 2, "timeout": 2, "auth": 1}); got != ", mainly `http` (2 of 5)" {
+		t.Errorf("no majority: %q", got)
+	}
+	if dominantClass(nil) != "" || TopErrorTypes(nil, 2) != "-" {
+		t.Error("empty classes")
+	}
+	if got := TopErrorTypes(map[string]int64{"timeout": 14, "http": 3, "auth": 0}, 2); got != "timeout 14, http 3" {
+		t.Errorf("top: %q", got)
+	}
+}

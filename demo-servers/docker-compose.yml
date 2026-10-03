@@ -154,3 +154,11 @@ services:
     volumes: ["./nginx/skew-hang.conf:/etc/nginx/nginx.conf:ro"]
     depends_on: [skew-hang-old, skew-new]
     ports: ["127.0.0.1:3010:80"]
+  # 9. same image, IGNORE_CANCEL=1: notifications/cancelled is ignored, so cancelled calls keep running and
+  #    still answer -> expected: cancellation warns/fails (agent-session with CANCEL_RATE); ts-healthy passes it
+  ts-ignore-cancel:
+    <<: *ts
+    environment:
+      <<: *ts-env
+      IGNORE_CANCEL: "1"
+    ports: ["127.0.0.1:3011:3000"]

@@ -298,6 +298,31 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 			r.CallIntegrity = sampleIntegrity()
 			r.CallIntegrity.Tagged = -1
 		}},
+		{"capacity byErrorType valid", "", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].ByErrorType = map[string]int64{"timeout": 4, "http": 1}
+			r.Capacity.Steps[1].Tools[0].ByErrorType = map[string]int64{"timeout": 4}
+		}},
+		{"capacity bad byErrorType key", "byErrorType key", func(r *Report) {
+			r.Capacity = sampleCapacity()
+			r.Capacity.Steps[1].Tools[0].ByErrorType = map[string]int64{"Time-Out": 4}
+		}},
+		{"cancellation valid", "", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Verdicts = append(r.Verdicts, Verdict{ID: VerdictCancellation, Status: StatusWarn, Signal: "mcp_cancellations", Message: "x"})
+		}},
+		{"cancellation unmeasured valid", "", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.Server = nil
+		}},
+		{"cancellation late > cancels", "lateResponses", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.LateResponses = 99
+		}},
+		{"cancellation server percentiles", "p50<=p95", func(r *Report) {
+			r.Cancellation = sampleCancellation()
+			r.Cancellation.Server.WorkAfterCancelP95Ms = F(1)
+		}},
 	}
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -327,6 +352,12 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func sampleCancellation() *Cancellation {
+	return &Cancellation{Cancels: 10, ByOutcome: map[string]int64{"cancelled": 2, "late_response": 8, "completed": 3}, ByReason: map[string]int64{"client": 10},
+		ByTool: map[string]int64{"slow": 10}, LateResponses: 8, SendMs: &Latency{Count: 10, P50: 1, P95: 2, P99: 2, Max: 3},
+		Server: &CancelServer{Cancelled: 10, Observed: 10, WorkAfterCancelP50Ms: F(1800), WorkAfterCancelP95Ms: F(2400), WorkAfterCancelTotalS: 18}}
 }
 
 func sampleCapacity() *Capacity {
