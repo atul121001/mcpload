@@ -105,6 +105,7 @@ th { color: var(--ink-2); font-weight: 600; font-size: 12.5px; }
 td.breach { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
 td.breach::after { content: " \2716"; font-size: 11px; }
 td.ok-budget::after { content: ""; }
+tr.total td { font-weight: 600; border-top: 1px solid var(--axis); }
 .small { font-size: 12px; }
 
 /* charts */
@@ -183,7 +184,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   // k6 metric name without the tag selector, e.g. "mcp_req_duration{tool:x}" -> "mcp_req_duration".
   function metricBase(m) { return String(m).split('{')[0]; }
   // Rate metrics (observed value is a 0..1 fraction). A Counter's "rate" is per second, a Trend's values are ms.
-  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || /_rate$|_failed$/.test(b); }
+  function isRateMetric(m) { var b = metricBase(m); return b === 'checks' || b === 'mcp_workflow_complete' || /_rate$|_failed$/.test(b); }
   function isDurationMetric(m) { return /duration|ttfb|_ms$/.test(metricBase(m)); }
 
   // ---------- threshold lookup: tool -> {p95:bool, p99:bool, errorRate:bool} (true = breached) ----------
@@ -254,6 +255,14 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   });
   h.push('</section>');
 
+  // "timeout 14, http 3": the n most frequent keys of a byErrorType map.
+  function topErr(m, n) {
+    var ks = Object.keys(m || {}).filter(function (k) { return m[k] > 0; }).sort(function (a, b) { return m[b] - m[a] || (a < b ? -1 : 1); });
+    var out = ks.slice(0, n).map(function (k) { return k + ' ' + num(m[k]); });
+    if (ks.length > n) out.push('+' + (ks.length - n) + ' more');
+    return out.join(', ') || '–';
+  }
+
   // ---------- capacity (step-load runs) ----------
   var cap = R.capacity && R.capacity.steps && R.capacity.steps.length ? R.capacity : null;
   var capTools = [];
@@ -270,27 +279,70 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
           : 'Budgets broke at the first step (' + num(cap.breakingVus) + ' agents): no sustainable concurrency found.';
     if (cap.minAgents != null) capLine += ' <span class="muted">Target: ' + num(cap.minAgents) + ' agents.</span>';
     if (cap.stoppedEarly) capLine += ' <span class="muted">The run stopped early (ABORT_ERR_RATE).</span>';
-    h.push('<h2>Capacity (step load)</h2><section class="card"><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
-      '<th>Agents</th><th>Result</th><th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
-      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
+    // Estimate: interpolated between the last passing and the first breaking step (capacity.estimatedVus).
+    var capTop = cap.steps[cap.steps.length - 1].vus;
+    var estV = cap.estimatedVus != null ? '~' + num(cap.estimatedVus) + ' agents'
+      : cap.breakingVus == null ? '≥ ' + num(capTop) + ' agents'
+        : cap.inconclusive ? 'inconclusive' : '< ' + num(cap.breakingVus) + ' agents';
+    var estNote = cap.estimatedVus != null ? 'An estimate, not a measured step: ' + (cap.estimateBasis || '')
+      : cap.breakingVus == null ? 'Nothing broke; test higher steps to find the limit.'
+        : cap.inconclusive ? (cap.estimateBasis || 'The load generator was saturated.') + '. Run k6 on a separate or bigger machine.'
+          : 'The first step already broke budgets; start lower.';
+    var capStats = [['Estimated sustainable capacity', estV],
+      ['Held budgets up to', cap.maxSustainableVus != null ? num(cap.maxSustainableVus) + ' agents' : '–'],
+      ['Broke budgets at', cap.breakingVus != null ? num(cap.breakingVus) + ' agents' : '–']];
+    if (cap.degradation) capStats.push(['Degradation from', num(cap.degradation.vus) + ' agents']);
+    if (cap.failure) capStats.push(['Failure at', num(cap.failure.vus) + ' agents']);
+    var capAll = cap.steps.some(function (st) { return st.p95Ms != null; });
+    h.push('<h2>Capacity (step load)</h2><section class="card"><div class="stats" style="margin:0 0 6px">' +
+      capStats.map(function (s, i) { return '<div class="stat"><div class="v"' + (i === 0 ? ' style="font-size:28px"' : '') + '>' + esc(s[1]) + '</div><div class="l">' + esc(s[0]) + '</div></div>'; }).join('') +
+      '</div><p class="small muted" style="margin:0 0 10px">' + esc(estNote) + '</p><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
+      '<th>Agents</th><th>Result</th>' + (capAll ? '<th>p95</th><th>p99</th>' : '') + '<th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
+      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Note</th></tr></thead><tbody>');
     cap.steps.forEach(function (st) {
       var res = st.passed ? 'pass' : 'fail';
       var sb = st.breached || [];
       var byName = {}; st.tools.forEach(function (t) { byName[t.name] = t; });
-      h.push('<tr><td>' + num(st.vus) + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+      // Markers, as in the terminal table: degradation, breaks budget (first breach), failure.
+      var notes = [];
+      if (cap.degradation && cap.degradation.vus === st.vus) notes.push('<b>degradation</b>: ' + esc(cap.degradation.reason));
+      if (cap.breakingVus === st.vus && st.breaches.length) notes.push('<b>breaks budget</b>: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      else if (!st.passed && st.breaches.length && !(cap.failure && cap.failure.vus === st.vus)) notes.push('over budget: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      if (cap.failure && cap.failure.vus === st.vus) notes.push('<b>failure</b>: ' + esc(cap.failure.reason));
+      h.push('<tr><td>' + num(st.vus) + (st.refinement ? ' <span class="muted small" title="refinement step (second k6 run)">refine</span>' : '') + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+        (capAll ? '<td>' + ms(st.p95Ms) + '</td><td>' + ms(st.p99Ms) + '</td>' : '') +
         '<td>' + num(st.rps, 1) + '</td><td>' + pct(st.errorRate) + '</td>' +
         '<td' + (sb.indexOf('connectP95Ms') >= 0 || sb.indexOf('connectErrorRate') >= 0 ? ' class="breach"' : '') + ' title="failed session starts ' + pct(st.connectErrorRate) + '">' + ms(st.connectP95Ms) + '</td>' +
         capTools.map(function (n) {
           var t = byName[n]; if (!t) return '<td class="muted">–</td>';
           var bt = t.breached || [];
-          return '<td' + (bt.length ? ' class="breach"' : '') + ' title="' + esc(num(t.reqs) + ' calls · p99 ' + ms(t.p99) + ' · errors ' + pct(t.errorRate) + (bt.length ? ' · over budget: ' + bt.join(', ') : '')) + '">' + ms(t.p95) + '</td>';
+          return '<td' + (bt.length ? ' class="breach"' : '') + ' title="' + esc(num(t.reqs) + ' calls · p99 ' + ms(t.p99) + ' · errors ' + pct(t.errorRate) + (t.byErrorType ? ' (' + topErr(t.byErrorType, 3) + ')' : '') + (bt.length ? ' · over budget: ' + bt.join(', ') : '')) + '">' + ms(t.p95) + '</td>';
         }).join('') +
+        '<td class="small mono" style="white-space:nowrap">' + (st.byErrorType ? esc(topErr(st.byErrorType, 2)) : '<span class="muted">–</span>') + '</td>' +
         '<td>' + (st.generatorCpuMaxPct != null ? num(st.generatorCpuMaxPct, 0) + '%' + (st.generatorSaturated ? ' <span class="badge warn">saturated</span>' : '') : '–') + '</td>' +
         '<td style="white-space:normal;text-align:left;min-width:200px" class="small" title="' + esc(st.breaches.join('\n')) + '">' +
-        esc(st.breaches[0] || '') + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : '') + '</td></tr>');
+        notes.join('<br>') + '</td></tr>');
     });
-    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99 and error rate.</div></section>');
+    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out).' + (capAll ? ' p95 and p99 cover the successful <code>tools/call</code> of all tools.' : '') +
+      ' Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes, and a note for every breach. Errors lists the most frequent <code>error_type</code>s of the step.' +
+      ' <b>Degradation</b>: the first step that held its budgets but got clearly worse (p95 at least 2× the first step’s, or a tool at half its error budget). <b>Failure</b>: error rate at <code>ABORT_ERR_RATE</code> or the run stopped there.</div></section>');
     h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-steps"></section></div>');
+  }
+
+  // ---------- cancellation (runs that cancelled calls) ----------
+  var CX = R.cancellation;
+  if (CX && CX.cancels > 0) {
+    var cs = CX.server, cRows = [
+      ['Cancels sent', num(CX.cancels) + ' <span class="muted small">(' + esc(topErr(CX.byReason, 3)) + ')</span>'],
+      ['Outcomes', esc(topErr(CX.byOutcome, 4))],
+      ['Time to send a cancel', CX.sendMs ? 'p50 ' + ms(CX.sendMs.p50) + ' · p95 ' + ms(CX.sendMs.p95) : '–'],
+      ['Late responses', num(CX.lateResponses) + (CX.lateAfterMs ? ' <span class="muted small">(p50 ' + ms(CX.lateAfterMs.p50) + ' after the cancel)</span>' : '')],
+      ['Server: work after cancel', cs ? (cs.workAfterCancelP50Ms != null ? 'p50 ' + ms(cs.workAfterCancelP50Ms) + ' · p95 ' + ms(cs.workAfterCancelP95Ms) + ' · ' + num(cs.workAfterCancelTotalS, 1) + ' s in total' : '–') +
+        ' <span class="muted small">(' + num(cs.cancelled) + ' cancels seen)</span>' : '<span class="muted">not measured</span>']
+    ];
+    h.push('<h2>Cancellation</h2><section class="card tablewrap"><table><tbody>' +
+      cRows.map(function (r) { return '<tr><th style="text-align:left">' + r[0] + '</th><td style="text-align:left">' + r[1] + '</td></tr>'; }).join('') +
+      '</tbody></table><div class="muted small" style="margin-top:8px">Calls cancelled by the client (<code>CANCEL_RATE</code>, or a timeout). A late response arrived after the cancel was sent; work after cancel is how long the server kept running a cancelled call (its <code>mcp_work_after_cancel_seconds</code>, with <code>--sampler prometheus</code>).</div></section>');
   }
 
   // ---------- per-tool table ----------
@@ -307,6 +359,35 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
       cell('errorRate', pct(t.errorRate)) + cell('p50', ms(t.p50)) + cell('p95', ms(t.p95)) + cell('p99', ms(t.p99)) + cell('max', ms(t.max)) + '</tr>');
   });
   h.push('</tbody></table><div class="muted small" style="margin-top:8px">Highlighted cells breached a k6 threshold. Latencies are <code>mcp_req_duration</code> for successful <code>tools/call</code> requests; errors are counted separately.</div></section>');
+
+  // ---------- workflow steps (scenario agent-workflow) ----------
+  var W = R.workflow;
+  if (W) {
+    // threshold lookup: metric key -> {p95:bool, p99:bool, ...} for the step and end-to-end rows
+    var wBreach = {};
+    thresholds.forEach(function (t) {
+      var base = metricBase(t.metric);
+      if (base !== 'mcp_workflow_step_duration' && base !== 'mcp_workflow_duration') return;
+      var key = /p\(95\)/.test(t.expr) ? 'p95' : /p\(99\)/.test(t.expr) ? 'p99' : /p\(50\)|med/.test(t.expr) ? 'p50' : /max/.test(t.expr) ? 'max' : null;
+      if (!key) return;
+      var b = wBreach[t.metric] || (wBreach[t.metric] = {});
+      b[key] = (b[key] || false) || !t.passed; b[key + '_expr'] = t.expr;
+    });
+    var wRow = function (label, metric, l, cls) {
+      var b = wBreach[metric] || {};
+      function cell(key) {
+        var title = b[key + '_expr'] ? ' title="threshold ' + esc(b[key + '_expr']) + (b[key] ? ' breached' : ' met') + '"' : '';
+        return '<td' + (b[key] ? ' class="breach"' : '') + title + '>' + (l.count ? ms(l[key]) : '–') + '</td>';
+      }
+      return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td class="mono">' + label + '</td><td>' + num(l.count) + '</td>' + cell('p50') + cell('p95') + cell('p99') + cell('max') + '</tr>';
+    };
+    h.push('<h2>Workflow steps</h2><section class="card tablewrap"><table><thead><tr>' +
+      '<th>Step</th><th>Runs</th><th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr></thead><tbody>');
+    W.steps.forEach(function (st, i) { h.push(wRow((i + 1) + '. ' + esc(st.name), 'mcp_workflow_step_duration{step:' + st.name + '}', st)); });
+    h.push(wRow('end to end', 'mcp_workflow_duration', W.durationMs, 'total'));
+    h.push('</tbody></table><div class="muted small" style="margin-top:8px">' + num(W.completed) + ' of ' + num(W.runs) + ' workflows completed (' + pct(W.completionRate, 1) + '). ' +
+      'A step is one parallel batch of <code>tools/call</code>, so its time is its slowest call. End to end runs from <code>connect()</code> to the end of the last step of a complete workflow, think pauses included.</div></section>');
+  }
 
   // ---------- charts ----------
   var hasRss = S.server.rssBytes && S.server.rssBytes.length === S.t.length && S.server.sampler !== 'none';
@@ -393,6 +474,16 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
       if (ph[2] - ph[1] <= 0 || X(ph[2]) - X(ph[1]) < ph[0].length * 6 + 12) return;
       s.push('<text class="phase-label" x="' + (X(ph[1]) + 6) + '" y="' + (m.t + 12) + '">' + ph[0] + '</text>');
     });
+    // chaos restart (--chaos-restart): a vertical line at the restart, and one where the clients recovered
+    var CH = R.chaos && R.chaos.ran && !R.chaos.error ? R.chaos : null;
+    if (CH) {
+      var rec = CH.recovery && CH.recovery.recoveryS != null ? CH.atS + CH.recovery.recoveryS : null;
+      [['restart', CH.atS, 'var(--bad)'], ['recovered', rec, 'var(--good)']].forEach(function (mk) {
+        if (mk[1] == null || mk[1] > xMax) return;
+        s.push('<line x1="' + X(mk[1]) + '" x2="' + X(mk[1]) + '" y1="' + m.t + '" y2="' + (H - m.b) + '" style="stroke:' + mk[2] + '" stroke-width="1.5" stroke-dasharray="4 4"><title>' + esc(mk[0] + ' at ' + mmss(mk[1])) + '</title></line>');
+      });
+      s.push('<text class="phase-label" x="' + (X(CH.atS) + 4) + '" y="' + (m.t + 26) + '">restart</text>');
+    }
     // grid + y axis
     s.push('<g class="axis">');
     ticks.forEach(function (v) {
@@ -419,9 +510,12 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     o.series.forEach(function (sr, k) { if (!sr.noHover) s.push('<circle class="dot' + k + '" r="4.5" style="fill:' + sr.color + ';stroke:var(--surface)" stroke-width="2" visibility="hidden"/>'); });
     s.push('<rect class="hit" x="' + m.l + '" y="' + m.t + '" width="' + (W - m.l - m.r) + '" height="' + (H - m.t - m.b) + '" fill="transparent"/>');
     s.push('</svg>');
+    var chaosLegend = CH ? '<span><i class="dash" style="border-top-color:var(--bad)"></i>restart ' + mmss(CH.atS) + '</span>' +
+      (rec != null ? '<span><i class="dash" style="border-top-color:var(--good)"></i>recovered ' + mmss(rec) + '</span>' : '') : '';
     var legend = o.series.length > 1 ? '<div class="legend">' + o.series.map(function (sr) {
       return '<span><i class="' + (sr.dash ? 'dash' : '') + '" style="border-top-color:' + sr.color + '"></i>' + esc(sr.name) + '</span>';
-    }).join('') + '<span><i class="box" style="background:var(--phase-warm)"></i>warm-up</span><span><i class="box" style="background:var(--phase-cool)"></i>cool-down</span></div>' : '';
+    }).join('') + '<span><i class="box" style="background:var(--phase-warm)"></i>warm-up</span><span><i class="box" style="background:var(--phase-cool)"></i>cool-down</span>' + chaosLegend + '</div>'
+      : chaosLegend ? '<div class="legend">' + chaosLegend + '</div>' : '';
     // data table (screen only; accessibility / exact values)
     var rows = t.map(function (tt, i) { return '<tr><td>' + mmss(tt) + '</td>' + o.series.filter(function (sr) { return !sr.noHover; }).map(function (sr) { return '<td>' + esc(sr.values[i] == null ? '–' : o.tipFmt(sr.values[i])) + '</td>'; }).join('') + '</tr>'; }).join('');
     var table = '<details><summary>Data table</summary><div class="tablewrap" style="max-height:260px;overflow:auto"><table class="small"><thead><tr><th>t</th>' +

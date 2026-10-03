@@ -210,9 +210,25 @@ type Capacity struct {
 	// breaking step, so the breach may be k6's own overhead.
 	Inconclusive bool `json:"inconclusive"`
 	// StoppedEarly is set when the scenario aborted the run (ABORT_ERR_RATE).
-	StoppedEarly bool            `json:"stoppedEarly"`
-	Budgets      CapacityBudgets `json:"budgets"`
-	Steps        []Step          `json:"steps"`
+	StoppedEarly bool `json:"stoppedEarly"`
+	// EstimatedVUs is the sustainable concurrency interpolated between the
+	// last passing and the first breaking step (2 significant figures); nil
+	// without such a bracket. EstimateBasis says how it was estimated, or why
+	// there is no estimate.
+	EstimatedVUs  *int   `json:"estimatedVus,omitempty"`
+	EstimateBasis string `json:"estimateBasis,omitempty"`
+	// Degradation is the first passing step that clearly got worse than the
+	// first step; Failure the first step where the server fell over.
+	Degradation *StepMark       `json:"degradation,omitempty"`
+	Failure     *StepMark       `json:"failure,omitempty"`
+	Budgets     CapacityBudgets `json:"budgets"`
+	Steps       []Step          `json:"steps"`
+}
+
+// StepMark points at one step of a step-load run and says why.
+type StepMark struct {
+	VUs    int    `json:"vus"`
+	Reason string `json:"reason"`
 }
 
 // CapacityBudgets are the budgets each step was judged against.
@@ -232,7 +248,8 @@ type ToolBudget struct {
 // Step is one concurrency level of a step-load run. StartS/EndS bound its
 // tagged requests (seconds since run start). Breached lists the step-level
 // fields over budget ("connectP95Ms", "connectErrorRate", "toolCalls");
-// Breaches describes every breach in words.
+// Breaches describes every breach in words. P95Ms/P99Ms (optional) cover the
+// successful tools/call of all tools in the step (nil without one).
 type Step struct {
 	VUs                int        `json:"vus"`
 	StartS             float64    `json:"startS"`
@@ -241,6 +258,8 @@ type Step struct {
 	Errors             int64      `json:"errors"`
 	ErrorRate          float64    `json:"errorRate"`
 	RPS                float64    `json:"rps"`
+	P95Ms              *float64   `json:"p95Ms,omitempty"`
+	P99Ms              *float64   `json:"p99Ms,omitempty"`
 	ConnectP95Ms       *float64   `json:"connectP95Ms"`
 	ConnectErrorRate   *float64   `json:"connectErrorRate"`
 	GeneratorCPUMaxPct *float64   `json:"generatorCpuMaxPct,omitempty"`
@@ -251,6 +270,9 @@ type Step struct {
 	Tools              []StepTool `json:"tools"`
 	// ByErrorType splits Errors by error_type (optional; omitted without errors).
 	ByErrorType map[string]int64 `json:"byErrorType,omitempty"`
+	// Refinement marks a step added after the first pass to narrow the
+	// breaking point (mcpload capacity --refine); it ran in a second k6 run.
+	Refinement bool `json:"refinement,omitempty"`
 }
 
 // StepTool is one tool within a step. P95/P99 cover successful calls (nil
@@ -567,7 +589,7 @@ func (r *Report) Normalize() {
 			if st.Tools == nil {
 				st.Tools = []StepTool{}
 			}
-			for _, p := range []**float64{&st.ConnectP95Ms, &st.ConnectErrorRate, &st.GeneratorCPUMaxPct} {
+			for _, p := range []**float64{&st.P95Ms, &st.P99Ms, &st.ConnectP95Ms, &st.ConnectErrorRate, &st.GeneratorCPUMaxPct} {
 				if *p != nil && !finite(**p) {
 					*p = nil
 				}
@@ -1002,6 +1024,27 @@ func (r *Report) Check() error {
 				break
 			}
 		}
+		if e := c.EstimatedVUs; e != nil {
+			// An interpolated estimate lies between the last passing and the breaking step.
+			if c.MaxSustainableVUs == nil || c.BreakingVUs == nil || *e < *c.MaxSustainableVUs || *e > *c.BreakingVUs {
+				add("capacity.estimatedVus must lie between maxSustainableVus and breakingVus")
+			}
+		}
+		stepVUs := map[int]bool{}
+		for _, st := range c.Steps {
+			stepVUs[st.VUs] = true
+		}
+		for _, m := range []struct {
+			path string
+			v    *StepMark
+		}{{"capacity.degradation", c.Degradation}, {"capacity.failure", c.Failure}} {
+			if m.v != nil {
+				if !stepVUs[m.v.VUs] {
+					add("%s.vus must be the vus of a step", m.path)
+				}
+				nonEmpty(m.path+".reason", m.v.Reason)
+			}
+		}
 		nonNeg("capacity.budgets.connectP95Ms", c.Budgets.ConnectP95Ms)
 		rate("capacity.budgets.connectErrorRate", c.Budgets.ConnectErrorRate)
 		for name, b := range c.Budgets.Tools {
@@ -1027,6 +1070,15 @@ func (r *Report) Check() error {
 			}
 			rate(path+".errorRate", st.ErrorRate)
 			nonNeg(path+".rps", st.RPS)
+			if st.P95Ms != nil {
+				nonNeg(path+".p95Ms", *st.P95Ms)
+			}
+			if st.P99Ms != nil {
+				nonNeg(path+".p99Ms", *st.P99Ms)
+			}
+			if st.P95Ms != nil && st.P99Ms != nil && *st.P95Ms > *st.P99Ms {
+				add("%s percentiles not monotonic (p95Ms<=p99Ms)", path)
+			}
 			if st.ConnectP95Ms != nil {
 				nonNeg(path+".connectP95Ms", *st.ConnectP95Ms)
 			}

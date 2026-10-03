@@ -17,6 +17,7 @@ go vet ./... && go test ./...
 
 ```text
 mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
+mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--factor 2 | --steps 10,25,50] [--step-duration 1m] [--refine N] [--target N] [flags]
 mcpload render <report.json> <out.html>
 mcpload validate <report.json>
 mcpload upload --url <upload server base url> --key <api key> <report.json>
@@ -100,6 +101,9 @@ Without `--scenario`, mcpload runs the bundled `agent-session` scenario. It look
 ./mcpload run --url http://localhost:3008/mcp --scenario step-load \
   --env STEPS=5,10,20,40 --env STEP_DURATION=20s --min-agents 20 --html steps.html
 
+# The same with the capacity front-end: 5, 10, 20, 40, 80 agents, then 2 refinement steps, plus an estimate
+./mcpload capacity --url http://localhost:3008/mcp --from 5 --to 80 --step-duration 20s --refine 2 --target 20
+
 # Rolling deploy with two builds behind one LB: do mismatched requests fail fast or hang?
 ./mcpload run --url http://localhost:3010/mcp --scenario version-skew --env MCP_TIMEOUT=5s --sampler none
 
@@ -160,17 +164,24 @@ Each step is judged against the budgets the scenarios use for thresholds, read f
 - **Inconclusive**: when k6 used more than 90% of the machine's CPU during the breaking step, the breach may be the load generator's own overhead, so the verdict says so instead of blaming the server.
 - **Stopped early**: when the scenario's `ABORT_ERR_RATE` guard aborted k6 (exit code 108), the steps that didn't run are listed.
 
-The terminal shows one line per step and a plain summary:
+- **Estimate**: between the last passing step (held) and the breaking step (broke), every breached metric that was measured at both steps (a tool's p95, p99 or error rate, connect p95, failed session starts) is followed in a straight line from its value at the held step to its value at the broken one, to where it reaches its budget. The lowest crossing is the estimate, rounded to 2 significant figures and kept below the breaking step. Latency usually grows faster than linearly near saturation, so the line crosses the budget early and the estimate errs low. It is an estimate, not a measured step; `--refine` measures inside the gap. When nothing broke the terminal says "at least <highest step> agents"; when the first step broke, "below <first step> agents"; when k6 was saturated, "inconclusive".
+- **Markers** in the step table: `<- degradation` on the first step after the first that still held its budgets but got clearly worse: the p95 of all `tools/call` at least 2× the first step's, or a tool's error rate (or failed session starts) at least half its budget and at least twice the first step's. `<- breaks budget` on the breaking step, with its worst breach. `<- failure` on the first step whose error rate reached `ABORT_ERR_RATE` (0.5 when unset or 0) or that completed no `tools/call`, or else on the last step when the guard stopped the run. Later breached steps show `over budget:` without an arrow.
+
+The terminal shows one line per step (p95/p99 of all successful `tools/call`, the error rate of all requests, req/s and the slowest tool), the max sustainable concurrency and the estimate. A real run against the ts-pooled demo server:
 
 ```text
-mcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95, k6 CPU):
-       5  PASS        50.2     0.70%     6.4 ms  slow 582 ms             0%
-      10  PASS        86.7     0.52%     6.9 ms  slow 687 ms             1%
-      20  BREACH      99.8     0.63%      10 ms  slow 1.04 s             1%
-          `slow` p95 1.04 s > 800 ms; `flaky` p95 901 ms > 800 ms; ...
+mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
+  Agents     p95     p99  Errors  req/s  Slowest tool p95
+       5  306 ms  488 ms   0.94%   42.5  slow 511 ms
+      10  415 ms  572 ms   0.56%   79.4  slow 597 ms
+      20  1.04 s  1.21 s   0.76%   95.0  slow 1.26 s       <- breaks budget: `slow` p95 1.26 s > 800 ms (+4 more)
+      40  2.05 s  2.22 s   0.61%   91.8  slow 2.15 s       over budget: `slow` p95 2.15 s > 800 ms (+9 more)
+      80  4.61 s  4.82 s   0.74%   71.5  slow 4.76 s       over budget: `slow` p95 4.76 s > 800 ms (+9 more)
 max sustainable concurrency: 10 agents (budgets broke at 20)
-  FAIL     capacity           Held budgets up to 10 agents; at 20 agents `slow` p95 1.04 s > 800 ms (+4 more). Target MIN_AGENTS=20 not met.
+Estimated sustainable capacity: ~13 agents (between 10 (held) and 20 (broke); linear interpolation of `slow` p95 to its 800 ms budget (the lowest of 5 breached metrics); an estimate, not a measured step)
 ```
+
+Every breach of every step is in `report.json` (`capacity.steps[].breaches`) and in the HTML report, which shows the estimate at the top of its capacity section.
 
 How `capacity` affects the result:
 
@@ -184,7 +195,47 @@ How `capacity` affects the result:
 | no target, a later step broke, or inconclusive | `warn`: informational, the exit code stays 0 |
 | no request carried a step tag | `skipped` |
 
-The step-load script sets no k6 thresholds, so a breach at a high step never fails the run by itself; set `--min-agents` to gate CI on capacity.
+The step-load script sets no k6 thresholds, so a breach at a high step never fails the run by itself; set `--min-agents` (`--target` with `capacity`) to gate CI on capacity.
+
+### `capacity`
+
+`mcpload capacity` is a front-end over `run --scenario step-load`: same scenario, same analysis, same report. It sets `STEPS`, `STEP_DURATION` and `MIN_AGENTS` from its own flags, so those (and `START`, `STEP_FACTOR`, `MAX_VUS`) can't be set with `--env`.
+
+```bash
+./mcpload capacity --url http://localhost:3008/mcp --from 5 --to 80 --step-duration 20s
+./mcpload capacity --url https://staging.example.com/mcp --env MCP_TOKEN=... --from 10 --to 1000 --refine 2 --target 200 --html capacity.html
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--from` | `10` | First step, in agents. |
+| `--to` | `1000` | Last step. The series always ends here: `--to` is appended when the series stops short of it by more than √factor, and otherwise replaces the last level (`--from 10 --to 1000` runs 10, 20, 40, 80, 160, 320, 640, 1000; `--to 700` runs ..., 320, 700). |
+| `--factor` | `2` | Each step is the previous one times this. |
+| `--steps` | | Explicit increasing steps, e.g. `10,25,50,100`, instead of `--from`/`--to`/`--factor`. At most 30 steps. |
+| `--step-duration` | `1m` | How long each step holds (`STEP_DURATION`), after a 5 s ramp (`--env RAMP=...`). |
+| `--refine N` | `0` | After the first pass, measure N more steps evenly spaced between the last passing and the first breaking step (`--refine 1` halves the gap; 2 is a good choice). |
+| `--target N` | `0` | Agents the server must hold within budgets (`MIN_AGENTS`); same pass/warn/fail rules as `--min-agents` above. |
+
+It also takes these `run` flags, with the same meaning: `--url`, `--protocol`, `--k6`, `--sampler`, `--container`, `--prom-url`, `--interval`, `--env` (budgets such as `P95_MS`, `TOOL_BUDGETS`, `ABORT_ERR_RATE`, and auth such as `MCP_TOKEN`), `--label`, `--git-sha`, `--git-ref`, `--out`, `--html`, `--upload-url`, `--key`, `--include-payloads`, `--k6-out` and `--wait-ready`. Exit codes are those of `run`.
+
+**Refinement trade-off.** step-load needs increasing steps within one k6 run, so the refinement steps can't be appended to the first pass: they run in a second k6 run (STEPS = the refinement levels, ramping up from zero again), only when the first pass has a conclusive break above a passing step. Their results are merged into `capacity.steps` with `refinement: true` (marked `*` in the terminal table, "refine" in the HTML) and the verdict, breaking point and estimate are recomputed over all steps. `summary`, `series`, `tools` and the other verdicts cover the first run only, and refinement step times count from the first run's start. N steps in one extra run narrow the gap to about 1/(N+1) of its width; true bisection would need N separate runs to reach 1/2^N. With `--k6-out`, the second run's raw output goes to `<dir>/refine`. A real `--refine 2` run on the ts-pooled demo server (first pass broke at 20, so it measured 13 and 17):
+
+```text
+mcpload: refine: second k6 run with steps 13, 17 agents (between the last passing and the first breaking step)
+...
+mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
+  Agents     p95     p99  Errors  req/s  Slowest tool p95
+       5  304 ms  417 ms   0.64%   55.0  slow 500 ms
+      10  438 ms  552 ms   0.69%   86.3  slow 582 ms
+     13*  697 ms  897 ms   0.62%   87.5  slow 897 ms       <- breaks budget: `slow` p95 897 ms > 800 ms
+     17*  771 ms  891 ms   0.48%   98.8  slow 958 ms       over budget: `slow` p95 958 ms > 800 ms
+      20  902 ms  1.42 s   0.69%  114.1  slow 1.19 s       over budget: `slow` p95 1.19 s > 800 ms (+4 more)
+      40   2.9 s  3.07 s   0.37%   73.6  slow 3.08 s       over budget: `slow` p95 3.08 s > 800 ms (+9 more)
+      80  3.61 s  3.77 s   0.99%   88.2  slow 3.81 s       over budget: `slow` p95 3.81 s > 800 ms (+9 more)
+  * refinement step (second k6 run between the last passing and the first breaking step)
+max sustainable concurrency: 10 agents (budgets broke at 13)
+Estimated sustainable capacity: ~12 agents (between 10 (held) and 13 (broke); linear interpolation of `slow` p95 to its 800 ms budget; an estimate, not a measured step)
+```
 
 ## Long-lived sessions and the session_survival verdict
 

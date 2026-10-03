@@ -279,14 +279,38 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
           : 'Budgets broke at the first step (' + num(cap.breakingVus) + ' agents): no sustainable concurrency found.';
     if (cap.minAgents != null) capLine += ' <span class="muted">Target: ' + num(cap.minAgents) + ' agents.</span>';
     if (cap.stoppedEarly) capLine += ' <span class="muted">The run stopped early (ABORT_ERR_RATE).</span>';
-    h.push('<h2>Capacity (step load)</h2><section class="card"><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
-      '<th>Agents</th><th>Result</th><th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
-      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
+    // Estimate: interpolated between the last passing and the first breaking step (capacity.estimatedVus).
+    var capTop = cap.steps[cap.steps.length - 1].vus;
+    var estV = cap.estimatedVus != null ? '~' + num(cap.estimatedVus) + ' agents'
+      : cap.breakingVus == null ? '≥ ' + num(capTop) + ' agents'
+        : cap.inconclusive ? 'inconclusive' : '< ' + num(cap.breakingVus) + ' agents';
+    var estNote = cap.estimatedVus != null ? 'An estimate, not a measured step: ' + (cap.estimateBasis || '')
+      : cap.breakingVus == null ? 'Nothing broke; test higher steps to find the limit.'
+        : cap.inconclusive ? (cap.estimateBasis || 'The load generator was saturated.') + '. Run k6 on a separate or bigger machine.'
+          : 'The first step already broke budgets; start lower.';
+    var capStats = [['Estimated sustainable capacity', estV],
+      ['Held budgets up to', cap.maxSustainableVus != null ? num(cap.maxSustainableVus) + ' agents' : '–'],
+      ['Broke budgets at', cap.breakingVus != null ? num(cap.breakingVus) + ' agents' : '–']];
+    if (cap.degradation) capStats.push(['Degradation from', num(cap.degradation.vus) + ' agents']);
+    if (cap.failure) capStats.push(['Failure at', num(cap.failure.vus) + ' agents']);
+    var capAll = cap.steps.some(function (st) { return st.p95Ms != null; });
+    h.push('<h2>Capacity (step load)</h2><section class="card"><div class="stats" style="margin:0 0 6px">' +
+      capStats.map(function (s, i) { return '<div class="stat"><div class="v"' + (i === 0 ? ' style="font-size:28px"' : '') + '>' + esc(s[1]) + '</div><div class="l">' + esc(s[0]) + '</div></div>'; }).join('') +
+      '</div><p class="small muted" style="margin:0 0 10px">' + esc(estNote) + '</p><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
+      '<th>Agents</th><th>Result</th>' + (capAll ? '<th>p95</th><th>p99</th>' : '') + '<th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
+      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>Errors</th><th>k6 CPU</th><th>Note</th></tr></thead><tbody>');
     cap.steps.forEach(function (st) {
       var res = st.passed ? 'pass' : 'fail';
       var sb = st.breached || [];
       var byName = {}; st.tools.forEach(function (t) { byName[t.name] = t; });
-      h.push('<tr><td>' + num(st.vus) + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+      // Markers, as in the terminal table: degradation, breaks budget (first breach), failure.
+      var notes = [];
+      if (cap.degradation && cap.degradation.vus === st.vus) notes.push('<b>degradation</b>: ' + esc(cap.degradation.reason));
+      if (cap.breakingVus === st.vus && st.breaches.length) notes.push('<b>breaks budget</b>: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      else if (!st.passed && st.breaches.length && !(cap.failure && cap.failure.vus === st.vus)) notes.push('over budget: ' + esc(st.breaches[0]) + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : ''));
+      if (cap.failure && cap.failure.vus === st.vus) notes.push('<b>failure</b>: ' + esc(cap.failure.reason));
+      h.push('<tr><td>' + num(st.vus) + (st.refinement ? ' <span class="muted small" title="refinement step (second k6 run)">refine</span>' : '') + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+        (capAll ? '<td>' + ms(st.p95Ms) + '</td><td>' + ms(st.p99Ms) + '</td>' : '') +
         '<td>' + num(st.rps, 1) + '</td><td>' + pct(st.errorRate) + '</td>' +
         '<td' + (sb.indexOf('connectP95Ms') >= 0 || sb.indexOf('connectErrorRate') >= 0 ? ' class="breach"' : '') + ' title="failed session starts ' + pct(st.connectErrorRate) + '">' + ms(st.connectP95Ms) + '</td>' +
         capTools.map(function (n) {
@@ -297,9 +321,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
         '<td class="small mono" style="white-space:nowrap">' + (st.byErrorType ? esc(topErr(st.byErrorType, 2)) : '<span class="muted">–</span>') + '</td>' +
         '<td>' + (st.generatorCpuMaxPct != null ? num(st.generatorCpuMaxPct, 0) + '%' + (st.generatorSaturated ? ' <span class="badge warn">saturated</span>' : '') : '–') + '</td>' +
         '<td style="white-space:normal;text-align:left;min-width:200px" class="small" title="' + esc(st.breaches.join('\n')) + '">' +
-        esc(st.breaches[0] || '') + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : '') + '</td></tr>');
+        notes.join('<br>') + '</td></tr>');
     });
-    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes. Errors lists the most frequent <code>error_type</code>s of the step.</div></section>');
+    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out).' + (capAll ? ' p95 and p99 cover the successful <code>tools/call</code> of all tools.' : '') +
+      ' Highlighted cells crossed a budget; hover a tool cell for its p99, error rate and error classes, and a note for every breach. Errors lists the most frequent <code>error_type</code>s of the step.' +
+      ' <b>Degradation</b>: the first step that held its budgets but got clearly worse (p95 at least 2× the first step’s, or a tool at half its error budget). <b>Failure</b>: error rate at <code>ABORT_ERR_RATE</code> or the run stopped there.</div></section>');
     h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-steps"></section></div>');
   }
 

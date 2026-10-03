@@ -62,6 +62,9 @@ func capacityConfig(env map[string]string) (analysis.CapacityConfig, error) {
 		return cfg, fmt.Errorf("MIN_AGENTS must be a whole number >= 0, got %v", min)
 	}
 	cfg.MinAgents = int(min)
+	if cfg.AbortErrRate, err = num("ABORT_ERR_RATE", 0.5); err != nil {
+		return cfg, err
+	}
 
 	type override struct{ P95, P99, ErrRate *float64 }
 	overrides := map[string]override{"flaky": {ErrRate: report.F(0.2)}}
@@ -113,6 +116,9 @@ func buildSteps(in []k6run.StepStats, origin time.Time, cpu []sampler.CPUWindow)
 		if span := s.Last.Sub(s.First).Seconds(); span > 0 {
 			st.RPS = round3(float64(s.Reqs) / span)
 		}
+		if s.CallP95 != nil && s.CallP99 != nil {
+			st.P95Ms, st.P99Ms = report.F(round3(*s.CallP95)), report.F(round3(*s.CallP99))
+		}
 		if s.ConnectP95 != nil {
 			st.ConnectP95Ms = report.F(round3(*s.ConnectP95))
 		}
@@ -154,16 +160,65 @@ func stepCPU(ws []sampler.CPUWindow, from, to time.Time) *float64 {
 	return best
 }
 
-// printSteps prints the per-step table of a step-load run.
-func printSteps(w io.Writer, c *report.Capacity) {
+// stepHints are the knobs printSteps suggests turning: the capacity
+// subcommand's flags, or STEPS for `run --scenario step-load`.
+type stepHints struct{ raise, lower string }
+
+var (
+	runStepHints      = stepHints{raise: "add higher STEPS", lower: "start STEPS lower"}
+	capacityStepHints = stepHints{raise: "raise --to", lower: "lower --from"}
+)
+
+// stepNotes returns the markers of one step: "<- degradation", "<- breaks
+// budget" (the first breach), "<- failure", a breach of a later step without
+// an arrow, and a saturated load generator.
+func stepNotes(c *report.Capacity, st report.Step) []string {
+	var notes []string
+	more := func(bs []string) string {
+		if len(bs) > 1 {
+			return fmt.Sprintf("%s (+%d more)", bs[0], len(bs)-1)
+		}
+		return bs[0]
+	}
+	if d := c.Degradation; d != nil && d.VUs == st.VUs {
+		notes = append(notes, "<- degradation: "+d.Reason)
+	}
+	switch {
+	case c.BreakingVUs != nil && *c.BreakingVUs == st.VUs && len(st.Breaches) > 0:
+		notes = append(notes, "<- breaks budget: "+more(st.Breaches))
+	case !st.Passed && len(st.Breaches) > 0 && (c.Failure == nil || c.Failure.VUs != st.VUs):
+		notes = append(notes, "over budget: "+more(st.Breaches))
+	}
+	if f := c.Failure; f != nil && f.VUs == st.VUs {
+		notes = append(notes, "<- failure: "+f.Reason)
+	}
+	if st.GeneratorSaturated && st.GeneratorCPUMaxPct != nil {
+		notes = append(notes, fmt.Sprintf("(k6 CPU %.0f%%: load generator saturated)", *st.GeneratorCPUMaxPct))
+	}
+	return notes
+}
+
+// printSteps prints the per-step table of a step-load run (p95/p99 of all
+// tools/call, error rate of all requests, req/s, the slowest tool and the
+// markers of stepNotes), the max sustainable concurrency and the estimate.
+func printSteps(w io.Writer, c *report.Capacity, h stepHints) {
 	if c == nil || len(c.Steps) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\nmcpload steps (agents, result, req/s, error rate, connect p95, slowest tool p95 / p99, errors, k6 CPU):\n")
+	msOr := func(p *float64) string {
+		if p == nil {
+			return "-"
+		}
+		return analysis.FormatMs(*p)
+	}
+	rows := [][]string{{"Agents", "p95", "p99", "Errors", "req/s", "Slowest tool p95"}}
+	var notes [][]string
+	refined := false
 	for _, st := range c.Steps {
-		res := "PASS"
-		if !st.Passed {
-			res = "BREACH"
+		ag := strconv.Itoa(st.VUs)
+		if st.Refinement {
+			ag += "*"
+			refined = true
 		}
 		var worst *report.StepTool
 		for i, t := range st.Tools {
@@ -174,26 +229,33 @@ func printSteps(w io.Writer, c *report.Capacity) {
 		slowest := "-"
 		if worst != nil {
 			slowest = worst.Name + " " + analysis.FormatMs(*worst.P95)
-			if worst.P99 != nil {
-				slowest += " / " + analysis.FormatMs(*worst.P99)
+		}
+		rows = append(rows, []string{ag, msOr(st.P95Ms), msOr(st.P99Ms), fmt.Sprintf("%.2f%%", 100*st.ErrorRate), fmt.Sprintf("%.1f", st.RPS), slowest})
+		notes = append(notes, stepNotes(c, st))
+	}
+	width := make([]int, len(rows[0]))
+	for _, r := range rows {
+		for i, cell := range r {
+			width[i] = max(width[i], len(cell))
+		}
+	}
+	fmt.Fprintf(w, "\nmcpload capacity steps (p95/p99: all tools/call; errors: all requests):\n")
+	for i, r := range rows {
+		var b strings.Builder
+		for j, cell := range r {
+			if j == len(r)-1 { // last column left-aligned, the numbers right-aligned
+				fmt.Fprintf(&b, "  %-*s", width[j], cell)
+			} else {
+				fmt.Fprintf(&b, "  %*s", width[j], cell)
 			}
 		}
-		conn := "-"
-		if st.ConnectP95Ms != nil {
-			conn = analysis.FormatMs(*st.ConnectP95Ms)
+		if i > 0 && len(notes[i-1]) > 0 {
+			b.WriteString("  " + strings.Join(notes[i-1], "; "))
 		}
-		cpu := "-"
-		if st.GeneratorCPUMaxPct != nil {
-			cpu = fmt.Sprintf("%.0f%%", *st.GeneratorCPUMaxPct)
-			if st.GeneratorSaturated {
-				cpu += " (saturated)"
-			}
-		}
-		fmt.Fprintf(w, "  %6d  %-6s  %8.1f  %7.2f%%  %9s  %-28s  %-30s  %s\n", st.VUs, res, st.RPS, 100*st.ErrorRate, conn, slowest,
-			analysis.TopErrorTypes(st.ByErrorType, 2), cpu)
-		if !st.Passed {
-			fmt.Fprintf(w, "          %s\n", strings.Join(st.Breaches, "; "))
-		}
+		fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
+	}
+	if refined {
+		fmt.Fprintln(w, "  * refinement step (second k6 run between the last passing and the first breaking step)")
 	}
 	switch {
 	case c.MaxSustainableVUs != nil && c.BreakingVUs == nil:
@@ -204,5 +266,21 @@ func printSteps(w io.Writer, c *report.Capacity) {
 		fmt.Fprintf(w, "max sustainable concurrency: %d agents (budgets broke at %d)\n", *c.MaxSustainableVUs, *c.BreakingVUs)
 	default:
 		fmt.Fprintf(w, "max sustainable concurrency: none (budgets broke at the first step, %d agents)\n", *c.BreakingVUs)
+	}
+	fmt.Fprintf(w, "Estimated sustainable capacity: %s\n", estimateLine(c, h))
+}
+
+// estimateLine words the capacity estimate for the terminal.
+func estimateLine(c *report.Capacity, h stepHints) string {
+	top := c.Steps[len(c.Steps)-1].VUs
+	switch {
+	case c.EstimatedVUs != nil:
+		return fmt.Sprintf("~%d agents (%s; an estimate, not a measured step)", *c.EstimatedVUs, c.EstimateBasis)
+	case c.BreakingVUs == nil:
+		return fmt.Sprintf("at least %d agents (nothing broke; %s)", top, h.raise)
+	case c.Inconclusive:
+		return fmt.Sprintf("inconclusive (the load generator was saturated at %d agents; run k6 on a separate or bigger machine)", *c.BreakingVUs)
+	default:
+		return fmt.Sprintf("below %d agents (the first step broke; %s)", *c.BreakingVUs, h.lower)
 	}
 }

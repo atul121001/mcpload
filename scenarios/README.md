@@ -31,7 +31,7 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 | 3003 | py-healthy (stateless) | `./k6 run -e MCP_URL=http://localhost:3003/mcp scenarios/burst.js` |
 | 3004 | lb-stateful (2 replicas, no sticky sessions) | `./k6 run -e MCP_URL=http://localhost:3004/mcp scenarios/lb-check.js` (expected to fail) |
 | 3005 | stateless-2026 (2 replicas) | `./k6 run -e MCP_URL=http://localhost:3005/mcp -e MCP_PROTOCOL=2026-07-28 scenarios/lb-check.js` (expected to pass) |
-| 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes). `--scenario step-load --env STEPS=5,10,20,40 --env STEP_DURATION=20s` breaks at 20 agents. |
+| 3008 | ts-pooled (all tools share 2 slots) | `./mcpload run --url http://localhost:3008/mcp --scenario isolation` (expected to fail `tool_isolation`; ts-healthy on 3001 passes). `./mcpload capacity --url http://localhost:3008/mcp --from 5 --to 80 --step-duration 20s` breaks at 20 agents (estimate ~13). |
 | 3009 | skew (old TS build + new Go build, typed errors) | `./mcpload run --url http://localhost:3009/mcp --scenario version-skew` (expected to warn `version_skew`) |
 | 3010 | skew-hang (old build never answers what it can't serve) | `./mcpload run --url http://localhost:3010/mcp --scenario version-skew --env MCP_TIMEOUT=5s` (expected to fail `version_skew`) |
 | 3006 / 3007 | mock-oauth / ts-oauth | `./k6 run -e MCP_URL=http://localhost:3007/mcp -e OAUTH_TOKEN_URL=http://localhost:3006/token -e OAUTH_CLIENT_ID=mcpload -e OAUTH_CLIENT_SECRET=secret scenarios/oauth-refresh.js` |
@@ -227,6 +227,14 @@ For leak detection, run at least 10 minutes of load (`SOAK_MIN>=10`; the default
 
 ## Step load
 
+The easiest way to run it is `mcpload capacity`, which sets `STEPS`, `STEP_DURATION` and `MIN_AGENTS` from flags and adds a capacity estimate and optional refinement steps:
+
+```bash
+./mcpload capacity --url http://localhost:3008/mcp --from 5 --to 80 --step-duration 20s --refine 2
+```
+
+`./mcpload run --scenario step-load --env STEPS=...` runs the same scenario and prints the same table. See [cmd/mcpload/README.md](../cmd/mcpload/README.md#capacity).
+
 `step-load.js` runs agent sessions (as in `agent-session.js`) on one `ramping-vus` scenario named `steps`. Each step ramps for `RAMP` and then holds its level for `STEP_DURATION`. Every request made during a hold is tagged `step=<VUs>` (the tag is refreshed before each round of calls, so a session that crosses a step boundary is split correctly). Ramps are left untagged and are not judged.
 
 | Var | Default | Meaning |
@@ -236,9 +244,9 @@ For leak detection, run at least 10 minutes of load (`SOAK_MIN>=10`; the default
 | `STEP_DURATION` | `1m` | hold per step |
 | `RAMP` | `5s` | ramp before each step |
 | `ABORT_ERR_RATE` | `0.5` | stop the whole run (`exec.test.abort`, k6 exit code 108) once a VU sees more than this share of its calls fail within one step, after at least `ABORT_MIN_CALLS` (20) calls. A session that fails before its first call counts as one failed call. `0` turns the guard off. |
-| `MIN_AGENTS` | – | read by mcpload (`--min-agents`): the concurrency the server must hold for the `capacity` verdict to pass |
+| `MIN_AGENTS` | – | read by mcpload (`--min-agents`, or `--target` with `mcpload capacity`): the concurrency the server must hold for the `capacity` verdict to pass |
 
-mcpload judges each step against the same budgets the other scenarios turn into thresholds: per tool (with at least 10 calls in the step) p95 and p99 of successful calls against `P95_MS`/`P99_MS` and the error rate against `ERR_RATE`, with `TOOL_BUDGETS` overrides; connect p95 against `CONNECT_P95_MS` and the share of failed session starts against `ERR_RATE`. A step without any `tools/call` is a breach too. The first step with a breach is the breaking point and the step before it is the max sustainable concurrency. The latency and error drift verdicts are skipped in step-load runs, since the rising load is on purpose. Details: [cmd/mcpload/README.md](../cmd/mcpload/README.md#step-load-and-the-capacity-verdict).
+mcpload judges each step against the same budgets the other scenarios turn into thresholds: per tool (with at least 10 calls in the step) p95 and p99 of successful calls against `P95_MS`/`P99_MS` and the error rate against `ERR_RATE`, with `TOOL_BUDGETS` overrides; connect p95 against `CONNECT_P95_MS` and the share of failed session starts against `ERR_RATE`. A step without any `tools/call` is a breach too. The first step with a breach is the breaking point and the step before it is the max sustainable concurrency; mcpload also estimates the capacity between the two and marks the first degraded and the first failed step. `ABORT_ERR_RATE` is also read by mcpload: a step whose error rate reaches it is marked `<- failure`. The latency and error drift verdicts are skipped in step-load runs, since the rising load is on purpose. Details: [cmd/mcpload/README.md](../cmd/mcpload/README.md#step-load-and-the-capacity-verdict).
 
 Keep `STEP_DURATION` long enough for a few hundred calls per step (sessions last a few seconds). With very short steps, a tool with a 10% error rate, such as the demo `flaky`, can cross its 20% budget by chance.
 

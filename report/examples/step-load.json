@@ -416,6 +416,8 @@
     "breakingVus": 20,
     "inconclusive": false,
     "stoppedEarly": false,
+    "estimatedVus": 13,
+    "estimateBasis": "between 10 (held) and 20 (broke); linear interpolation of `slow` p95 to its 800 ms budget (the lowest of 5 breached metrics)",
     "budgets": {
       "connectP95Ms": 1500,
       "connectErrorRate": 0.01,
