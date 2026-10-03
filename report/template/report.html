@@ -105,6 +105,8 @@ th { color: var(--ink-2); font-weight: 600; font-size: 12.5px; }
 td.breach { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
 td.breach::after { content: " \2716"; font-size: 11px; }
 td.ok-budget::after { content: ""; }
+td.regressed { background: var(--bad-wash); color: var(--bad-ink); font-weight: 650; }
+td.improved { color: var(--good-ink); }
 tr.total td { font-weight: 600; border-top: 1px solid var(--axis); }
 .small { font-size: 12px; }
 
@@ -136,7 +138,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   .verdict, .chart, tr { break-inside: avoid; }
   h2 { break-after: avoid; }
   details, .tip { display: none !important; }
-  .overall, .badge, td.breach { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .overall, .badge, td.breach, td.regressed { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .charts.two { grid-template-columns: 1fr 1fr; }
 }
 @page { margin: 14mm; }
@@ -254,6 +256,62 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
       '<div class="kv"><span class="mono">' + esc(v.signal) + '</span>' + (kv.length ? ' · ' + esc(kv.join(' · ')) : '') + '</div></article>');
   });
   h.push('</section>');
+
+  // ---------- comparison with a baseline (run --baseline) ----------
+  var CMP = R.comparison;
+  if (CMP) {
+    var MARK = { regressed: '⚠', improved: '✓', ok: '·' };
+    var cmpVal = function (unit, v) {
+      if (v == null) return '–';
+      return unit === 'ms' ? ms(v) : unit === 'rate' ? pct(v) : unit === 'req/s' ? num(v, 1) : unit === 'MiB' ? num(v, 1) + ' MiB' : unit === 'MiB/min' ? num(v, 2) + ' MiB/min' : num(v) + ' ' + unit;
+    };
+    var cmpPct = function (b, c) {
+      if (b == null || c == null || b < 0) return '';
+      if (b === 0) return c === 0 ? '' : 'new';
+      var p = Math.round(100 * (c - b) / b);
+      return p === 0 ? '' : (p > 0 ? '+' : '') + p + '%';
+    };
+    var cmpCell = function (unit, b, c, st) {
+      var p = unit === 'req/s' ? '' : cmpPct(b, c);
+      return '<td' + (st === 'regressed' || st === 'improved' ? ' class="' + st + '"' : '') + '>' + esc(cmpVal(unit, b) + ' → ' + cmpVal(unit, c)) +
+        (p ? ' <span class="muted small">(' + esc(p) + ')</span>' : '') + (MARK[st] ? ' ' + MARK[st] : '') + '</td>';
+    };
+    var fieldSt = function (t, f, judged) {
+      if (!judged) return '';
+      return (t.regressed || []).indexOf(f) >= 0 ? 'regressed' : (t.improved || []).indexOf(f) >= 0 ? 'improved' : 'ok';
+    };
+    var minCalls = CMP.rules.minCalls, B = CMP.baseline;
+    var bName = B.git ? B.git.sha.slice(0, 7) + (B.git.ref ? ' (' + B.git.ref.replace(/^refs\/heads\//, '').replace(/^refs\//, '') + ')' : '') : 'run ' + String(B.runId).slice(0, 8);
+    var cmpRes = CMP.regressed ? 'fail' : 'pass';
+    h.push('<h2>Compared with baseline</h2><section class="card"><p style="margin:0 0 10px"><span class="badge ' + cmpRes + '"><span aria-hidden="true">' + ICON[cmpRes] + '</span>' +
+      (CMP.regressed ? 'regression' : 'no regression') + '</span> vs <span class="mono">' + esc(bName) + '</span> <span class="muted">· ' + esc(B.scenario) + ' · ' + esc(B.protocol) + ' · ' + esc(B.source) + '</span></p>');
+    if (CMP.regressed) h.push('<ul style="margin:0 0 10px">' + CMP.reasons.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>');
+    CMP.warnings.forEach(function (w) { h.push('<p class="small" style="margin:0 0 8px;color:var(--warn-ink)">⚠ ' + esc(w) + '</p>'); });
+    if (CMP.tools.length) {
+      h.push('<div class="tablewrap"><table><thead><tr><th>Tool</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Error rate</th><th>req/s</th></tr></thead><tbody>');
+      CMP.tools.forEach(function (t) {
+        var b = t.base || {}, c = t.current || {}, both = t.base && t.current && t.status !== 'few_calls';
+        var lat = both && b.reqs - b.errors >= minCalls && c.reqs - c.errors >= minCalls;
+        var tag = { added: 'added', removed: 'removed', few_calls: 'too few calls' }[t.status];
+        h.push('<tr><td class="mono" style="text-align:left">' + esc(t.name) + (tag ? ' <span class="muted small">(' + tag + ')</span>' : '') + '</td>' +
+          '<td>' + (t.base ? num(b.reqs) : '–') + ' → ' + (t.current ? num(c.reqs) : '–') + '</td>' +
+          cmpCell('ms', b.p50, c.p50, '') + cmpCell('ms', b.p95, c.p95, fieldSt(t, 'p95', lat)) + cmpCell('ms', b.p99, c.p99, fieldSt(t, 'p99', lat)) +
+          cmpCell('rate', b.errorRate, c.errorRate, fieldSt(t, 'errorRate', both)) + cmpCell('req/s', b.rps, c.rps, '') + '</tr>');
+      });
+      h.push('</tbody></table></div>');
+    }
+    if (CMP.metrics.length) {
+      h.push('<div class="tablewrap" style="margin-top:10px"><table><thead><tr><th style="text-align:left">Run</th><th>Baseline → current</th><th style="text-align:left">Note</th></tr></thead><tbody>');
+      CMP.metrics.forEach(function (m) {
+        h.push('<tr><th style="text-align:left">' + esc(m.label) + '</th>' + cmpCell(m.unit, m.base, m.current, m.status) + '<td style="text-align:left" class="small muted">' + esc(m.note || '') + '</td></tr>');
+      });
+      h.push('</tbody></table></div>');
+    }
+    var ru = CMP.rules;
+    h.push('<div class="muted small" style="margin-top:8px">A tool regresses only when both runs made at least ' + num(minCalls) + ' calls of it and its p95 rose more than ' + num(ru.maxP95Increase * 100) +
+      '% (p99: ' + num(ru.maxP99Increase * 100) + '%) <b>and</b> more than ' + num(ru.minDeltaMs) + ' ms; an error rate when it rose more than ' + num(ru.minErrorDelta * 100, 2) + ' points, more than ' +
+      num(ru.maxErrorIncrease * 100) + '% of the baseline rate and significantly (p &lt; 0.05). ⚠ regression · ✓ improvement · · within noise.</div></section>');
+  }
 
   // "timeout 14, http 3": the n most frequent keys of a byErrorType map.
   function topErr(m, n) {

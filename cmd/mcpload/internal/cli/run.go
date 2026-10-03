@@ -50,6 +50,9 @@ type runOpts struct {
 	waitReady                       time.Duration
 	chaosRestart                    time.Duration
 	chaosContainer, callsURL        string
+	baseline                        string
+	cmp                             analysis.CompareConfig
+	failOnRegression                bool
 	set                             map[string]bool
 }
 
@@ -90,12 +93,15 @@ func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs.DurationVar(&o.waitReady, "wait-ready", 0, "before starting, wait up to this long (e.g. 2m) for the server to answer an MCP handshake (0 = don't wait)")
 	fs.DurationVar(&o.chaosRestart, "chaos-restart", 0, "run `docker restart` on --chaos-container this long after the load starts (e.g. 30s); only on servers you own (0 = off)")
 	fs.StringVar(&o.chaosContainer, "chaos-container", "", "container to restart for --chaos-restart (default: --container)")
+	fs.StringVar(&o.baseline, "baseline", "", "compare with this baseline report.json (path or http(s) URL) after the run: adds the regression verdict and report.json comparison")
+	compareFlags(fs, &o.cmp)
+	fs.BoolVar(&o.failOnRegression, "fail-on-regression", true, "with --baseline: a regression fails the run (false: the regression verdict only warns)")
 	fs.StringVar(&o.callsURL, "calls-url", "", "server endpoint listing executed call ids (GET ?prefix=, answers {\"executions\": {id: count}}), e.g. http://localhost:3019/calls, for the call_integrity verdict")
 	return fs
 }
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
-	o := &runOpts{set: map[string]bool{}}
+	o := &runOpts{set: map[string]bool{}, cmp: analysis.DefaultCompareConfig()}
 	fs := runFlags(o, stderr)
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -193,6 +199,9 @@ func (o *runOpts) validate(pos []string) error {
 	}
 	if o.leakSlope <= 0 || o.minR2 < 0 || o.minR2 > 1 {
 		return errors.New("--leak-slope-mb-per-min must be > 0 and --min-r2 in [0,1]")
+	}
+	if err := checkCompareConfig(o.cmp); err != nil {
+		return err
 	}
 	return nil
 }
@@ -318,6 +327,15 @@ func newRunID() string {
 func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	logf := func(format string, a ...any) { fmt.Fprintf(stderr, "mcpload: "+format+"\n", a...) }
 	logf("using scenario %s", o.scenario)
+	// Read the baseline first, so a bad --baseline fails before the run, not after it.
+	var baseline *report.Report
+	if o.baseline != "" {
+		var err error
+		if baseline, err = loadReport(o.baseline); err != nil {
+			return 0, fmt.Errorf("--baseline: %w", err)
+		}
+		logf("baseline: %s (run %s, %s)", o.baseline, baseline.Run.ID, describeRun(baseline))
+	}
 
 	bin, err := k6run.FindBinary(o.k6)
 	if err != nil {
@@ -728,6 +746,11 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		r.Cancellation = c
 		r.Verdicts = append(r.Verdicts, analysis.CancellationVerdict(c, worst))
 	}
+	if baseline != nil {
+		// Compare once every verdict is in: the comparison reads memory_leak and generator.
+		r.Comparison = analysis.Compare(baseline, r, o.baseline, o.cmp, cfg)
+		r.Verdicts = append(r.Verdicts, analysis.RegressionVerdict(r.Comparison, o.failOnRegression))
+	}
 
 	r.Normalize()
 	checkErr := r.Check()
@@ -746,6 +769,10 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	}
 
 	printSteps(stderr, r.Capacity)
+	if r.Comparison != nil {
+		fmt.Fprintln(stderr)
+		writeCompareText(stderr, r.Comparison, r)
+	}
 	printVerdicts(stderr, r)
 
 	exit := ExitPass

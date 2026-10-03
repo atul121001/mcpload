@@ -324,6 +324,77 @@
           }
         }
       }
+    },
+    "comparison": {
+      "type": "object",
+      "description": "This run compared with a baseline report (mcpload run --baseline; verdict 'regression'). See README 'Comparison'.",
+      "required": ["baseline", "rules", "regressed", "reasons", "warnings", "tools", "metrics"],
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "required": ["source", "runId", "startedAt", "scenario", "protocol"],
+          "properties": {
+            "source": { "type": "string", "minLength": 1, "description": "Path or URL the baseline report was read from." },
+            "runId": { "type": "string" },
+            "startedAt": { "type": "string" },
+            "scenario": { "type": "string" },
+            "protocol": { "type": "string" },
+            "git": {
+              "type": "object",
+              "required": ["sha"],
+              "properties": { "sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" }, "ref": { "type": "string" } }
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "description": "Noise rules used. Relative increases are fractions (0.2 = +20%); minErrorDelta is absolute (0.005 = 0.5 percentage points).",
+          "required": ["maxP95Increase", "maxP99Increase", "maxErrorIncrease", "minErrorDelta", "minDeltaMs", "minCalls", "maxLeakSlopeIncreaseMiBPerMin"],
+          "properties": {
+            "maxP95Increase": { "type": "number", "minimum": 0 },
+            "maxP99Increase": { "type": "number", "minimum": 0 },
+            "maxErrorIncrease": { "type": "number", "minimum": 0 },
+            "minErrorDelta": { "type": "number", "minimum": 0 },
+            "minDeltaMs": { "type": "number", "minimum": 0 },
+            "minCalls": { "type": "integer", "minimum": 0 },
+            "maxLeakSlopeIncreaseMiBPerMin": { "type": "number", "minimum": 0 }
+          }
+        },
+        "regressed": { "type": "boolean", "description": "True exactly when a tool or metric has status 'regressed'." },
+        "reasons": { "type": "array", "items": { "type": "string" }, "description": "Every regression in words." },
+        "warnings": { "type": "array", "items": { "type": "string" }, "description": "Differences that may make the comparison unfair (scenario, protocol, load, sampler, saturated generator)." },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "base", "current"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["regressed", "improved", "ok", "added", "removed", "few_calls"] },
+              "base": { "oneOf": [{ "$ref": "#/$defs/toolSample" }, { "type": "null" }], "description": "null for an added tool." },
+              "current": { "oneOf": [{ "$ref": "#/$defs/toolSample" }, { "type": "null" }], "description": "null for a removed tool." },
+              "regressed": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } },
+              "improved": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } }
+            }
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "unit", "base", "current", "status"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "examples": ["errorRate", "connectP95Ms", "memoryGrowthMiB", "leakSlopeMiBPerMin", "retainedMiB", "maxSustainableVus"] },
+              "label": { "type": "string", "minLength": 1 },
+              "unit": { "enum": ["rate", "ms", "MiB", "MiB/min", "agents"] },
+              "base": { "type": ["number", "null"] },
+              "current": { "type": ["number", "null"] },
+              "status": { "enum": ["regressed", "improved", "ok", "n/a"] },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -335,6 +406,20 @@
       "additionalProperties": { "type": "integer", "minimum": 0 }
     },
     "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "toolSample": {
+      "type": "object",
+      "description": "One tool in one run of a comparison; latencies over successful calls, rps = calls / (warm-up + load seconds).",
+      "required": ["reqs", "errors", "errorRate", "p50", "p95", "p99", "rps"],
+      "properties": {
+        "reqs": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "errorRate": { "$ref": "#/$defs/rate" },
+        "p50": { "$ref": "#/$defs/ms" },
+        "p95": { "$ref": "#/$defs/ms" },
+        "p99": { "$ref": "#/$defs/ms" },
+        "rps": { "type": "number", "minimum": 0 }
+      }
+    },
     "series": { "type": "array", "items": { "type": ["number", "null"] } },
     "latency": {
       "type": "object",
@@ -405,7 +490,7 @@
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity", "version_skew", "session_survival", "recovery", "call_integrity", "cancellation", "regression"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

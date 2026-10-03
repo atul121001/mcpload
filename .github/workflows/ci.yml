@@ -203,6 +203,8 @@ jobs:
           grep -qx 'result=error' "$RUNNER_TEMP/missing.out"
           grep -q 'memory_leak' "$RUNNER_TEMP/leaky.md"
           cat "$RUNNER_TEMP/leaky.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Summary script tests (baseline comparison)
+        run: node action/summary.test.mjs
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
