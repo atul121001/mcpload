@@ -47,6 +47,10 @@ Problems like these usually don't show up in a quick manual test. They show up a
 | **Do sampling and elicitation work under load?** | Answers the server's mid-call requests (sampling, elicitation, roots) with a configurable delay, like a real client waiting on an LLM or a person. |
 | **Does it slowly run out of memory?** | Runs a long test (30–60 minutes is typical), samples the server's memory as it goes, and tells you if memory keeps climbing and never comes back down. |
 | **Does it lose sessions behind a load balancer?** | Spots the classic "session not found" failure when requests from one agent land on different servers. |
+| **What happens during a rolling deploy?** | Puts agents on replicas running different builds and tells you whether a mismatch fails fast with a clear error or leaves clients hanging until they time out. |
+| **What if the server restarts mid-run?** | Restarts your server's container during the test (`--chaos-restart`), measures how long until agents are served again, and counts tool calls that were lost or **ran twice**. |
+| **Do long-lived agent sessions survive?** | Keeps one session per agent open for many minutes and reports sessions the server dropped while they were still in use. |
+| **Does the server stop work when an agent cancels?** | Cancels a share of tool calls and checks, from the server's own metrics, whether the cancelled work actually stopped or kept using capacity. |
 | **Is it ready for the newer stateless MCP spec?** | Speaks both the older session-based protocol and the stateless 2026-07-28 protocol, and picks the right one automatically. |
 | **Do logins survive under load?** | Tests OAuth token refresh with many agents at once. |
 | **Did my latest change make it slower?** | Runs in CI on every pull request and fails the build if a tool goes over its time or error budget. |
@@ -68,7 +72,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 | | **mcpload** | [JMeter MCP plugin](https://github.com/Blazemeter/jmeter-mcp-plugin) (BlazeMeter) | [xk6-mcp](https://github.com/dgzlopes/xk6-mcp) (k6) | [mcp-bench](https://pkg.go.dev/github.com/tmc/mcp/exp/cmd-experimental/mcp-bench) |
 |---|---|---|---|---|
-| **Status** | Early release (v0.2) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
+| **Status** | Early release (v0.3) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
 | **How you use it** | One command with ready-made scenarios | JMeter GUI test plan (Java 17+) | Write a k6 script | CLI |
 | **MCP sessions** | One per simulated agent, each with its own session ID | **One shared client for the whole test run**; every thread uses the same session | One per client your script creates | Concurrent clients |
 | **Several tool calls at once inside one session** | ✅ `callParallel` | ❌ synchronous client, one call per thread | ❌ `callTool` returns before the next call | Not in docs |
@@ -81,6 +85,11 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **Load balancer "session not found"** | ✅ dedicated scenario and verdict | ❌ one shared session can't reproduce it | ❌ | ❌ |
 | **Cost of opening sessions (initialize floods)** | ✅ `burst` scenario, connect time measured on every session | ❌ connect and `initialize` are excluded from sample time and happen once | Measured if your script reconnects | Not in docs |
 | **Sampling / elicitation requests from the server** | ✅ answered with a configurable delay | Not in docs | Not in docs | Not in docs |
+| **Rolling deploy: replicas on different builds** | ✅ `version-skew`: fail-fast vs hang verdict | ❌ | ❌ | ❌ |
+| **Server restart mid-run: recovery time** | ✅ `--chaos-restart` and `recovery` verdict | ❌ | ❌ | ❌ |
+| **Lost or duplicated tool calls** | ✅ `call_integrity`: what the client saw vs what the server ran | ❌ | ❌ | ❌ |
+| **Cancellation: does the server stop the work?** | ✅ `cancellation` verdict from server metrics | Not in docs | Not in docs | Not in docs |
+| **Long-lived sessions dropped early** | ✅ `long-lived` scenario and `session_survival` verdict | ❌ | ❌ | ❌ |
 | **Auth** | Bearer token, OAuth client credentials with shared refresh | Not in docs | Not in docs | Not in docs |
 | **Stateless 2026-07-28 protocol** | ✅ auto-detected | Not in docs | Not in docs | Not in docs |
 | **CI** | ✅ GitHub Action with a PR comment and HTML report | `jmeter -n` plus assertions | `k6 run` plus thresholds | Export to other tools |
@@ -92,6 +101,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 - **Session bugs only show up with many sessions.** The JMeter plugin shares one MCP client across all threads, so 100 threads look like one very busy agent. It can't show you sessions piling up in memory, or a load balancer sending an agent's second request to a replica that never saw its session. mcpload gives every simulated agent its own session, so both show up.
 - **Agents call tools in parallel.** A real agent fires off `search`, `fetch` and `fetch` at once and waits for all three. JMeter's synchronous client and xk6-mcp's `callTool` send one call at a time. mcpload's `callParallel` sends them together, which is what fills a shared connection pool or blocks an event loop.
 - **"The server is slow" isn't actionable. "`search` is slow" is.** xk6-mcp tags its metrics only by `method`, so a 10 ms tool and a 2 s tool end up in the same number. mcpload reports and budgets every tool separately, and the CI check names the tool that broke.
+- **The worst production failures happen during deploys and restarts.** A rolling deploy puts two builds behind one load balancer; a restart drops every in-flight call. mcpload tests both and tells you whether clients get a clear error or hang, how long recovery takes, and whether any tool call was lost or executed twice. The other tools only measure a server that stays up.
 - **You get an answer, not a graph.** Every mcpload run ends with PASS or FAIL and a sentence saying why, such as "max sustainable concurrency: 10 agents (budgets broke at 20)" or "RSS grew 64 MiB/min and did not recover in cool-down". With the other tools you collect the numbers and decide yourself.
 
 ### When to use something else
@@ -101,6 +111,19 @@ Three other projects send MCP traffic under load. This table comes from each pro
 - Use **the JMeter plugin or xk6-mcp** to load-test resources and prompts, or local stdio servers. mcpload doesn't do those yet.
 
 These tools work well alongside mcpload.
+
+## Which test should I run?
+
+| When | Run | How long |
+|---|---|---|
+| On every pull request | `agent-session` (the default) in CI, with per-tool budgets | 1–2 min |
+| Before a release | `step-load` to find how many agents you can take, then `soak` with a sampler to catch leaks | 10–60 min |
+| You run more than one replica | `lb-check`, then `version-skew` with two builds behind the load balancer | 2–5 min |
+| You changed timeouts, restarts or deploys | `reconnect-storm` with `--chaos-restart`, plus `--calls-url` to count lost and duplicated calls | 2–5 min |
+| Agents keep sessions open for long | `long-lived` | 10+ min |
+| Your tools are slow or cancellable | `isolation`, and `agent-session` with `CANCEL_RATE` | 2–5 min |
+
+Every option is in [scenarios/README.md](scenarios/README.md).
 
 ## What you get
 
