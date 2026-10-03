@@ -51,6 +51,23 @@ export function semanticErrors(r) {
     if (t.errors > t.reqs) errs.push(`tools[${t.name}].errors > reqs`);
     if (!(t.p50 <= t.p95 && t.p95 <= t.p99 && t.p99 <= t.max)) errs.push(`tools[${t.name}] percentiles not monotonic (p50<=p95<=p99<=max)`);
   }
+  const c = r.capacity;
+  if (c) {
+    const pv = c.plannedVus || [];
+    for (let i = 1; i < pv.length; i++) {
+      if (!(pv[i] > pv[i - 1])) { errs.push('capacity.plannedVus must be increasing integers >= 1'); break; }
+    }
+    c.steps.forEach((st, i) => {
+      const path = `capacity.steps[${i}]`;
+      if (i > 0 && !(st.vus > c.steps[i - 1].vus)) errs.push(`capacity.steps must be sorted by strictly increasing vus (index ${i})`);
+      if (st.endS < st.startS) errs.push(`${path}.endS is before startS`);
+      if (st.errors > st.reqs) errs.push(`${path}: errors must be in [0, reqs]`);
+      for (const t of st.tools) {
+        if (t.errors > t.reqs) errs.push(`${path}.tools[${t.name}]: errors must be in [0, reqs]`);
+        if (t.p95 != null && t.p99 != null && t.p95 > t.p99) errs.push(`${path}.tools[${t.name}] percentiles not monotonic (p95<=p99)`);
+      }
+    });
+  }
   return errs;
 }
 

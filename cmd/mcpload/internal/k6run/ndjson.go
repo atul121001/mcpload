@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -142,8 +143,10 @@ type Aggregator struct {
 	// scenarioTools holds successful tools/call durations per k6 scenario
 	// (the 'scenario' system tag) and tool, for phase comparisons.
 	scenarioTools map[string]map[string][]float64
-	first, last   time.Time
-	points        int
+	// steps holds per-step aggregates keyed by the StepTag value (step-load).
+	steps       map[string]*stepAgg
+	first, last time.Time
+	points      int
 }
 
 // NewAggregator creates an aggregator whose buckets start at origin. Every
@@ -159,6 +162,7 @@ func NewAggregator(origin time.Time, interval time.Duration, track []string) *Ag
 		metricTypes: map[string]string{},
 
 		scenarioTools: map[string]map[string][]float64{},
+		steps:         map[string]*stepAgg{},
 	}
 	seen := map[string]bool{}
 	for _, k := range track {
@@ -227,6 +231,9 @@ func (a *Aggregator) add(l *line) error {
 		if s.sel.Matches(l.Metric, tags) {
 			s.values = append(s.values, v)
 		}
+	}
+	if st := tags[StepTag]; st != "" {
+		a.addStep(st, l.Metric, t, v, tags)
 	}
 	switch l.Metric {
 	case MetricReqDuration:
@@ -326,15 +333,17 @@ type ToolStats struct {
 }
 
 // Tools returns per-tool stats sorted by name.
-func (a *Aggregator) Tools() []ToolStats {
-	names := make([]string, 0, len(a.tools))
-	for n := range a.tools {
+func (a *Aggregator) Tools() []ToolStats { return toolStats(a.tools) }
+
+func toolStats(tools map[string]*toolAgg) []ToolStats {
+	names := make([]string, 0, len(tools))
+	for n := range tools {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	out := make([]ToolStats, 0, len(names))
 	for _, n := range names {
-		t := a.tools[n]
+		t := tools[n]
 		sort.Float64s(t.durations)
 		ts := ToolStats{Name: n, Reqs: round(t.reqs), Errors: round(t.errors)}
 		if ts.Reqs < int64(t.samples) {
@@ -375,6 +384,110 @@ func (a *Aggregator) ScenarioTools(scenario string) map[string]PhaseTool {
 		sort.Float64s(s)
 		out[name] = PhaseTool{Calls: len(s), P50: Percentile(s, 0.50), P95: Percentile(s, 0.95)}
 	}
+	return out
+}
+
+// StepTag is the tag scenarios/step-load.js puts on every request made while a
+// step holds its concurrency; its value is the step's VU count.
+const StepTag = "step"
+
+type stepAgg struct {
+	first, last            time.Time
+	reqs, errors           float64
+	tools                  map[string]*toolAgg
+	connects, connectFails int
+	connect                []float64 // successful connect durations
+}
+
+// addStep folds one sample tagged step=<st> into that step.
+func (a *Aggregator) addStep(st, metric string, t time.Time, v float64, tags map[string]string) {
+	s := a.steps[st]
+	if s == nil {
+		s = &stepAgg{tools: map[string]*toolAgg{}}
+		a.steps[st] = s
+	}
+	tool := func() *toolAgg {
+		ta := s.tools[tags["tool"]]
+		if ta == nil {
+			ta = &toolAgg{}
+			s.tools[tags["tool"]] = ta
+		}
+		return ta
+	}
+	isCall := tags["method"] == methodToolsCall && tags["tool"] != ""
+	switch metric {
+	case MetricReqs:
+		s.reqs += v
+		if isCall {
+			tool().reqs += v
+		}
+	case MetricErrors:
+		s.errors += v
+		if isCall {
+			tool().errors += v
+		}
+	case MetricReqDuration:
+		if isCall {
+			ta := tool()
+			ta.samples++
+			if tags["error_type"] == "" {
+				ta.durations = append(ta.durations, v)
+			}
+		}
+	case MetricConnectDuration:
+		s.connects++
+		if tags["error_type"] != "" {
+			s.connectFails++
+		} else {
+			s.connect = append(s.connect, v)
+		}
+	default:
+		// k6's own metrics (iterations, ...) carry the VU's tags too, but are
+		// emitted at iteration end; only MCP traffic sets the step's span.
+		return
+	}
+	if s.first.IsZero() || t.Before(s.first) {
+		s.first = t
+	}
+	if t.After(s.last) {
+		s.last = t
+	}
+}
+
+// StepStats aggregates the requests of one load step (step-load scenario).
+// Tools follow Tools(); ConnectP95 is the p95 (ms) of successful connects
+// (nil without one).
+type StepStats struct {
+	VUs                     int
+	First, Last             time.Time
+	Reqs, Errors            int64
+	Tools                   []ToolStats
+	Connects, ConnectErrors int64
+	ConnectP95              *float64
+}
+
+// Steps returns the per-step aggregates sorted by VUs (nil when no sample
+// carried the step tag). Tag values that are not positive integers are ignored.
+func (a *Aggregator) Steps() []StepStats {
+	var out []StepStats
+	for k, s := range a.steps {
+		vus, err := strconv.Atoi(k)
+		if err != nil || vus < 1 || s.first.IsZero() {
+			continue
+		}
+		st := StepStats{VUs: vus, First: s.first, Last: s.last, Reqs: round(s.reqs), Errors: round(s.errors),
+			Tools: toolStats(s.tools), Connects: int64(s.connects), ConnectErrors: int64(s.connectFails)}
+		if st.Errors > st.Reqs {
+			st.Errors = st.Reqs
+		}
+		if len(s.connect) > 0 {
+			c := append([]float64(nil), s.connect...)
+			sort.Float64s(c)
+			st.ConnectP95 = ptr(Percentile(c, 0.95))
+		}
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].VUs < out[j].VUs })
 	return out
 }
 

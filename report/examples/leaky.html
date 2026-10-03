@@ -254,6 +254,45 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   });
   h.push('</section>');
 
+  // ---------- capacity (step-load runs) ----------
+  var cap = R.capacity && R.capacity.steps && R.capacity.steps.length ? R.capacity : null;
+  var capTools = [];
+  if (cap) {
+    var capReqs = {};
+    cap.steps.forEach(function (st) { st.tools.forEach(function (t) { capReqs[t.name] = (capReqs[t.name] || 0) + t.reqs; }); });
+    capTools = Object.keys(capReqs).sort(function (a, b) { return capReqs[b] - capReqs[a] || (a < b ? -1 : 1); });
+    var capLine = cap.breakingVus == null
+      ? 'Held budgets at every step up to <b>' + num(cap.maxSustainableVus) + ' agents</b>; the breaking point is higher.'
+      : cap.inconclusive
+        ? 'Inconclusive at <b>' + num(cap.breakingVus) + ' agents</b>: the load generator was saturated. ' + (cap.maxSustainableVus != null ? 'Held budgets up to ' + num(cap.maxSustainableVus) + ' agents.' : '')
+        : cap.maxSustainableVus != null
+          ? 'Max sustainable concurrency: <b>' + num(cap.maxSustainableVus) + ' agents</b>; budgets broke at ' + num(cap.breakingVus) + ' agents.'
+          : 'Budgets broke at the first step (' + num(cap.breakingVus) + ' agents): no sustainable concurrency found.';
+    if (cap.minAgents != null) capLine += ' <span class="muted">Target: ' + num(cap.minAgents) + ' agents.</span>';
+    if (cap.stoppedEarly) capLine += ' <span class="muted">The run stopped early (ABORT_ERR_RATE).</span>';
+    h.push('<h2>Capacity (step load)</h2><section class="card"><p style="margin:0 0 10px">' + capLine + '</p><div class="tablewrap"><table><thead><tr>' +
+      '<th>Agents</th><th>Result</th><th>req/s</th><th>Error rate</th><th>Connect p95</th>' +
+      capTools.map(function (n) { return '<th class="mono">' + esc(n) + ' p95</th>'; }).join('') + '<th>k6 CPU</th><th>Breaches</th></tr></thead><tbody>');
+    cap.steps.forEach(function (st) {
+      var res = st.passed ? 'pass' : 'fail';
+      var sb = st.breached || [];
+      var byName = {}; st.tools.forEach(function (t) { byName[t.name] = t; });
+      h.push('<tr><td>' + num(st.vus) + '</td><td><span class="badge ' + res + '"><span aria-hidden="true">' + ICON[res] + '</span>' + (st.passed ? 'pass' : 'breach') + '</span></td>' +
+        '<td>' + num(st.rps, 1) + '</td><td>' + pct(st.errorRate) + '</td>' +
+        '<td' + (sb.indexOf('connectP95Ms') >= 0 || sb.indexOf('connectErrorRate') >= 0 ? ' class="breach"' : '') + ' title="failed session starts ' + pct(st.connectErrorRate) + '">' + ms(st.connectP95Ms) + '</td>' +
+        capTools.map(function (n) {
+          var t = byName[n]; if (!t) return '<td class="muted">–</td>';
+          var bt = t.breached || [];
+          return '<td' + (bt.length ? ' class="breach"' : '') + ' title="' + esc(num(t.reqs) + ' calls · p99 ' + ms(t.p99) + ' · errors ' + pct(t.errorRate) + (bt.length ? ' · over budget: ' + bt.join(', ') : '')) + '">' + ms(t.p95) + '</td>';
+        }).join('') +
+        '<td>' + (st.generatorCpuMaxPct != null ? num(st.generatorCpuMaxPct, 0) + '%' + (st.generatorSaturated ? ' <span class="badge warn">saturated</span>' : '') : '–') + '</td>' +
+        '<td style="white-space:normal;text-align:left;min-width:200px" class="small" title="' + esc(st.breaches.join('\n')) + '">' +
+        esc(st.breaches[0] || '') + (st.breaches.length > 1 ? ' <span class="muted">(+' + (st.breaches.length - 1) + ' more)</span>' : '') + '</td></tr>');
+    });
+    h.push('</tbody></table></div><div class="muted small" style="margin-top:8px">Each step covers the requests made while k6 held that many agents (ramps between steps are left out). Highlighted cells crossed a budget; hover a tool cell for its p99 and error rate.</div></section>');
+    h.push('<div class="charts" style="margin-top:12px"><section class="card chart" id="c-steps"></section></div>');
+  }
+
   // ---------- per-tool table ----------
   h.push('<h2>Per-tool latency and errors</h2><section class="card tablewrap"><table><thead><tr>' +
     '<th>Tool</th><th>Requests</th><th>Errors</th><th>Error rate</th><th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr></thead><tbody>');
@@ -445,10 +484,62 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     lineChart('c-tools', { title: 'Per-tool p95 latency', subtitle: sub, series: shown.map(function (n, i) { return { name: n, values: S.tools[n].p95Ms, color: 'var(--series-' + (i + 1) + ')' }; }),
       zero: true, yFmt: ms, tipFmt: ms, height: 260 });
   }
+  // ---------- p95 vs agents (step-load): steps evenly spaced on x, labelled with their agent count ----------
+  function stepChart(id, o, again) {
+    var host = document.getElementById(id); if (!host) return;
+    if (!again) drawn.push([id, o, stepChart]);
+    var W = Math.max(320, Math.round((host.clientWidth || 1032) - 32)), H = 260, m = { l: 64, r: 16, t: 18, b: 34 };
+    var steps = o.steps, n = steps.length;
+    var all = []; o.series.forEach(function (s) { s.values.forEach(function (v) { if (v != null) all.push(v); }); });
+    if (o.budget != null) all.push(o.budget);
+    var yHi = all.length ? Math.max.apply(null, all) * 1.08 : 1;
+    var ticks = niceTicks(0, yHi, W < 600 ? 3 : 4); yHi = Math.max(yHi, ticks[ticks.length - 1]);
+    function X(i) { return n === 1 ? (m.l + W - m.r) / 2 : m.l + 12 + i / (n - 1) * (W - m.l - m.r - 24); }
+    function Y(v) { return H - m.b - v / (yHi || 1) * (H - m.t - m.b); }
+    var s = ['<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(o.title) + '"><g class="axis">'];
+    ticks.forEach(function (v) {
+      s.push('<line class="gridline" x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>');
+      s.push('<text x="' + (m.l - 8) + '" y="' + (Y(v) + 4) + '" text-anchor="end">' + esc(ms(v)) + '</text>');
+    });
+    steps.forEach(function (st, i) { s.push('<text x="' + X(i) + '" y="' + (H - m.b + 18) + '" text-anchor="middle">' + num(st.vus) + '</text>'); });
+    s.push('<text x="' + (W - m.r) + '" y="' + (H - 2) + '" text-anchor="end">agents</text>');
+    s.push('<line class="baseline" x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + (H - m.b) + '" y2="' + (H - m.b) + '"/></g>');
+    if (o.breakAt >= 0) {
+      s.push('<line x1="' + X(o.breakAt) + '" x2="' + X(o.breakAt) + '" y1="' + m.t + '" y2="' + (H - m.b) + '" style="stroke:var(--bad)" stroke-width="1.5" stroke-dasharray="4 4"/>');
+      s.push('<text class="phase-label" x="' + (X(o.breakAt) - 6) + '" y="' + (m.t + 12) + '" text-anchor="end">' + (o.inconclusive ? 'inconclusive' : 'breaking point') + '</text>');
+    }
+    if (o.budget != null) s.push('<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(o.budget) + '" y2="' + Y(o.budget) + '" style="stroke:var(--muted)" stroke-width="1.5" stroke-dasharray="7 5"/>');
+    o.series.forEach(function (sr) {
+      var d = '', pen = false;
+      sr.values.forEach(function (v, i) { if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1); pen = true; });
+      s.push('<path d="' + d + '" fill="none" style="stroke:' + sr.color + '" stroke-width="2" stroke-linejoin="round"/>');
+      sr.values.forEach(function (v, i) {
+        if (v == null) return;
+        s.push('<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(v).toFixed(1) + '" r="3.5" style="fill:' + sr.color + ';stroke:var(--surface)" stroke-width="1.5"><title>' + esc(sr.name + ' at ' + steps[i].vus + ' agents: p95 ' + ms(v)) + '</title></circle>');
+      });
+    });
+    s.push('</svg>');
+    var legend = '<div class="legend">' + o.series.map(function (sr) { return '<span><i style="border-top-color:' + sr.color + '"></i>' + esc(sr.name) + '</span>'; }).join('') +
+      (o.budget != null ? '<span><i class="dash" style="border-top-color:var(--muted)"></i>p95 budget</span>' : '') + '</div>';
+    host.innerHTML = '<h3>' + esc(o.title) + '</h3><div class="muted small">' + o.subtitle + '</div>' + legend + s.join('');
+  }
+  if (cap) {
+    var shownCap = capTools.slice(0, 8), budgets = (cap.budgets && cap.budgets.tools) || {};
+    var b95 = shownCap.map(function (n) { return budgets[n] ? budgets[n].p95Ms : null; });
+    var sameBudget = b95.length && b95.every(function (b) { return b != null && b === b95[0]; });
+    var breakAt = -1; cap.steps.forEach(function (st, i) { if (breakAt < 0 && st.vus === cap.breakingVus) breakAt = i; });
+    stepChart('c-steps', {
+      title: 'Per-tool p95 latency by concurrency', steps: cap.steps, breakAt: breakAt, inconclusive: cap.inconclusive, budget: sameBudget ? b95[0] : null,
+      subtitle: 'p95 of successful calls within each step' + (capTools.length > shownCap.length ? ' · showing the ' + shownCap.length + ' busiest of ' + capTools.length + ' tools' : ''),
+      series: shownCap.map(function (n, i) {
+        return { name: n, color: 'var(--series-' + (i + 1) + ')', values: cap.steps.map(function (st) { var t = st.tools.filter(function (x) { return x.name === n; })[0]; return t ? t.p95 : null; }) };
+      }),
+    });
+  }
   var lastW = window.innerWidth, rt;
   window.addEventListener('resize', function () {
     if (window.innerWidth === lastW) return; lastW = window.innerWidth;
-    clearTimeout(rt); rt = setTimeout(function () { drawn.forEach(function (d) { lineChart(d[0], d[1], true); }); }, 150);
+    clearTimeout(rt); rt = setTimeout(function () { drawn.forEach(function (d) { (d[2] || lineChart)(d[0], d[1], true); }); }, 150);
   });
   lineChart('c-rps', { title: 'Throughput (requests/s)', series: [{ name: 'req/s', values: S.client.rps, color: C1 }], zero: true, yFmt: function (v) { return num(v, 0); }, tipFmt: function (v) { return num(v, 1) + ' req/s'; }, height: 180 });
 })();

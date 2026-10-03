@@ -17,7 +17,7 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for Docker, Go 1.26+, xk6 and Node 
 | `xk6-mcpload/` | `go vet ./... && go test ./...`, then `xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=. --output ../k6` |
 | `cmd/mcpload/` | `go vet ./... && go test ./... && go build .` |
 | `scenarios/` | `for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done`, and run the changed scenario against the demo servers |
-| `report/` | `npm ci && node validate.mjs examples/healthy.json examples/leaky.json`; `node examples/generate.mjs` must leave the examples unchanged |
+| `report/` | `npm ci && node validate.mjs examples/healthy.json examples/leaky.json examples/step-load.json`; `node examples/generate.mjs` must leave the examples unchanged |
 | `action/` | `node action/summary.mjs report/examples/leaky.json`; lint workflows with [actionlint](https://github.com/rhysd/actionlint) |
 | `demo-servers/` | `docker compose up -d --build && ./smoke.sh` |
 

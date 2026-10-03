@@ -158,6 +158,9 @@ func (c RunConfig) Args() []string {
 const (
 	ExitOK               = 0
 	ExitThresholdsFailed = 99
+	// ExitScriptAborted is exec.test.abort() from the script; step-load uses
+	// it to stop once a step has clearly broken the server.
+	ExitScriptAborted = 108
 )
 
 // Run executes k6 and waits. It returns k6's exit code; err is set only when

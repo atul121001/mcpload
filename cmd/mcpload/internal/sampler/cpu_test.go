@@ -49,6 +49,9 @@ func TestCPUMonitorMath(t *testing.T) {
 	if !approx(*st.Max, 75) || st.Samples != 2 {
 		t.Errorf("max = %v (%d samples), want 75", *st.Max, st.Samples)
 	}
+	if w := st.Windows; len(w) != 2 || !approx(w[0].Pct, 25) || !approx(w[1].Pct, 75) || !w[1].Start.Equal(t0.Add(11*time.Second)) || !w[1].End.Equal(t0.Add(21*time.Second)) {
+		t.Errorf("windows = %+v", w)
+	}
 	// avg = 43 s CPU / (23 s * 4 cores) from process start.
 	if want := 43.0 / (23 * 4) * 100; !approx(*st.Avg, want) {
 		t.Errorf("avg = %v, want %v", *st.Avg, want)

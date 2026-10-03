@@ -1,0 +1,727 @@
+{
+  "schemaVersion": "1",
+  "tool": {
+    "name": "mcpload",
+    "version": "0.1.0-dev"
+  },
+  "run": {
+    "id": "example_real_ts-pooled_step-load",
+    "startedAt": "2026-10-03T03:00:33Z",
+    "endedAt": "2026-10-03T03:02:17Z",
+    "durationS": 104.563,
+    "scenario": "step-load",
+    "protocol": "2025-11-25",
+    "target": {
+      "url": "http://localhost:3008/mcp",
+      "label": "ts-pooled (demo server, real step-load run)"
+    },
+    "k6Version": "v2.3.0",
+    "load": {
+      "executor": "ramping-vus",
+      "vus": 0,
+      "maxVus": 40
+    },
+    "generator": {
+      "cores": 12,
+      "cpuAvgPct": 0.714,
+      "cpuMaxPct": 1.484
+    }
+  },
+  "phases": {
+    "warmupEndS": 0,
+    "loadEndS": 104.563,
+    "cooldownEndS": 104.563
+  },
+  "summary": {
+    "reqs": 8886,
+    "errors": 58,
+    "errorRate": 0.006527121314427189,
+    "byErrorType": {
+      "tool_iserror": 58
+    },
+    "iterations": 692,
+    "droppedIterations": 0,
+    "toolErrors": 58
+  },
+  "tools": [
+    {
+      "name": "big",
+      "reqs": 518,
+      "errors": 0,
+      "errorRate": 0,
+      "p50": 306.637,
+      "p95": 1646.534,
+      "p99": 1888.505,
+      "max": 2093.022
+    },
+    {
+      "name": "fast",
+      "reqs": 1716,
+      "errors": 0,
+      "errorRate": 0,
+      "p50": 390.293,
+      "p95": 1620.071,
+      "p99": 1862.884,
+      "max": 2079.816
+    },
+    {
+      "name": "flaky",
+      "reqs": 527,
+      "errors": 58,
+      "errorRate": 0.11005692599620494,
+      "p50": 335.221,
+      "p95": 1540.98,
+      "p99": 1832.615,
+      "max": 2042.17
+    },
+    {
+      "name": "search",
+      "reqs": 2801,
+      "errors": 0,
+      "errorRate": 0,
+      "p50": 359.114,
+      "p95": 1619.937,
+      "p99": 1845.333,
+      "max": 2079.816
+    },
+    {
+      "name": "slow",
+      "reqs": 555,
+      "errors": 0,
+      "errorRate": 0,
+      "p50": 613.628,
+      "p95": 1896.318,
+      "p99": 2089.72,
+      "max": 2278.523
+    }
+  ],
+  "thresholds": [],
+  "series": {
+    "intervalS": 5,
+    "t": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45,
+      50,
+      55,
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100
+    ],
+    "client": {
+      "p95Ms": [
+        5.124,
+        296.863,
+        303.048,
+        311.015,
+        303.602,
+        303.041,
+        488.994,
+        302.733,
+        517.822,
+        490.289,
+        598.589,
+        682.225,
+        908.808,
+        869.643,
+        874.995,
+        1280.69,
+        1561.677,
+        1873.776,
+        1509.238,
+        1935.044,
+        1846.862
+      ],
+      "errorRate": [
+        0,
+        0.004,
+        0.01107,
+        0.004785,
+        0.00738,
+        0.00885,
+        0.008753,
+        0.006085,
+        0.002786,
+        0.002193,
+        0.00969,
+        0.009724,
+        0.009975,
+        0.001912,
+        0.007366,
+        0.008591,
+        0.008606,
+        0.004032,
+        0.004559,
+        0.00655,
+        0.003436
+      ],
+      "rps": [
+        23,
+        50,
+        54.2,
+        41.8,
+        54.2,
+        67.8,
+        91.4,
+        98.6,
+        71.8,
+        91.2,
+        103.2,
+        123.4,
+        80.2,
+        104.6,
+        108.6,
+        116.4,
+        116.2,
+        99.2,
+        131.6,
+        91.6,
+        58.2
+      ],
+      "droppedIterations": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "server": {
+      "sampler": "none",
+      "rssBytes": []
+    },
+    "tools": {
+      "big": {
+        "p95Ms": [
+          5.541,
+          9.007,
+          99.248,
+          292.906,
+          277.927,
+          177.628,
+          334.866,
+          291.171,
+          472.388,
+          293.999,
+          599.776,
+          689.041,
+          889.772,
+          867.183,
+          979.887,
+          1283.62,
+          1527.888,
+          1956.814,
+          1625.178,
+          1823.589,
+          1846.599
+        ]
+      },
+      "fast": {
+        "p95Ms": [
+          4.091,
+          108.282,
+          201.273,
+          417.249,
+          290.284,
+          236.341,
+          486.631,
+          282.34,
+          461.674,
+          524.622,
+          598.924,
+          601.478,
+          908.135,
+          806.29,
+          859.615,
+          1303.053,
+          1558.523,
+          1837.643,
+          1574.831,
+          1982.066,
+          1840.339
+        ]
+      },
+      "flaky": {
+        "p95Ms": [
+          4.372,
+          211.076,
+          257.189,
+          262.297,
+          295.743,
+          294.204,
+          502.615,
+          277.991,
+          447.603,
+          398.245,
+          598.447,
+          600.701,
+          991.655,
+          891.694,
+          833.037,
+          1388.017,
+          1409.806,
+          1832.796,
+          1282.947,
+          1919.148,
+          1790.261
+        ]
+      },
+      "search": {
+        "p95Ms": [
+          4.983,
+          232.883,
+          167.536,
+          291.458,
+          288.463,
+          235.101,
+          416.159,
+          282.034,
+          489.633,
+          448.875,
+          595.181,
+          689.779,
+          855.286,
+          859.086,
+          863.539,
+          1288.86,
+          1574.132,
+          1878.016,
+          1573.496,
+          1869.566,
+          1796.06
+        ]
+      },
+      "slow": {
+        "p95Ms": [
+          306.165,
+          342.312,
+          574.598,
+          605.268,
+          607.537,
+          320.288,
+          781.679,
+          550.13,
+          593.807,
+          683.725,
+          813.568,
+          903.049,
+          1121.509,
+          1040.853,
+          998.558,
+          1497.26,
+          1777.871,
+          2085.603,
+          1815.938,
+          2115.077,
+          1973.356
+        ]
+      }
+    }
+  },
+  "verdicts": [
+    {
+      "id": "memory_leak",
+      "status": "skipped",
+      "signal": "server.rssBytes",
+      "message": "Skipped: no server-side sampler (--sampler none)."
+    },
+    {
+      "id": "session_leak",
+      "status": "skipped",
+      "signal": "server.activeSessions",
+      "message": "Skipped: no server-side sampler (--sampler none)."
+    },
+    {
+      "id": "fd_leak",
+      "status": "skipped",
+      "signal": "server.openFds",
+      "message": "Skipped: no server-side sampler (--sampler none)."
+    },
+    {
+      "id": "latency_drift",
+      "status": "skipped",
+      "signal": "client.p95Ms",
+      "message": "Skipped: a step-load run raises the load step by step; see the capacity verdict."
+    },
+    {
+      "id": "error_drift",
+      "status": "skipped",
+      "signal": "client.errorRate",
+      "message": "Skipped: a step-load run raises the load step by step; see the capacity verdict."
+    },
+    {
+      "id": "session_not_found",
+      "status": "pass",
+      "signal": "mcp_errors{error_type:session_not_found}",
+      "message": "No 404 session-not-found responses."
+    },
+    {
+      "id": "threshold",
+      "status": "pass",
+      "signal": "thresholds",
+      "message": "No k6 thresholds were configured."
+    },
+    {
+      "id": "generator",
+      "status": "pass",
+      "signal": "summary.droppedIterations",
+      "message": "692 of 692 planned iterations ran (0.00% dropped). k6 used up to ~1% of CPU of 12 cores, ~1% on average over the run."
+    },
+    {
+      "id": "capacity",
+      "status": "fail",
+      "signal": "capacity.steps",
+      "message": "Held budgets up to 10 agents; at 20 agents `slow` p95 1.04 s > 800 ms (+4 more). Target MIN_AGENTS=20 not met."
+    }
+  ],
+  "payloadsIncluded": false,
+  "capacity": {
+    "plannedVus": [
+      5,
+      10,
+      20,
+      40
+    ],
+    "minAgents": 20,
+    "maxSustainableVus": 10,
+    "breakingVus": 20,
+    "inconclusive": false,
+    "stoppedEarly": false,
+    "budgets": {
+      "connectP95Ms": 1500,
+      "connectErrorRate": 0.01,
+      "tools": {
+        "big": {
+          "p95Ms": 800,
+          "p99Ms": 2000,
+          "errorRate": 0.01
+        },
+        "fast": {
+          "p95Ms": 800,
+          "p99Ms": 2000,
+          "errorRate": 0.01
+        },
+        "flaky": {
+          "p95Ms": 800,
+          "p99Ms": 2000,
+          "errorRate": 0.2
+        },
+        "search": {
+          "p95Ms": 800,
+          "p99Ms": 2000,
+          "errorRate": 0.01
+        },
+        "slow": {
+          "p95Ms": 800,
+          "p99Ms": 2000,
+          "errorRate": 0.01
+        }
+      }
+    },
+    "steps": [
+      {
+        "vus": 5,
+        "startS": 5.006,
+        "endS": 25.002,
+        "reqs": 1003,
+        "errors": 7,
+        "errorRate": 0.006979,
+        "rps": 50.159,
+        "connectP95Ms": 6.406,
+        "connectErrorRate": 0,
+        "generatorCpuMaxPct": 0.495,
+        "generatorSaturated": false,
+        "passed": true,
+        "breaches": [],
+        "tools": [
+          {
+            "name": "big",
+            "reqs": 59,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 291.049,
+            "p99": 294.939
+          },
+          {
+            "name": "fast",
+            "reqs": 195,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 281.183,
+            "p99": 417.249
+          },
+          {
+            "name": "flaky",
+            "reqs": 68,
+            "errors": 7,
+            "errorRate": 0.102941,
+            "p95": 294.183,
+            "p99": 299.019
+          },
+          {
+            "name": "search",
+            "reqs": 303,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 273.692,
+            "p99": 294.654
+          },
+          {
+            "name": "slow",
+            "reqs": 74,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 581.796,
+            "p99": 728.908
+          }
+        ]
+      },
+      {
+        "vus": 10,
+        "startS": 30.006,
+        "endS": 50.162,
+        "reqs": 1747,
+        "errors": 9,
+        "errorRate": 0.005152,
+        "rps": 86.672,
+        "connectP95Ms": 6.908,
+        "connectErrorRate": 0,
+        "generatorCpuMaxPct": 1.068,
+        "generatorSaturated": false,
+        "passed": true,
+        "breaches": [],
+        "tools": [
+          {
+            "name": "big",
+            "reqs": 107,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 387.161,
+            "p99": 492.822
+          },
+          {
+            "name": "fast",
+            "reqs": 322,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 414.506,
+            "p99": 595.966
+          },
+          {
+            "name": "flaky",
+            "reqs": 91,
+            "errors": 9,
+            "errorRate": 0.098901,
+            "p95": 425.095,
+            "p99": 536.175
+          },
+          {
+            "name": "search",
+            "reqs": 558,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 406.329,
+            "p99": 581.536
+          },
+          {
+            "name": "slow",
+            "reqs": 104,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 687.331,
+            "p99": 782.805
+          }
+        ]
+      },
+      {
+        "vus": 20,
+        "startS": 55.004,
+        "endS": 75.703,
+        "reqs": 2066,
+        "errors": 13,
+        "errorRate": 0.006292,
+        "rps": 99.811,
+        "connectP95Ms": 10.499,
+        "connectErrorRate": 0,
+        "generatorCpuMaxPct": 1.38,
+        "generatorSaturated": false,
+        "passed": false,
+        "breaches": [
+          "`slow` p95 1.04 s > 800 ms",
+          "`flaky` p95 901 ms > 800 ms",
+          "`big` p95 891 ms > 800 ms",
+          "`search` p95 817 ms > 800 ms",
+          "`fast` p95 809 ms > 800 ms"
+        ],
+        "tools": [
+          {
+            "name": "big",
+            "reqs": 116,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 890.559,
+            "p99": 980.252,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "fast",
+            "reqs": 414,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 808.63,
+            "p99": 938.19,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "flaky",
+            "reqs": 127,
+            "errors": 13,
+            "errorRate": 0.102362,
+            "p95": 901.168,
+            "p99": 989.074,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "search",
+            "reqs": 639,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 816.574,
+            "p99": 902.764,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "slow",
+            "reqs": 132,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 1038.935,
+            "p99": 1166.728,
+            "breached": [
+              "p95"
+            ]
+          }
+        ]
+      },
+      {
+        "vus": 40,
+        "startS": 80.004,
+        "endS": 101.502,
+        "reqs": 2192,
+        "errors": 13,
+        "errorRate": 0.005931,
+        "rps": 101.961,
+        "connectP95Ms": 11.362,
+        "connectErrorRate": 0,
+        "generatorCpuMaxPct": 1.484,
+        "generatorSaturated": false,
+        "passed": false,
+        "breaches": [
+          "`slow` p95 2.08 s > 800 ms",
+          "`fast` p95 1.84 s > 800 ms",
+          "`big` p95 1.84 s > 800 ms",
+          "`flaky` p95 1.83 s > 800 ms",
+          "`search` p95 1.81 s > 800 ms",
+          "`slow` p99 2.15 s > 2 s",
+          "`big` p99 2.02 s > 2 s"
+        ],
+        "tools": [
+          {
+            "name": "big",
+            "reqs": 128,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 1836.162,
+            "p99": 2020.141,
+            "breached": [
+              "p95",
+              "p99"
+            ]
+          },
+          {
+            "name": "fast",
+            "reqs": 438,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 1837.652,
+            "p99": 1989.951,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "flaky",
+            "reqs": 115,
+            "errors": 13,
+            "errorRate": 0.113043,
+            "p95": 1831.812,
+            "p99": 1919.134,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "search",
+            "reqs": 692,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 1807.945,
+            "p99": 1914.264,
+            "breached": [
+              "p95"
+            ]
+          },
+          {
+            "name": "slow",
+            "reqs": 136,
+            "errors": 0,
+            "errorRate": 0,
+            "p95": 2077.941,
+            "p99": 2147.615,
+            "breached": [
+              "p95",
+              "p99"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

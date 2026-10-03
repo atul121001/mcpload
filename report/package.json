@@ -8,8 +8,8 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "generate": "node examples/generate.mjs",
-    "validate": "node validate.mjs examples/healthy.json examples/leaky.json",
-    "render": "node render.mjs examples/healthy.json examples/healthy.html && node render.mjs examples/leaky.json examples/leaky.html",
+    "validate": "node validate.mjs examples/healthy.json examples/leaky.json examples/step-load.json",
+    "render": "node render.mjs examples/healthy.json examples/healthy.html && node render.mjs examples/leaky.json examples/leaky.html && node render.mjs examples/step-load.json examples/step-load.html",
     "test": "npm run validate"
   },
   "dependencies": {

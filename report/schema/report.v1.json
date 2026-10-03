@@ -24,7 +24,7 @@
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },
         "durationS": { "type": "number", "minimum": 0 },
-        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "isolation", "oauth-refresh"] },
+        "scenario": { "type": "string", "minLength": 1, "examples": ["soak", "agent-session", "burst", "lb-check", "isolation", "step-load", "oauth-refresh"] },
         "protocol": {
           "type": "string",
           "minLength": 1,
@@ -179,6 +179,37 @@
     "payloadsIncluded": {
       "type": "boolean",
       "description": "True only when the CLI ran with --include-payloads. Tool arguments/results are otherwise absent from the report."
+    },
+    "capacity": {
+      "type": "object",
+      "description": "Step-load runs only: per-step results and the breaking point (verdict 'capacity'). Each step covers the requests made while k6 held that concurrency (tag step=<vus>); ramps between steps are left out.",
+      "required": ["maxSustainableVus", "breakingVus", "inconclusive", "stoppedEarly", "budgets", "steps"],
+      "properties": {
+        "plannedVus": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "Concurrency levels the scenario planned, in order. steps may stop short (stoppedEarly)." },
+        "minAgents": { "type": "integer", "minimum": 1, "description": "MIN_AGENTS target, when set." },
+        "maxSustainableVus": { "type": ["integer", "null"], "minimum": 1, "description": "Last step before the first breach (the highest step when none broke); null when the first step broke." },
+        "breakingVus": { "type": ["integer", "null"], "minimum": 1, "description": "First step that crossed a budget; null when none did." },
+        "inconclusive": { "type": "boolean", "description": "The load generator was saturated at the breaking step, so the breach may be k6's own overhead." },
+        "stoppedEarly": { "type": "boolean", "description": "The scenario stopped the run once a step broke badly (ABORT_ERR_RATE)." },
+        "budgets": {
+          "type": "object",
+          "description": "Budgets each step was judged against.",
+          "required": ["connectP95Ms", "connectErrorRate", "tools"],
+          "properties": {
+            "connectP95Ms": { "$ref": "#/$defs/ms" },
+            "connectErrorRate": { "$ref": "#/$defs/rate" },
+            "tools": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["p95Ms", "p99Ms", "errorRate"],
+                "properties": { "p95Ms": { "$ref": "#/$defs/ms" }, "p99Ms": { "$ref": "#/$defs/ms" }, "errorRate": { "$ref": "#/$defs/rate" } }
+              }
+            }
+          }
+        },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" }, "description": "One entry per step that produced requests, sorted by vus." }
+      }
     }
   },
   "$defs": {
@@ -200,11 +231,47 @@
         "arrivalTimeUnitS": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
+    "step": {
+      "type": "object",
+      "required": ["vus", "startS", "endS", "reqs", "errors", "errorRate", "rps", "connectP95Ms", "connectErrorRate", "generatorSaturated", "passed", "breaches", "tools"],
+      "properties": {
+        "vus": { "type": "integer", "minimum": 1, "description": "Concurrency (k6 VUs = agents) held during the step." },
+        "startS": { "type": "number", "minimum": 0, "description": "First and last tagged sample of the step, seconds since run start." },
+        "endS": { "type": "number", "minimum": 0 },
+        "reqs": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "errorRate": { "$ref": "#/$defs/rate" },
+        "rps": { "type": "number", "minimum": 0 },
+        "connectP95Ms": { "type": ["number", "null"], "minimum": 0, "description": "p95 of successful session starts; null without one." },
+        "connectErrorRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Share of failed session starts; null without any." },
+        "generatorCpuMaxPct": { "type": "number", "minimum": 0, "maximum": 100, "description": "Busiest k6 CPU sampling interval within the step, % of the machine." },
+        "generatorSaturated": { "type": "boolean" },
+        "passed": { "type": "boolean" },
+        "breached": { "type": "array", "items": { "enum": ["connectP95Ms", "connectErrorRate", "toolCalls"] }, "description": "Step-level fields over budget." },
+        "breaches": { "type": "array", "items": { "type": "string" }, "description": "Every breach in words, worst first." },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "reqs", "errors", "errorRate", "p95", "p99"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "reqs": { "type": "integer", "minimum": 0 },
+              "errors": { "type": "integer", "minimum": 0 },
+              "errorRate": { "$ref": "#/$defs/rate" },
+              "p95": { "type": ["number", "null"], "minimum": 0, "description": "Successful calls only; null without one." },
+              "p99": { "type": ["number", "null"], "minimum": 0 },
+              "breached": { "type": "array", "items": { "enum": ["p95", "p99", "errorRate"] } }
+            }
+          }
+        }
+      }
+    },
     "verdict": {
       "type": "object",
       "required": ["id", "status", "signal", "message"],
       "properties": {
-        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation"] },
+        "id": { "enum": ["memory_leak", "session_leak", "fd_leak", "latency_drift", "error_drift", "session_not_found", "threshold", "generator", "tool_isolation", "capacity"] },
         "status": { "enum": ["pass", "fail", "warn", "skipped"] },
         "signal": {
           "type": "string",

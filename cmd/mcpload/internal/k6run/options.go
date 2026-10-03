@@ -218,6 +218,27 @@ func (o *Options) LoadShape() Load {
 	return l
 }
 
+// StepLevels returns the distinct positive stage targets of the named
+// ramping-vus scenario, in order: the planned concurrency levels of a
+// step-load run (nil when the scenario is missing or has no stages).
+func (o *Options) StepLevels(scenario string) []int {
+	if o == nil {
+		return nil
+	}
+	s, ok := o.Scenarios[scenario]
+	if !ok {
+		return nil
+	}
+	var out []int
+	for _, st := range s.Stages {
+		v := int(st.Target)
+		if v > 0 && (len(out) == 0 || out[len(out)-1] != v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ScenarioName is options.tags.scenario_name when the script sets it.
 func (o *Options) ScenarioName() string {
 	if o == nil || o.Tags == nil {

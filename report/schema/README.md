@@ -14,7 +14,8 @@ node validate.mjs path/to/report.json
 - `t` is strictly increasing;
 - phases are ordered;
 - `byErrorType` adds up to `summary.errors`;
-- per-tool percentiles are monotonic (p50 ≤ p95 ≤ p99 ≤ max).
+- per-tool percentiles are monotonic (p50 ≤ p95 ≤ p99 ≤ max);
+- `capacity.steps` are sorted by strictly increasing `vus`, with `errors ≤ reqs`, `startS ≤ endS` and per-tool `p95 ≤ p99`.
 
 `mcpload validate` runs the same schema rules and semantic checks in Go (`report.(*Report).Check`), so both validators accept and reject the same reports.
 
@@ -46,7 +47,7 @@ node validate.mjs path/to/report.json
 | `tool` | `{name, version}` of the program that wrote the report (`mcpload`) |
 | `run.id` | unique run id; an upload server can use it to make uploads idempotent |
 | `run.startedAt`, `run.endedAt`, `run.durationS` | wall-clock span of the run |
-| `run.scenario` | `soak`, `agent-session`, `burst`, `lb-check`, `oauth-refresh`, or a custom name |
+| `run.scenario` | `soak`, `agent-session`, `burst`, `lb-check`, `isolation`, `step-load`, `oauth-refresh`, or a custom name |
 | `run.protocol` | the protocol that was actually negotiated, e.g. `2025-06-18` or `2026-07-28` (never `auto`) |
 | `run.target` | `{url, label?}`; `label` is a short display name |
 | `run.git` | optional `{sha, ref?}` of the system under test |
@@ -60,6 +61,7 @@ node validate.mjs path/to/report.json
 | `series` | `intervalS`, `t[]`, `client {p95Ms[], errorRate[], rps[]}`, and `server {sampler, rssBytes[], heapBytes[]?, openFds[]?, activeSessions[]?}`. The arrays run in parallel with `t`. When `sampler` is `none`, `rssBytes` is `[]`. Optional: `client.droppedIterations[]` (dropped iterations per bucket) and `tools` — a map from tool name to `{p95Ms[]}`, the p95 of successful calls of that tool per bucket. |
 | `verdicts[]` | `{id, status, signal, slopePerMin?, r2?, baseline?, cooldownRecovered?, message}`. `signal` names the series or metric the verdict was computed from (e.g. `server.rssBytes`). |
 | `payloadsIncluded` | `true` only when the run used `--include-payloads` |
+| `capacity` | optional, step-load runs only: `{plannedVus?, minAgents?, maxSustainableVus, breakingVus, inconclusive, stoppedEarly, budgets, steps[]}`. `maxSustainableVus` is the last step before the first breach (the highest step when none broke; `null` when the first step broke); `breakingVus` is the first step with a breach (`null` when none); `inconclusive` means k6 was saturated at the breaking step; `stoppedEarly` means the scenario's `ABORT_ERR_RATE` guard ended the run. `budgets` is `{connectP95Ms, connectErrorRate, tools: {name: {p95Ms, p99Ms, errorRate}}}`. Each step is `{vus, startS, endS, reqs, errors, errorRate, rps, connectP95Ms, connectErrorRate, generatorCpuMaxPct?, generatorSaturated, passed, breached?, breaches[], tools[]}`, covering the requests tagged `step=<vus>` (ramps are left out); `startS`/`endS` are its first and last sample; `breached` lists step-level fields over budget (`connectP95Ms`, `connectErrorRate`, `toolCalls`) and `breaches` describes every breach in words, worst first. `tools[]` are `{name, reqs, errors, errorRate, p95, p99, breached?}` with `p95`/`p99` over successful calls (`null` without one) and `breached` from `p95`, `p99`, `errorRate`. |
 
 ### Verdict ids
 
@@ -73,6 +75,7 @@ node validate.mjs path/to/report.json
 | `session_not_found` | `mcp_errors{error_type:session_not_found}` | any occurrence is `fail` (LB without sticky sessions) |
 | `threshold` | `thresholds` | `fail` if any k6 threshold failed |
 | `tool_isolation` | `tools.p95Ms (solo vs mixed)` | Only in runs of the `isolation` scenario, which runs the same sessions in two k6 scenarios: `solo` (tool mix without the slow tools) and `mixed` (full mix). Compares each tool's p95 of successful calls between them, for tools with at least 30 calls in both. `fail` when, for any tool, mixed p95 is at least 2× solo p95 **and** at least 50 ms higher; `warn` at 1.5× and 25 ms. The absolute floors stop tools of a few ms from failing on noise. `skipped` when a phase is missing, the mixed phase called no extra tool (check `SLOW_TOOLS`), or no tool had enough calls. |
+| `capacity` | `capacity.steps` | Only in runs whose requests carry a `step` tag (the `step-load` scenario). Each step is judged against the scenario budgets: per tool with at least 10 calls in the step, p95/p99 of successful calls against `P95_MS`/`P99_MS` and the error rate against `ERR_RATE` (with `TOOL_BUDGETS` overrides); connect p95 against `CONNECT_P95_MS` and failed session starts against `ERR_RATE`; a step without any `tools/call` is a breach. Value ≥ budget is a breach, as in k6. The breaking point is the first step with a breach; when k6's busiest CPU interval in that step was > 90% of the machine the result is inconclusive. With a `MIN_AGENTS` target: `pass` when max sustainable ≥ target, `fail` when a conclusive breach happened at or below the target (or at the first step), else `warn`. Without a target: `pass` when no step broke, `fail` when the first step broke conclusively, else `warn`. `skipped` when no request carried a step tag. In these runs `latency_drift` and `error_drift` are `skipped`. |
 | `generator` | `summary.droppedIterations` or `run.generator.cpuMaxPct` | Did the load generator deliver the requested load? dropped / (iterations + dropped) > 1% is `warn`, > 10% is `fail` (the results don't reflect the requested load); k6 CPU in its busiest sampling interval (`cpuMaxPct`) > 90% of the machine is `warn` (latency may include generator overhead; `cpuAvgPct` spans the whole run including the idle cool-down, so it is reported but not judged). `skipped` when neither is reported. |
 
 **Leak window and short runs.** The leak verdicts regress over the constant-load window `[warmupEndS, loadEndS)`, but never start before 60 s into the run, so startup growth of a scenario without warm-up is not read as a leak. They are `skipped` ("needs a soak run with cool-down") when the run has no cool-down (`cooldownEndS <= loadEndS`) or the leak window is shorter than 2 minutes. With less than 10 minutes of load they are still judged, but the message says that only fast leaks (≳2 MiB/min) are reliably detected. A steep slope with R² below 0.7 is reported as "no consistent trend", never as flat.
