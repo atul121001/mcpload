@@ -226,7 +226,34 @@ const (
 // Run executes k6 and waits. It returns k6's exit code; err is set only when
 // the process could not be started or waited for.
 func Run(c RunConfig) (Result, error) {
-	return runCmd(exec.Command(c.Bin, c.Args()...), c)
+	return runCmd(c.command(), c)
+}
+
+// command is the `k6 run` process: the OS environment (k6 passes it to the
+// script) plus K6_NO_USAGE_REPORT (see EngineEnv).
+func (c RunConfig) command() *exec.Cmd {
+	cmd := exec.Command(c.Bin, c.Args()...)
+	cmd.Env = EngineEnv(os.Environ())
+	return cmd
+}
+
+// NoUsageReportEnv turns off the anonymous usage report that `k6 run` would
+// otherwise POST to Grafana (stats.grafana.org) at the end of every run,
+// together with a fetch of the k6 extension catalog from registry.k6.io.
+// mcpload sends nothing to hosts the user didn't configure.
+const NoUsageReportEnv = "K6_NO_USAGE_REPORT"
+
+// EngineEnv returns env with NoUsageReportEnv=true added, unless env already
+// sets it to a value (K6_NO_USAGE_REPORT=false opts back in to k6's usage
+// report). exec.Cmd keeps the last of duplicate keys, so the added value wins
+// over an empty one.
+func EngineEnv(env []string) []string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && v != "" && strings.EqualFold(k, NoUsageReportEnv) {
+			return env
+		}
+	}
+	return append(env[:len(env):len(env)], NoUsageReportEnv+"=true")
 }
 
 // runCmd starts cmd in its own process group (so a terminal Ctrl-C reaches
