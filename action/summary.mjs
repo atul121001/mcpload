@@ -49,6 +49,7 @@ const fmtDur = (s) => {
 const cell = (s) => String(s ?? '')
   .replace(/[\x00-\x1f\x7f]/g, ' ')
   .replace(/[`<>|@]/g, '')
+  .replace(/\\/g, '\\\\')
   .replace(/[[\]!]/g, '\\$&');
 
 const STATUS_LABEL = { pass: 'PASS', warn: 'WARN', fail: 'FAIL', skipped: 'SKIP' };

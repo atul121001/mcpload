@@ -398,7 +398,7 @@ func mdSanitize(s string) string {
 			b.WriteByte(' ')
 		case r == '`' || r == '<' || r == '>' || r == '|' || r == '@':
 			// drop
-		case r == '[' || r == ']' || r == '!':
+		case r == '\\' || r == '[' || r == ']' || r == '!':
 			b.WriteByte('\\')
 			b.WriteRune(r)
 		default:
