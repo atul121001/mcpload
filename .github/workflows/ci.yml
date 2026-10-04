@@ -282,7 +282,9 @@ jobs:
           # The wrapper's own flag must not reach mcpload.
           npx mcpload version --update
           # Second run uses the cache.
-          npx mcpload version 2>&1 | grep -q "Using cached binary"
+          # (capture first: grep -q exits early and pipefail would flag npx's SIGPIPE)
+          out="$(npx mcpload version 2>&1)"
+          grep -q "Using cached binary" <<<"$out"
 
   docker:
     name: docker (mcpload image + mcpload demo)

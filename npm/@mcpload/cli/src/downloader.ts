@@ -43,8 +43,20 @@ export function cacheDir(): string {
   return join(home, '.mcpload-npm');
 }
 
+// A release tag such as v0.4.0 or v0.5.0-rc.1. Versions also come from the
+// MCPLOAD_VERSION env var and become part of the cache path of the binary we
+// run, so anything else (e.g. "../..") is rejected.
+const VERSION_RE = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+export function checkVersion(version: string): string {
+  if (!VERSION_RE.test(version)) {
+    throw new Error(`Invalid mcpload version "${version}": expected a release tag such as v0.4.0`);
+  }
+  return version;
+}
+
 export function binaryPath(version: string, platform: Platform): string {
-  return join(cacheDir(), version, `mcpload${platform.ext}`);
+  return join(cacheDir(), checkVersion(version), `mcpload${platform.ext}`);
 }
 
 async function fetchBuffer(url: string): Promise<Buffer> {
@@ -55,7 +67,7 @@ async function fetchBuffer(url: string): Promise<Buffer> {
 
 export async function latestRelease(): Promise<string> {
   const envVersion = process.env.MCPLOAD_VERSION;
-  if (envVersion) return envVersion.startsWith('v') ? envVersion : `v${envVersion}`;
+  if (envVersion) return checkVersion(envVersion.startsWith('v') ? envVersion : `v${envVersion}`);
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { 'User-Agent': 'mcpload' },
   });
@@ -64,11 +76,11 @@ export async function latestRelease(): Promise<string> {
     if (locRes.status === 302 || locRes.status === 301) {
       const loc = locRes.headers.get('location') || '';
       const match = loc.match(/\/tag\/([^/]+)$/);
-      if (match) return match[1];
+      if (match) return checkVersion(match[1]);
     }
     throw new Error(`Could not determine latest release (${res.status})`);
   }
-  return (await res.json()).tag_name as string;
+  return checkVersion((await res.json()).tag_name as string);
 }
 
 
@@ -89,6 +101,7 @@ export async function downloadBinary(
   platform: Platform,
   onProgress?: (msg: string) => void,
 ): Promise<string> {
+  checkVersion(version);
   const name = `mcpload_${version.replace(/^v/, '')}_${platform.os}_${platform.arch}`;
   const archiveName = `${name}${platform.archiveExt}`;
   const destDir = join(cacheDir(), version);

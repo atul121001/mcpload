@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectPlatform, downloadBinary, latestRelease, type Platform } from './downloader.js';
+import { checkVersion, detectPlatform, downloadBinary, latestRelease, type Platform } from './downloader.js';
 import { writeCache, cachedVersion } from './cache.js';
 
 // Determine package version from package.json
@@ -33,10 +33,10 @@ async function main(): Promise<void> {
     log('Updating to latest release...');
     targetVersion = await latestRelease();
   } else if (envVersion) {
-    targetVersion = envVersion.startsWith('v') ? envVersion : `v${envVersion}`;
+    targetVersion = checkVersion(envVersion.startsWith('v') ? envVersion : `v${envVersion}`);
   } else {
     // Pin to npm package version by default (e.g., 0.4.1 -> v0.4.1)
-    targetVersion = `v${PACKAGE_VERSION}`;
+    targetVersion = checkVersion(`v${PACKAGE_VERSION}`);
   }
 
   // Ensure binary is downloaded
