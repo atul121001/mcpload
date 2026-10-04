@@ -1,0 +1,9 @@
+# Generated scenarios (source is in parent scenarios/)
+*.js
+lib/
+
+# Dependencies
+node_modules/
+
+# npm artifacts
+*.tgz
