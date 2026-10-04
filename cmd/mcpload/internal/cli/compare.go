@@ -382,6 +382,30 @@ func mdCell(r cmpRow) string {
 	return s
 }
 
+// mdSanitize scrubs a reason/warning string before it goes into Markdown that
+// may be posted to a PR comment. It drops the characters that could break out
+// of a table cell or a code span (backtick, pipe, HTML brackets) and escapes
+// the remaining Markdown-special ones. Kept in sync with action/summary.mjs
+// cell(). CodeQL #3; threat model L4.
+func mdSanitize(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			b.WriteByte(' ')
+		case r == '`' || r == '<' || r == '>' || r == '|':
+			// drop
+		case r == '\\' || r == '*' || r == '_' || r == '[' || r == ']' || r == '!' || r == '#' || r == '@':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // CompareMarkdown renders the comparison for a PR comment or job summary:
 // a per-tool table (one row per tool) and a run-level table. action/summary.mjs
 // renders report.comparison the same way.
@@ -394,14 +418,14 @@ func CompareMarkdown(c *report.Comparison) string {
 	if c.Regressed {
 		p("**Performance regression detected:**\n\n")
 		for _, r := range c.Reasons {
-			p("- %s\n", r)
+			p("- %s\n", mdSanitize(r))
 		}
 		p("\n")
 	} else {
 		p("**No regression:** every difference is within noise or an improvement.\n\n")
 	}
 	for _, warn := range c.Warnings {
-		p("> ⚠ %s\n", warn)
+		p("> ⚠ %s\n", mdSanitize(warn))
 	}
 	if len(c.Warnings) > 0 {
 		p("\n")

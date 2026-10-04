@@ -4,7 +4,7 @@ Baseline `4a1b2c3 (main)` · soak · 2025-06-18 · started 2026-09-29T13:00:00Z
 
 **Performance regression detected:**
 
-- `search` p95 372 ms → 500 ms (+34%, +128 ms)
+- search p95 372 ms → 500 ms (+34%, +128 ms)
 
 | Tool | Calls | p50 | p95 | p99 | Error rate | req/s |
 |---|--:|--:|--:|--:|--:|--:|

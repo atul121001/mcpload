@@ -38,8 +38,18 @@ const fmtDur = (s) => {
   const m = Math.floor(total / 60), r = total % 60;
   return m ? `${m}m${r ? ` ${r}s` : ''}` : `${r}s`;
 };
-// Markdown table cells: escape pipes and strip newlines.
-const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+// Sanitize a value for inclusion in the Markdown PR comment. Values are
+// server-controlled (tool names, verdict messages, URLs) so we must stop them
+// breaking out of a code span (backtick), a table cell (pipe), or injecting
+// Markdown/HTML (brackets, HTML tags, @mentions). Control characters become
+// spaces so a newline doesn't split a table row. Backticks, pipes and HTML
+// angle brackets are dropped rather than escaped because escaping is ugly
+// inside a code span and the information they carried wasn't readable anyway.
+// CodeQL #3; threat model L4.
+const cell = (s) => String(s ?? '')
+  .replace(/[\x00-\x1f\x7f]/g, ' ')
+  .replace(/[`<>|]/g, '')
+  .replace(/[\\*_[\]!#@]/g, '\\$&');
 
 const STATUS_LABEL = { pass: 'PASS', warn: 'WARN', fail: 'FAIL', skipped: 'SKIP' };
 const STATUS_RANK = { fail: 0, warn: 1, pass: 2, skipped: 3 };
