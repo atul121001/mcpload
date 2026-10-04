@@ -35,5 +35,4 @@ mcpload demo down
 
 ## Related
 
-- [@atulmishra121001/scenarios](https://www.npmjs.com/package/@atulmishra121001/scenarios) — Scenario library for custom k6 scripts
 - [mcpload](https://github.com/atul121001/mcpload) — The Go binary and full documentation

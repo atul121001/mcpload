@@ -26,6 +26,12 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex
 ```
 
+npm (any OS with Node.js 18+). `npx mcpload ...` also works without installing; pin a version in a project with `npm install --save-dev mcpload`:
+
+```bash
+npm install -g mcpload
+```
+
 Homebrew (Mac or Linux):
 
 ```bash

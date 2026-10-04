@@ -16,6 +16,7 @@
   <a href="https://github.com/atul121001/mcpload/releases/latest"><img src="https://img.shields.io/github/v/release/atul121001/mcpload?label=release" alt="Latest release"></a>
   <a href="https://github.com/atul121001/mcpload/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/atul121001/mcpload/ci.yml?branch=main&label=CI" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/atul121001/mcpload" alt="License: Apache-2.0"></a>
+  <a href="https://www.npmjs.com/package/mcpload"><img src="https://img.shields.io/npm/v/mcpload?logo=npm&label=npm" alt="npm"></a>
   <a href="https://github.com/atul121001/mcpload/pkgs/container/mcpload"><img src="https://img.shields.io/badge/docker-ghcr.io%2Fatul121001%2Fmcpload-2496ED?logo=docker&logoColor=white" alt="Docker image"></a>
   <a href="https://github.com/atul121001/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-atul121001%2Ftap-FBB040?logo=homebrew&logoColor=white" alt="Homebrew tap"></a>
   <a href="https://github.com/marketplace/actions/mcpload-mcp-load-test"><img src="https://img.shields.io/badge/GitHub%20Marketplace-mcpload-2088FF?logo=githubactions&logoColor=white" alt="GitHub Marketplace"></a>
@@ -37,7 +38,13 @@ mcpload runs simulated AI agents against your MCP server. Each agent opens its o
 
 ## Install
 
-macOS and Linux:
+With Node.js 18 or newer, nothing to install:
+
+```sh
+npx mcpload run --url http://localhost:3000/mcp
+```
+
+Or install it once. macOS and Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | sh
@@ -49,7 +56,7 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 | iex
 ```
 
-Homebrew: `brew install atul121001/tap/mcpload` · Docker: `docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload run --url <url>`
+Homebrew: `brew install atul121001/tap/mcpload` · npm: `npm install -g mcpload` · Docker: `docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload run --url <url>`
 
 mcpload is one self-contained program. The scripts verify its SHA-256 checksum and need no admin rights; run them again to upgrade. Manual downloads and building from source: [install guide](docs/guide/getting-started.md).
 
