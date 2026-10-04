@@ -38,8 +38,19 @@ const fmtDur = (s) => {
   const m = Math.floor(total / 60), r = total % 60;
   return m ? `${m}m${r ? ` ${r}s` : ''}` : `${r}s`;
 };
-// Markdown table cells: escape pipes and strip newlines.
-const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+// Sanitize a value for inclusion in the Markdown PR comment. Values are
+// server-controlled (tool names, verdict messages, URLs) so we must stop them
+// breaking out of a code span (backtick), a table cell (pipe), or injecting
+// links, images or @mentions. Control characters become spaces so a newline
+// can't split a table row. Backticks, pipes, HTML angle brackets and @ are
+// dropped. Bold/italic markers (* and _) are left alone: they are harmless
+// and escaping would turn `memory_leak` into `memory\_leak`. Kept in sync
+// with mdSanitize in cmd/mcpload/internal/cli/compare.go. CodeQL #3; L4.
+const cell = (s) => String(s ?? '')
+  .replace(/[\x00-\x1f\x7f]/g, ' ')
+  .replace(/[`<>|@]/g, '')
+  .replace(/\\/g, '\\\\')
+  .replace(/[[\]!]/g, '\\$&');
 
 const STATUS_LABEL = { pass: 'PASS', warn: 'WARN', fail: 'FAIL', skipped: 'SKIP' };
 const STATUS_RANK = { fail: 0, warn: 1, pass: 2, skipped: 3 };

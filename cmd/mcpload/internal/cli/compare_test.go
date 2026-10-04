@@ -116,7 +116,7 @@ Performance regression detected vs baseline 4a1b2c3 (main):
 	wantMd := "### Compared with baseline\n\n" +
 		"Baseline `4a1b2c3 (main)` · soak · 2025-06-18 · started 2026-09-29T13:00:00Z\n\n" +
 		"**Performance regression detected:**\n\n" +
-		"- `search` p95 372 ms → 500 ms (+34%, +128 ms)\n\n" +
+		"- search p95 372 ms → 500 ms (+34%, +128 ms)\n\n" +
 		"| Tool | Calls | p50 | p95 | p99 | Error rate | req/s |\n|---|--:|--:|--:|--:|--:|--:|\n" +
 		"| `search` | 16,560 → 16,560 | 118 ms → 118 ms | 372 ms → 500 ms (+34%) ⚠ | 716 ms → 716 ms · | 0.02% → 0.02% · | 7.7 → 7.7 |\n" +
 		"| `fast` | 9,936 → 9,936 | 11 ms → 11 ms | 29 ms → 29 ms · | 54 ms → 54 ms · | 0% → 0% · | 4.6 → 4.6 |\n" +
