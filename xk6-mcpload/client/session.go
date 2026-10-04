@@ -82,6 +82,8 @@ type Session struct {
 	// the ProtocolCache without any handshake; the first request that shows
 	// the server no longer speaks it drops the cache entry.
 	fromCache atomic.Bool
+	// res remembers listed resources and templates (resources.go).
+	res resourceIndex
 }
 
 type observerKey struct{}

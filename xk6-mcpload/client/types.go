@@ -169,6 +169,8 @@ type ToolResult struct {
 type RequestStats struct {
 	Method    string // JSON-RPC method, or "DELETE" for session termination
 	Tool      string // tool name for tools/call, else ""
+	Resource  string // `resource` tag of resources/read (see resources.go), else ""
+	Prompt    string // `prompt` tag of prompts/get (see resources.go), else ""
 	Protocol  string
 	Status    int    // HTTP status; 0 when no response was received
 	ErrorType string // "" on success
