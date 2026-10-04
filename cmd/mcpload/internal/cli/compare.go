@@ -384,9 +384,11 @@ func mdCell(r cmpRow) string {
 
 // mdSanitize scrubs a reason/warning string before it goes into Markdown that
 // may be posted to a PR comment. It drops the characters that could break out
-// of a table cell or a code span (backtick, pipe, HTML brackets) and escapes
-// the remaining Markdown-special ones. Kept in sync with action/summary.mjs
-// cell(). CodeQL #3; threat model L4.
+// of a table cell or a code span (backtick, pipe, HTML brackets, @mention) and
+// escapes the remaining link/image markers. Bold/italic markers (* and _) are
+// left alone: they are harmless and escaping them turns identifiers such as
+// `memory_leak` into `memory\_leak`, which breaks grep in CI and looks ugly in
+// the comment. Kept in sync with action/summary.mjs cell(). CodeQL #3; L4.
 func mdSanitize(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -394,9 +396,9 @@ func mdSanitize(s string) string {
 		switch {
 		case r < 0x20 || r == 0x7f:
 			b.WriteByte(' ')
-		case r == '`' || r == '<' || r == '>' || r == '|':
+		case r == '`' || r == '<' || r == '>' || r == '|' || r == '@':
 			// drop
-		case r == '\\' || r == '*' || r == '_' || r == '[' || r == ']' || r == '!' || r == '#' || r == '@':
+		case r == '[' || r == ']' || r == '!':
 			b.WriteByte('\\')
 			b.WriteRune(r)
 		default:
