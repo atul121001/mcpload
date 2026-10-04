@@ -263,3 +263,49 @@ jobs:
           fi
           git commit -m "mcpload ${TAG}"
           git push origin HEAD
+
+  # Publishes the npm wrapper (npm/@mcpload/cli) as `mcpload` with the tag's
+  # version, so `npx mcpload` always runs the matching GitHub release. Needs an
+  # NPM_TOKEN secret (an npm automation token); without it the job only prints a
+  # notice. --provenance links the package to this workflow run.
+  npm:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check for the npm token
+        id: token
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::notice::NPM_TOKEN is not set; skipping the npm publish."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Build and publish
+        if: steps.token.outputs.ok == 'true'
+        working-directory: npm/@mcpload/cli
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          npm ci
+          npm run build
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          npm publish --provenance --access public --tag "$tag"

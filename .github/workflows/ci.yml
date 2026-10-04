@@ -244,6 +244,46 @@ jobs:
   # `mcpload demo up` starts the embedded compose file from the demo images
   # (tagged locally under MCPLOAD_DEMO_IMAGE_PREFIX/MCPLOAD_DEMO_TAG) and
   # waits until every target answers /healthz.
+  npm:
+    name: npm wrapper (pack, install, run)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and pack
+        working-directory: npm/@mcpload/cli
+        run: |
+          npm ci
+          npm run build
+          npm pack
+      - name: Install the tarball and run it like a user
+        env:
+          MCPLOAD_NPM_CACHE_DIR: ${{ runner.temp }}/mcpload-npm-cache
+        run: |
+          set -euo pipefail
+          tgz="$PWD/$(ls npm/@mcpload/cli/mcpload-*.tgz)"
+          app="$RUNNER_TEMP/app"
+          mkdir -p "$app" && cd "$app"
+          npm init -y >/dev/null
+          npm install "$tgz"
+          # The package version must match a GitHub release: this downloads it.
+          npx mcpload version | tee out.txt
+          grep -q "mcpload v$(node -p "require('mcpload/package.json').version")" out.txt
+          grep -q "(embedded)" out.txt
+          # The wrapper's own flag must not reach mcpload.
+          npx mcpload version --update
+          # Second run uses the cache.
+          npx mcpload version 2>&1 | grep -q "Using cached binary"
+
   docker:
     name: docker (mcpload image + mcpload demo)
     runs-on: ubuntu-latest

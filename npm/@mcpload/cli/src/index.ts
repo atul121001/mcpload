@@ -18,14 +18,18 @@ const PACKAGE_VERSION = pkg.version as string;
 const log = (msg: string) => process.stderr.write(`mcpload: ${msg}\n`);
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  // --update / --force-update are for this wrapper only; mcpload itself would
+  // reject them as unknown flags.
+  const raw = process.argv.slice(2);
+  const wantsUpdate = raw.includes('--update') || raw.includes('--force-update');
+  const args = raw.filter((a) => a !== '--update' && a !== '--force-update');
   const platform = detectPlatform();
 
   // Determine target version
   let targetVersion: string;
   const envVersion = process.env.MCPLOAD_VERSION;
 
-  if (args.includes('--update') || args.includes('--force-update')) {
+  if (wantsUpdate) {
     log('Updating to latest release...');
     targetVersion = await latestRelease();
   } else if (envVersion) {

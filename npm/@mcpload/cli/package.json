@@ -1,6 +1,6 @@
 {
   "name": "mcpload",
-  "version": "0.4.1",
+  "version": "0.4.0",
   "description": "CLI for mcpload — MCP load & soak testing for AI agents",
   "license": "Apache-2.0",
   "repository": {

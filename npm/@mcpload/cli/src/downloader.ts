@@ -1,7 +1,7 @@
 /**
  * Download, verify, and cache the mcpload Go binary from GitHub releases.
  */
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -121,16 +121,28 @@ export async function downloadBinary(
     }
 
     onProgress?.('Extracting');
+    let extracted: string;
     if (platform.archiveExt === '.zip') {
       const unzip = await import('extract-zip');
       await unzip.default(archivePath, { dir: join(tmpDirPath, 'out') });
-      copyFileSync(join(tmpDirPath, 'out', name, 'mcpload.exe'), targetPath);
+      extracted = join(tmpDirPath, 'out', name, 'mcpload.exe');
     } else {
-      const tarPath = join(tmpDirPath, `${name}.tar.gz`);
-      copyFileSync(archivePath, tarPath);
-      await extract({ file: tarPath, cwd: tmpDirPath });
-      copyFileSync(join(tmpDirPath, name, 'mcpload'), targetPath);
-      chmodSync(targetPath, 0o755);
+      await extract({ file: archivePath, cwd: tmpDirPath });
+      extracted = join(tmpDirPath, name, 'mcpload');
+    }
+
+    // Copy next to the target under a unique name, then rename: a crash or a
+    // second run in parallel never leaves a half-written binary at targetPath,
+    // which would otherwise be reused as "cached" on every later run.
+    const partial = `${targetPath}.${process.pid}-${Math.random().toString(36).slice(2)}.partial`;
+    copyFileSync(extracted, partial);
+    if (!platform.ext) chmodSync(partial, 0o755);
+    try {
+      renameSync(partial, targetPath);
+    } catch (err) {
+      rmSync(partial, { force: true });
+      // Another run finished first (Windows refuses to rename over a file in use).
+      if (!existsSync(targetPath)) throw err;
     }
 
     onProgress?.(`Installed to ${targetPath}`);
