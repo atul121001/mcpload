@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { extract } from 'tar';
 import { rm } from 'node:fs/promises';
+import { readZipEntry } from './unzip.js';
 
 const REPO = 'atul121001/mcpload';
 const BASE_URL = `https://github.com/${REPO}/releases/download`;
@@ -136,9 +137,8 @@ export async function downloadBinary(
     onProgress?.('Extracting');
     let extracted: string;
     if (platform.archiveExt === '.zip') {
-      const unzip = await import('extract-zip');
-      await unzip.default(archivePath, { dir: join(tmpDirPath, 'out') });
-      extracted = join(tmpDirPath, 'out', name, 'mcpload.exe');
+      extracted = join(tmpDirPath, 'mcpload.exe');
+      writeFileSync(extracted, readZipEntry(archiveBuf, `${name}/mcpload.exe`));
     } else {
       await extract({ file: archivePath, cwd: tmpDirPath });
       extracted = join(tmpDirPath, name, 'mcpload');
