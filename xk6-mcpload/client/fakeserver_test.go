@@ -138,13 +138,17 @@ func (f *fakeServer) serveStateless(w http.ResponseWriter, r *http.Request, id a
 		writeJSON(w, 400, rpcErr(id, CodeHeaderMismatch, "header mismatch"))
 		return
 	}
-	if method == "tools/call" {
+	if method == "tools/call" || method == "resources/read" || method == "prompts/get" {
+		src := "name"
+		if method == "resources/read" {
+			src = "uri" // Mcp-Name carries params.uri for resources/read
+		}
 		name := r.Header.Get(HeaderName)
 		if strings.HasPrefix(name, "=?base64?") {
 			dec, _ := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(name, "=?base64?"), "?="))
 			name = string(dec)
 		}
-		if name != params["name"] {
+		if name != params[src] {
 			writeJSON(w, 400, rpcErr(id, CodeHeaderMismatch, "Mcp-Name mismatch"))
 			return
 		}
@@ -188,6 +192,9 @@ func (f *fakeServer) handle(w http.ResponseWriter, id any, method string, params
 			f.reply(w, id, map[string]any{"content": []any{map[string]any{"type": "text", "text": fmt.Sprint(args["msg"])}}})
 		}
 	default:
+		if f.handleFeatures(w, id, method, params) { // resources_test.go
+			return
+		}
 		writeJSON(w, 200, rpcErr(id, -32601, "method not found"))
 	}
 }

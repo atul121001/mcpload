@@ -33,8 +33,12 @@
 //                  CANCEL_AFTER_MS (default 150) after it was sent. CANCEL_TOOLS: comma-separated tools eligible
 //                  (default all). CANCEL_WAIT: how long a cancelled call's stream is still read for a late response
 //                  (client option cancelWait, default 2s). See lib/cancel.js.
+//   RESOURCE_READ_RATIO, PROMPT_GET_RATIO  share of agent steps (0..1 each, sum <= 1, default 0) that read a listed
+//                  resource (a template filled with a random id) or get a listed prompt (required args filled)
+//                  instead of calling a tool. See lib/content.js.
 import { thresholdToolNames } from './tools.js';
 import { parseCancelConfig } from './cancel.js';
+import { parseContentConfig } from './content.js';
 
 function env(name, def) {
   const v = __ENV[name];
@@ -115,6 +119,7 @@ export const config = {
   roots: envResponder('ROOTS'),
   cancel: parseCancelConfig((name) => env(name, undefined)),
   cancelWait: env('CANCEL_WAIT', undefined),
+  content: parseContentConfig((name) => env(name, undefined)),
 
   // Explicit TOOL_MIX, or null: demo mix on a demo server, else uniform over listed tools (lib/tools.js).
   toolMix: envObject('TOOL_MIX') || null,

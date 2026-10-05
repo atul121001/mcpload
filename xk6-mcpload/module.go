@@ -437,6 +437,11 @@ func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool) *
 	must(rt, obj.Set("listTools", js.listTools))
 	must(rt, obj.Set("callTool", js.callTool))
 	must(rt, obj.Set("callParallel", js.callParallel))
+	must(rt, obj.Set("listResources", js.listResources))
+	must(rt, obj.Set("listResourceTemplates", js.listResourceTemplates))
+	must(rt, obj.Set("listPrompts", js.listPrompts))
+	must(rt, obj.Set("readResource", js.readResource))
+	must(rt, obj.Set("getPrompt", js.getPrompt))
 	must(rt, obj.Set("ping", js.ping))
 	must(rt, obj.Set("close", js.close))
 	return obj
@@ -534,6 +539,11 @@ func parseCallOptions(m map[string]any, what string) (client.CallOptions, error)
 	return co, nil
 }
 
+// callParallel runs a batch concurrently. Each element is a tool call
+// {name, args} (kind absent or "tool"), a resource read {kind: "resource",
+// uri} or a prompt get {kind: "prompt", name, args}; all accept meta and
+// cancelAfterMs. Results come back in input order, each shaped like the
+// result of callTool / readResource / getPrompt.
 func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 	rt := js.mi.vu.Runtime()
 	if common.IsNullish(v) {
@@ -545,14 +555,38 @@ func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 	}
 	// Everything is extracted from JS values here, on the JS thread. The
 	// goroutines below never touch the runtime.
-	calls := make([]client.ToolCall, len(list))
+	calls := make([]client.Call, len(list))
 	for i, item := range list {
-		m, ok := item.(map[string]any)
-		if !ok || str(m["name"]) == "" {
-			common.Throw(rt, fmt.Errorf("callParallel: element %d must be {name, args}", i))
-		}
 		what := fmt.Sprintf("element %d", i)
-		if err := checkCallKeys(m, what, "name", "args"); err != nil {
+		m, ok := item.(map[string]any)
+		if !ok {
+			common.Throw(rt, fmt.Errorf("callParallel: %s must be an object", what))
+		}
+		var c client.Call
+		switch kind := str(m["kind"]); kind {
+		case "", "tool":
+			if str(m["name"]) == "" {
+				common.Throw(rt, fmt.Errorf("callParallel: %s must be {name, args}", what))
+			}
+			c = client.Call{Kind: client.KindTool, Name: str(m["name"]), Args: m["args"]}
+		case client.KindResource:
+			if str(m["uri"]) == "" {
+				common.Throw(rt, fmt.Errorf("callParallel: %s must be {kind: 'resource', uri}", what))
+			}
+			c = client.Call{Kind: client.KindResource, URI: str(m["uri"])}
+		case client.KindPrompt:
+			if str(m["name"]) == "" {
+				common.Throw(rt, fmt.Errorf("callParallel: %s must be {kind: 'prompt', name, args}", what))
+			}
+			pa, err := exportPromptArgs(m["args"])
+			if err != nil {
+				common.Throw(rt, fmt.Errorf("callParallel: %s: %w", what, err))
+			}
+			c = client.Call{Kind: client.KindPrompt, Name: str(m["name"]), PromptArgs: pa}
+		default:
+			common.Throw(rt, fmt.Errorf("callParallel: %s: kind must be 'tool', 'resource' or 'prompt', got %q", what, kind))
+		}
+		if err := checkCallKeys(m, what, "kind", "name", "args", "uri"); err != nil {
 			common.Throw(rt, fmt.Errorf("callParallel: %w", err))
 		}
 		meta, err := exportMeta(m["meta"])
@@ -563,15 +597,133 @@ func (js *jsSession) callParallel(v sobek.Value) sobek.Value {
 		if err != nil {
 			common.Throw(rt, fmt.Errorf("callParallel: %w", err))
 		}
-		calls[i] = client.ToolCall{Name: str(m["name"]), Args: m["args"], Meta: meta, CallOptions: co}
+		c.Meta, c.CallOptions = meta, co
+		calls[i] = c
 	}
 	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
-	results := js.s.CallParallel(ctx, calls) // returns after all goroutines finish
+	results := js.s.Parallel(ctx, calls) // returns after all goroutines finish
 	out := make([]map[string]any, len(results))
 	for i, r := range results {
-		out[i] = toolResultJSON(r, js.includePayloads)
+		switch r.Kind {
+		case client.KindResource:
+			out[i] = resourceResultJSON(r.Resource)
+		case client.KindPrompt:
+			out[i] = promptResultJSON(r.Prompt)
+		default:
+			out[i] = toolResultJSON(r.Tool, js.includePayloads)
+		}
 	}
 	return toJS(rt, out)
+}
+
+func (js *jsSession) listResources() sobek.Value {
+	rt := js.mi.vu.Runtime()
+	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
+	rs, err := js.s.ListResources(ctx)
+	if err != nil {
+		throwMCP(rt, client.AsError(err))
+	}
+	if rs == nil {
+		rs = []client.Resource{}
+	}
+	return toJS(rt, rs)
+}
+
+func (js *jsSession) listResourceTemplates() sobek.Value {
+	rt := js.mi.vu.Runtime()
+	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
+	ts, err := js.s.ListResourceTemplates(ctx)
+	if err != nil {
+		throwMCP(rt, client.AsError(err))
+	}
+	if ts == nil {
+		ts = []client.ResourceTemplate{}
+	}
+	return toJS(rt, ts)
+}
+
+func (js *jsSession) listPrompts() sobek.Value {
+	rt := js.mi.vu.Runtime()
+	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
+	ps, err := js.s.ListPrompts(ctx)
+	if err != nil {
+		throwMCP(rt, client.AsError(err))
+	}
+	if ps == nil {
+		ps = []client.Prompt{}
+	}
+	return toJS(rt, ps)
+}
+
+// callOpts reads the {meta, cancelAfterMs} options object of readResource
+// and getPrompt (callTool reads the same keys).
+func callOpts(rt *sobek.Runtime, fn string, opts sobek.Value) (map[string]any, client.CallOptions) {
+	if common.IsNullish(opts) {
+		return nil, client.CallOptions{}
+	}
+	m, ok := opts.Export().(map[string]any)
+	if !ok {
+		common.Throw(rt, fmt.Errorf("%s: options must be an object like {meta, cancelAfterMs}", fn))
+	}
+	if err := checkCallKeys(m, "options"); err != nil {
+		common.Throw(rt, fmt.Errorf("%s: %w", fn, err))
+	}
+	meta, err := exportMeta(m["meta"])
+	if err != nil {
+		common.Throw(rt, fmt.Errorf("%s: %w", fn, err))
+	}
+	co, err := parseCallOptions(m, "options")
+	if err != nil {
+		common.Throw(rt, fmt.Errorf("%s: %w", fn, err))
+	}
+	return meta, co
+}
+
+// readResource(uri, opts?): opts as for callTool.
+func (js *jsSession) readResource(uri string, opts sobek.Value) sobek.Value {
+	rt := js.mi.vu.Runtime()
+	if uri == "" {
+		common.Throw(rt, errors.New("readResource: uri is required"))
+	}
+	meta, co := callOpts(rt, "readResource", opts)
+	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
+	return toJS(rt, resourceResultJSON(js.s.ReadResourceWith(ctx, uri, meta, co)))
+}
+
+// getPrompt(name, args?, opts?): args values are sent as strings; opts as
+// for callTool.
+func (js *jsSession) getPrompt(name string, args sobek.Value, opts sobek.Value) sobek.Value {
+	rt := js.mi.vu.Runtime()
+	if name == "" {
+		common.Throw(rt, errors.New("getPrompt: name is required"))
+	}
+	var pa map[string]string
+	if !common.IsNullish(args) {
+		var err error
+		if pa, err = exportPromptArgs(args.Export()); err != nil {
+			common.Throw(rt, fmt.Errorf("getPrompt: %w", err))
+		}
+	}
+	meta, co := callOpts(rt, "getPrompt", opts)
+	ctx := client.WithObserver(js.mi.vu.Context(), js.ctx())
+	return toJS(rt, promptResultJSON(js.s.GetPromptWith(ctx, name, pa, meta, co)))
+}
+
+// exportPromptArgs checks prompt arguments: absent or an object. MCP prompt
+// arguments are strings, so other values are converted with fmt.Sprint.
+func exportPromptArgs(v any) (map[string]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("prompt args must be an object")
+	}
+	out := make(map[string]string, len(m))
+	for k, val := range m {
+		out[k] = str(val)
+	}
+	return out, nil
 }
 
 func (js *jsSession) ping() {
@@ -605,30 +757,73 @@ func toolResultJSON(r client.ToolResult, includePayloads bool) map[string]any {
 		"content":    content,
 		"durationMs": float64(r.Duration) / float64(time.Millisecond),
 	}
-	if r.ServedBy != "" {
-		out["servedBy"] = r.ServedBy
-	}
 	if len(r.StructuredContent) > 0 {
 		out["structuredContent"] = r.StructuredContent
 	}
-	if r.Cancelled {
+	addOutcome(out, r.ServedBy, r.Cancelled, r.Err)
+	_ = includePayloads // reserved: payloads are never attached to metric samples
+	return out
+}
+
+// resourceResultJSON shapes a readResource result like a callTool result:
+// {isError, contents, resource (the metric tag), durationMs, servedBy?,
+// cancelled?, error?}.
+func resourceResultJSON(r client.ResourceResult) map[string]any {
+	contents := json.RawMessage("[]")
+	if len(r.Contents) > 0 && string(r.Contents) != "null" {
+		contents = r.Contents
+	}
+	out := map[string]any{
+		"isError":    r.IsError,
+		"contents":   contents,
+		"resource":   r.Label,
+		"durationMs": float64(r.Duration) / float64(time.Millisecond),
+	}
+	addOutcome(out, r.ServedBy, r.Cancelled, r.Err)
+	return out
+}
+
+// promptResultJSON: {isError, description?, messages, durationMs,
+// servedBy?, cancelled?, error?}.
+func promptResultJSON(r client.PromptResult) map[string]any {
+	messages := json.RawMessage("[]")
+	if len(r.Messages) > 0 && string(r.Messages) != "null" {
+		messages = r.Messages
+	}
+	out := map[string]any{
+		"isError":    r.IsError,
+		"messages":   messages,
+		"durationMs": float64(r.Duration) / float64(time.Millisecond),
+	}
+	if r.Description != "" {
+		out["description"] = r.Description
+	}
+	addOutcome(out, r.ServedBy, r.Cancelled, r.Err)
+	return out
+}
+
+// addOutcome sets the servedBy, cancelled and error fields shared by all
+// call results.
+func addOutcome(out map[string]any, servedBy string, cancelled bool, err *client.Error) {
+	if servedBy != "" {
+		out["servedBy"] = servedBy
+	}
+	if cancelled {
 		out["cancelled"] = true
 	}
-	if r.Err != nil {
-		e := map[string]any{"type": r.Err.Type, "message": r.Err.Message}
-		if r.Err.HTTPStatus != 0 {
-			e["status"] = r.Err.HTTPStatus
+	if err != nil {
+		e := map[string]any{"type": err.Type, "message": err.Message}
+		if err.HTTPStatus != 0 {
+			e["status"] = err.HTTPStatus
 		}
-		if r.Err.Code != 0 {
-			e["code"] = r.Err.Code
+		if err.Code != 0 {
+			e["code"] = err.Code
 		}
-		if r.Err.ServedBy != "" {
-			e["servedBy"] = r.Err.ServedBy
+		if err.ServedBy != "" {
+			e["servedBy"] = err.ServedBy
 		}
 		out["error"] = e
 	}
-	_ = includePayloads // reserved: payloads are never attached to metric samples
-	return out
 }
 
 // toJS converts Go data into native JS values (real arrays/objects) via

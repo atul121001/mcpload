@@ -36,7 +36,7 @@ Full API: [xk6-mcpload/README.md](../../xk6-mcpload/README.md).
 
 | Metric | Type | What it measures |
 |---|---|---|
-| `mcp_req_duration` | Trend | each JSON-RPC round trip (tagged by `method`, `tool`, `status`, `error_type`) |
+| `mcp_req_duration` | Trend | each JSON-RPC round trip (tagged by `method`, `tool`, `status`, `error_type`; `resources/read` also by `resource`, `prompts/get` by `prompt`) |
 | `mcp_req_ttfb` | Trend | time to the first response byte |
 | `mcp_stream_duration` | Trend | SSE responses: headers to matching event |
 | `mcp_connect_duration` | Trend | the whole `connect()` (`initialize` or `server/discover`) |

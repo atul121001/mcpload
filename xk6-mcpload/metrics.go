@@ -120,13 +120,17 @@ func statusTag(s int) string {
 	return strconv.Itoa(s)
 }
 
-// OnRequest emits the per-request samples. A successful request carries no
+// OnRequest emits the per-request samples. resources/read is tagged
+// `resource` and prompts/get `prompt` (bounded values, see
+// client/resources.go). A successful request carries no
 // error_type tag at all (empty tags are omitted); a failed one keeps its
 // error_type tag on every sample, including mcp_req_duration, so success-only
 // percentiles can be computed by selecting samples without the tag.
 func (e *emitter) OnRequest(st client.RequestStats) {
 	tags := withTag(e.tags, "method", st.Method)
 	tags = withTag(tags, "tool", st.Tool)
+	tags = withTag(tags, "resource", st.Resource)
+	tags = withTag(tags, "prompt", st.Prompt)
 	tags = withTag(tags, "protocol", st.Protocol)
 	tags = withTag(tags, "status", statusTag(st.Status))
 	tags = withTag(tags, "error_type", st.ErrorType)

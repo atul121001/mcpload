@@ -85,13 +85,17 @@ export default function () {
   const results = s.callParallel([
     { name: 'search',  args: { q: 'invoices' } },
     { name: 'get_doc', args: { id: 42 } },
+    { kind: 'resource', uri: 'docs://invoices/42' },  // or kind: 'prompt', {name, args}
   ]);
+  s.listResources(); s.listResourceTemplates(); s.listPrompts();  // follow pagination
+  s.readResource('docs://invoices/42');
+  s.getPrompt('summarize', { topic: 'invoices' });
   s.close();                         // DELETE when stateful; no-op when stateless
 }
 ```
 
 ## 4. Metrics
-Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_type`.
+Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_type`. `resources/read` samples also carry `resource` and `prompts/get` samples `prompt`. `prompt` is the prompt name; `resource` is the server-declared name of the URI (or of the resource template it matches) when the session listed them, else a fallback of scheme, host and at most the first path segment (never the query or user info). Each takes at most 50 distinct values per k6 process; later values are tagged `other`. Details: [xk6-mcpload/README.md](../xk6-mcpload/README.md#metrics).
 
 | Metric | Type | Notes |
 |---|---|---|
