@@ -69,6 +69,20 @@ export default function () {
   // optional params._meta, e.g. a call id the server can record (scenarios/reconnect-storm.js):
   s.callTool('search', { q: 'x' }, { meta: { 'io.mcpload/callId': 'r1-3-17' } }); // callParallel: {name, args, meta}
   // per-call options are { meta?, cancelAfterMs? } (both may be combined); unknown keys throw
+
+  // resources and prompts (see Resources and prompts); list methods follow nextCursor and throw on failure
+  const res = s.listResources();          // [{uri, name, title?, description?, mimeType?, size?}]
+  const tpls = s.listResourceTemplates(); // [{uriTemplate, name, title?, description?, mimeType?}]
+  const prompts = s.listPrompts();        // [{name, title?, description?, arguments?: [{name, description?, required?}]}]
+  const rr = s.readResource('demo://items/42', { cancelAfterMs: 500 });  // opts as for callTool
+  // never throws: { isError, contents, resource, durationMs, servedBy?, cancelled?, error? }
+  const pr = s.getPrompt('summarize', { topic: 'x' }, { meta: { k: 'v' } }); // args and opts optional
+  // never throws: { isError, description?, messages, durationMs, servedBy?, cancelled?, error? }
+  s.callParallel([                // mixed batch; `kind` defaults to 'tool'
+    { name: 'search', args: { q: 'x' } },
+    { kind: 'resource', uri: 'demo://items/42' },
+    { kind: 'prompt', name: 'summarize', args: { topic: 'x' } },
+  ]);                             // each result is shaped like callTool / readResource / getPrompt's
   s.ping();                       // throws on failure
   s.close();                      // DELETE in stateful mode; no-op on the wire in stateless mode
 }
@@ -77,6 +91,26 @@ export default function () {
 `error.type` (and the `error_type` tag) is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`,
 `session_not_found`, `header_mismatch`, `auth`, `cancelled`. A result with `isError: true` has `isError: true` **and**
 `error.type === 'tool_iserror'`. `mcp_errors` can also carry `unsupported_request` (see below).
+
+### Resources and prompts
+
+- `listResources()`, `listResourceTemplates()`, `listPrompts()` send `resources/list`, `resources/templates/list`
+  and `prompts/list`, following `nextCursor` until it runs out, and return every entry. They throw on failure like
+  `listTools()`.
+- `readResource(uri, opts?)` sends `resources/read` `{uri}`. `contents` is the server's `contents` array as is
+  (`{uri, mimeType?, text | blob}`; `[]` when absent). `resource` is the value of the `resource` metric tag the
+  read was recorded with (see below).
+- `getPrompt(name, args?, opts?)` sends `prompts/get` `{name, arguments}`. MCP prompt arguments are strings, so
+  non-string values in `args` are converted to strings. `messages` is the server's `messages` array as is
+  (`{role, content}`; `[]` when absent).
+- `opts` is `{ meta?, cancelAfterMs? }`, as for `callTool` (cancellation works the same way). Like `callTool`,
+  both never throw: a failure sets `isError: true` and `error` (a JSON-RPC error such as "resource not found" is
+  `jsonrpc`). `servedBy` is set as for tool results.
+- `callParallel` items take `kind`: `'tool'` (the default) `{name, args}`, `'resource'` `{uri}` or `'prompt'`
+  `{name, args}`; all accept `meta` and `cancelAfterMs`. Results come back in input order.
+- Stateless (`2026-07-28`): `resources/read` sends the URI and `prompts/get` the prompt name as `Mcp-Name`; the
+  list methods send no `Mcp-Name`.
+- Not implemented: `resources/subscribe`, resource update notifications and `completion/complete`.
 
 ### Server-to-client requests
 
@@ -152,7 +186,7 @@ server's Prometheus metrics for the `cancellation` verdict.
   build, the handshake a new one), `server/discover` is tried once more with that version; the rejected `initialize`
   stays counted as an error.
 - **servedBy**: the value of the `servedByHeader` response header (default `X-Served-By`; e.g. nginx's
-  `X-Upstream`) on the session (handshake), on each tool result and its `error`, and on thrown errors. Empty when
+  `X-Upstream`) on the session (handshake), on each tool, resource and prompt result and its `error`, and on thrown errors. Empty when
   the header is absent or no response arrived (timeout). It is not a metric tag. `scenarios/version-skew.js` uses it.
 - **rememberProtocol** (default `true`, only affects `auto`): the protocol resolved by the first *successful* auto
   connect is cached process-wide, keyed by `url` + `protocol` + `fallbackVersion`, and shared by every VU and
@@ -180,9 +214,24 @@ server's Prometheus metrics for the `cancellation` verdict.
 
 ## Metrics
 
-Tags: `method`, `tool`, `protocol`, `status`, `error_type` (empty tags are omitted) plus the VU's tags.
-A successful request has **no** `error_type` tag; a failed one carries it on all of its samples, including
-`mcp_req_duration`, so success-only latency can be selected by the tag's absence.
+Tags: `method`, `tool`, `resource`, `prompt`, `protocol`, `status`, `error_type` (empty tags are omitted) plus
+the VU's tags. A successful request has **no** `error_type` tag; a failed one carries it on all of its samples,
+including `mcp_req_duration`, so success-only latency can be selected by the tag's absence.
+
+`tool` is set on `tools/call`, `resource` on `resources/read` and `prompt` on `prompts/get` (each request has at
+most one of them). `prompt` is the prompt name. `resource` is, in this order:
+
+1. the server-declared `name` of the URI, if this session's `listResources()` returned it;
+2. the `name` of a template from this session's `listResourceTemplates()` that the URI matches (a simple `{var}`
+   matches one path segment, other expressions such as `{+var}` or `{?q}` match anything);
+3. otherwise a fallback built from the URI: scheme and host, plus the first path segment when the path has more
+   than one segment (`file:///projects/app/a.json` → `file:///projects`, `demo://items/42` → `demo://items`,
+   `https://x.test/readme` → `https://x.test`). User info, query and fragment are never kept, as they may hold
+   credentials or ids. A URI that can't be parsed is `other`.
+
+Raw URIs are never used as tag values. To bound cardinality, each of `resource` and `prompt` takes at most 50
+distinct values per k6 process (all VUs together, first come first served); later new values are tagged `other`.
+Call `listResources()` / `listResourceTemplates()` on a session before reading if you want per-resource names.
 
 | Metric | Type | Notes |
 |---|---|---|

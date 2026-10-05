@@ -40,7 +40,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **Stateless 2026-07-28 protocol** | ✅ auto-detected | Not in docs | Not in docs | Not in docs |
 | **CI** | ✅ GitHub Action with a PR comment and HTML report | `jmeter -n` plus assertions | `k6 run` plus thresholds | Export to other tools |
 | **Compare with main: per-tool Δ** | ✅ `mcpload compare` / `baseline-branch: main`: p95/p99/error rate per tool vs the last `main` run, with noise floors | ❌ | ❌ | ❌ |
-| **Resources and prompts** | ❌ tools only | ✅ | ✅ | Not in docs |
+| **Resources and prompts** | ✅ `readResource` / `getPrompt`, tagged per resource and prompt; mixed into agent sessions with `RESOURCE_READ_RATIO` / `PROMPT_GET_RATIO` ([scenarios](../scenarios/README.md)) | ✅ | ✅ | Not in docs |
 | **stdio and SSE servers** | ❌ streamable HTTP only | ✅ | ✅ | ✅ |
 
 ## What that means in practice
@@ -55,6 +55,6 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 - Use **MCP Inspector or MCPJam** to debug a single request.
 - Use **mcp-eval or mcpbr** to check that agents pick the right tools.
-- Use **the JMeter plugin or xk6-mcp** to load-test resources and prompts, or local stdio servers. mcpload doesn't do those yet.
+- Use **the JMeter plugin or xk6-mcp** to load-test local stdio servers or SSE servers. mcpload supports only streamable HTTP so far.
 
 These tools work well alongside mcpload.

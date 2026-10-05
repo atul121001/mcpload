@@ -22,6 +22,17 @@ Every MCP endpoint is `http://localhost:<port>/mcp` (streamable HTTP). All serve
 | `sample_llm` | `prompt` (string), `maxTokens` (default 100) | TS servers only. Sends `sampling/createMessage` to the client on the call's SSE stream and returns the reply; `isError: true` when the client did not declare `sampling` |
 | `elicit_input` | `message` (string) | TS servers only. Sends `elicitation/create` (form: optional `confirm` boolean, `note` string) and returns the action and content; `isError: true` when the client did not declare `elicitation` |
 
+The TS servers also serve resources and a prompt (the Python and Go servers don't):
+
+| Kind | Name | URI / arguments | Returns |
+|---|---|---|---|
+| resource | `readme` | `demo://docs/readme` | a short Markdown text (`text/markdown`) |
+| resource | `changelog` | `demo://docs/changelog` | a short Markdown text (`text/markdown`) |
+| resource template | `item` | `demo://items/{id}` (any id) | `{"id","name","price"}` as JSON text (`application/json`); not listed in `resources/list` |
+| prompt | `summarize` | `topic` (required), `style` (optional) | one user message asking for a summary of `topic`; `-32602` without `topic` |
+
+Scenarios read and get these only with `RESOURCE_READ_RATIO` / `PROMPT_GET_RATIO` set (see `scenarios/README.md`).
+
 The default tool mix (`scenarios/lib/tools.js`) only calls the first five, so `sample_llm` and `elicit_input` run
 only when named in `TOOL_MIX` (with `SAMPLING` / `ELICITATION` set) or by
 [`xk6-mcpload/examples/client-requests.js`](../xk6-mcpload/examples/client-requests.js).

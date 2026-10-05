@@ -125,7 +125,7 @@ func TestResourcesAndPrompts(t *testing.T) {
 			}
 
 			miss := s.ReadResource(ctx, "demo://missing")
-			if !miss.IsError || miss.Err == nil || miss.Err.Code != -32002 || miss.Cancelled {
+			if !miss.IsError || miss.Err == nil || miss.Err.Code != -32002 || miss.Err.Type != ErrJSONRPC || miss.Cancelled {
 				t.Fatalf("missing resource: %+v %+v", miss, miss.Err)
 			}
 

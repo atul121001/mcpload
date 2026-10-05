@@ -34,7 +34,7 @@ import { randomUUID, randomFillSync } from 'node:crypto';
 import express from 'express';
 import client from 'prom-client';
 import { z } from 'zod';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest, CancelledNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
@@ -93,6 +93,12 @@ async function pooled(fn) {
 }
 
 const knownTools = new Set(); // filled by registerTool
+
+// Static resources: [name, uri, title, text].
+const DEMO_DOCS = [
+  ['readme', 'demo://docs/readme', 'Demo README', '# mcpload demo server\n\nA known-good MCP target for load tests. Tools: fast, slow, flaky, big, search.\n'],
+  ['changelog', 'demo://docs/changelog', 'Demo changelog', '# Changelog\n\n## 0.1.0\n\n- Tools, resources and a prompt for mcpload.\n'],
+];
 
 // HANG_UNKNOWN=1: keep the request open without ever answering (the client's timeout ends it).
 let hanging = 0;
@@ -290,6 +296,38 @@ function createMcpServer() {
         return toolError(`elicit_input: ${e.message}`);
       }
     },
+  );
+
+  // ---- resources and prompts (resources/list, resources/templates/list, resources/read, prompts/*) ----
+  // Small fixed documents plus one template, so `resources/read` and `prompts/get` can be load-tested
+  // (RESOURCE_READ_RATIO / PROMPT_GET_RATIO in scenarios/). They bypass the tool wrappers above (no pool,
+  // call tracking or cancellation accounting).
+  for (const [name, uri, title, body] of DEMO_DOCS) {
+    server.registerResource(name, uri, { title, mimeType: 'text/markdown' }, async (u) => ({
+      contents: [{ uri: u.href, mimeType: 'text/markdown', text: body }],
+    }));
+  }
+
+  server.registerResource(
+    'item',
+    new ResourceTemplate('demo://items/{id}', { list: undefined }),
+    { title: 'Demo item', description: 'A small JSON record for any id.', mimeType: 'application/json' },
+    async (u, { id }) => ({
+      contents: [{ uri: u.href, mimeType: 'application/json', text: JSON.stringify({ id, name: `Item ${id}`, price: (String(id).length * 7) % 100 }) }],
+    }),
+  );
+
+  server.registerPrompt(
+    'summarize',
+    {
+      title: 'Summarize a topic',
+      description: 'Builds a one-message prompt asking for a short summary of `topic`.',
+      argsSchema: { topic: z.string(), style: z.string().optional() },
+    },
+    async ({ topic, style }) => ({
+      description: `Summary of ${topic}`,
+      messages: [{ role: 'user', content: { type: 'text', text: `Summarize ${topic} in three sentences${style ? `, in a ${style} style` : ''}.` } }],
+    }),
   );
 
   return server;
