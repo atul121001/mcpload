@@ -209,7 +209,22 @@ runs:
                   ! -name k6 ! -name k6.exe ! -name mcpload ! -name mcpload.exe ! -path '*/.git/*' -print \
                 | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $SHA | $SHA | cut -c1-24)"
         REF="$(printf '%s' "${ACTION_REF:-local}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)"
-        KEY="mcpload-bin-v1-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-xk6$XK6_VERSION-$HASH-$REF"
+        # Version stamped into the mcpload binary (report footer, `mcpload version`, demo image tag):
+        # the release tag the action was pinned to, else `git describe` of the checkout
+        # (dev+<sha> when no tag is reachable, e.g. a shallow PR checkout), else dev+<ref>.
+        VERSION=""
+        case "${ACTION_REF:-}" in v[0-9]*.[0-9]*.[0-9]*) VERSION="$ACTION_REF" ;; esac
+        if [ -z "$VERSION" ]; then
+          D="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || true)"
+          case "$D" in
+            v[0-9]*) VERSION="$D" ;;
+            "") ;;
+            *) VERSION="dev+$D" ;;
+          esac
+        fi
+        [ -n "$VERSION" ] || VERSION="dev+$REF"
+        VERSION="$(printf '%s' "$VERSION" | tr -c 'A-Za-z0-9.+_-' '_' | cut -c1-64)"
+        KEY="mcpload-bin-v1-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-xk6$XK6_VERSION-$HASH-$REF-$VERSION"
         BIN="$RUNNER_TEMP/mcpload-bin"
         # A previous invocation in the same job already built these binaries.
         PREBUILT=false
@@ -219,6 +234,7 @@ runs:
           echo "bin=$BIN"
           echo "exe=$EXE"
           echo "key=$KEY"
+          echo "version=$VERSION"
           echo "prebuilt=$PREBUILT"
         } >> "$GITHUB_OUTPUT"
 
@@ -245,6 +261,7 @@ runs:
         BIN: ${{ steps.paths.outputs.bin }}
         EXE: ${{ steps.paths.outputs.exe }}
         KEY: ${{ steps.paths.outputs.key }}
+        VERSION: ${{ steps.paths.outputs.version }}
         XK6_VERSION: ${{ inputs.xk6-version }}
       run: |
         set -euo pipefail
@@ -255,7 +272,7 @@ runs:
         (cd "$ROOT/xk6-mcpload" && "$XK6" build --with "github.com/atul121001/mcpload/xk6-mcpload=." --output "$BIN/k6$EXE")
         echo "::endgroup::"
         echo "::group::go build mcpload"
-        (cd "$ROOT/cmd/mcpload" && go build -trimpath -o "$BIN/mcpload$EXE" .)
+        (cd "$ROOT/cmd/mcpload" && go build -trimpath -ldflags "-X main.version=$VERSION" -o "$BIN/mcpload$EXE" .)
         echo "::endgroup::"
         printf '%s' "$KEY" > "$BIN/.key"
 
