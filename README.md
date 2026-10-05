@@ -223,7 +223,7 @@ All pages: [docs/](docs/README.md).
 
 ## Status
 
-Early release (v0.4). Commands and options may change before 1.0. Today mcpload tests **remote servers over streamable HTTP** (not stdio or SSE) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
+Early release (v0.5). Commands and options may change before 1.0. Today mcpload tests **remote servers over streamable HTTP** (not stdio or SSE) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
 
 ## Contributing
 

@@ -24,8 +24,8 @@ The next `v*` tag publishes the formula. To publish one for a release that alrea
 ## Render locally
 
 ```sh
-curl -fsSLO https://github.com/atul121001/mcpload/releases/download/v0.4.0/checksums.txt
-node packaging/homebrew/render.mjs v0.4.0 checksums.txt mcpload.rb
+curl -fsSLO https://github.com/atul121001/mcpload/releases/download/v0.5.0/checksums.txt
+node packaging/homebrew/render.mjs v0.5.0 checksums.txt mcpload.rb
 ruby -c mcpload.rb    # syntax check
 ```
 

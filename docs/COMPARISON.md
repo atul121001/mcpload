@@ -17,7 +17,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 | | **mcpload** | [JMeter MCP plugin](https://github.com/Blazemeter/jmeter-mcp-plugin) (BlazeMeter) | [xk6-mcp](https://github.com/dgzlopes/xk6-mcp) (k6) | [mcp-bench](https://pkg.go.dev/github.com/tmc/mcp/exp/cmd-experimental/mcp-bench) |
 |---|---|---|---|---|
-| **Status** | Early release (v0.4) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
+| **Status** | Early release (v0.5) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
 | **How you use it** | One command with ready-made scenarios | JMeter GUI test plan (Java 17+) | Write a k6 script | CLI |
 | **MCP sessions** | One per simulated agent, each with its own session ID | **One shared client for the whole test run**; every thread uses the same session | One per client your script creates | Concurrent clients |
 | **Several tool calls at once inside one session** | ✅ `callParallel` | ❌ synchronous client, one call per thread | ❌ `callTool` returns before the next call | Not in docs |

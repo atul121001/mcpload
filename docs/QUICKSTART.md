@@ -66,12 +66,12 @@ Other terminals that were already open on Windows only see `mcpload` after you r
 
 | Variable | Meaning |
 |---|---|
-| `MCPLOAD_VERSION` | release to install, e.g. `v0.4.0` (default: latest) |
+| `MCPLOAD_VERSION` | release to install, e.g. `v0.5.0` (default: latest) |
 | `MCPLOAD_INSTALL_DIR` | where releases are unpacked (default: `~/.mcpload`, Windows: `%LOCALAPPDATA%\mcpload`) |
 | `MCPLOAD_BIN_DIR` | Linux/macOS: where the `mcpload` link goes (default: `~/.local/bin`, or `/usr/local/bin` if it is writable and `~/.local/bin` is not on `PATH`) |
 | `MCPLOAD_NO_PATH=1` | unpack only; don't touch `PATH` |
 
-For example: `curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | MCPLOAD_VERSION=v0.4.0 sh`.
+For example: `curl -fsSL https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh | MCPLOAD_VERSION=v0.5.0 sh`.
 
 </details>
 
