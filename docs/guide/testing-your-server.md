@@ -77,7 +77,7 @@ docker run --rm -v "$PWD:/work" ghcr.io/atul121001/mcpload \
   run --url https://staging.example.com/mcp --vus 5 --duration 2m --html report.html
 ```
 
-Every `mcpload` command and flag works the same way; scenarios can be named (`--scenario soak`) or read from the mounted folder (`--scenario ./my-test.js`). Pin a version with `ghcr.io/atul121001/mcpload:<version>` (for example `:0.4.0`) in CI.
+Every `mcpload` command and flag works the same way; scenarios can be named (`--scenario soak`) or read from the mounted folder (`--scenario ./my-test.js`). Pin a version with `ghcr.io/atul121001/mcpload:<version>` (for example `:0.5.0`) in CI.
 
 To test a server on your own machine, such as the demo servers:
 

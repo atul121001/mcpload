@@ -21,7 +21,7 @@ What mcpload can do today, and what's planned next. Design details are in [ARCHI
 - **`mcpload capacity`:** steps from `--from` to `--to`, a degradation/breaking/failure table with error classes, an estimated sustainable capacity, and `--refine`.
 - **Workload profiles:** YAML or JSON flows with weights, test data from CSV and per-flow budgets (`--workload`, verdict `workload`).
 - **Baseline comparison:** `mcpload compare` and `run --baseline` with noise-aware rules (verdict `regression`); the GitHub Action compares a PR with `main` via `baseline-branch`.
-- **Resources and prompts** (in the next release): `listResources`, `listResourceTemplates`, `listPrompts`, `readResource` and `getPrompt` in the extension, also in a mixed `callParallel`; metrics tagged `resource` and `prompt` with bounded values. Agent sessions mix them in with `RESOURCE_READ_RATIO` and `PROMPT_GET_RATIO` ([scenarios](../scenarios/README.md)).
+- **Resources and prompts** (v0.5.0): `listResources`, `listResourceTemplates`, `listPrompts`, `readResource` and `getPrompt` in the extension, also in a mixed `callParallel`; metrics tagged `resource` and `prompt` with bounded values. Agent sessions mix them in with `RESOURCE_READ_RATIO` and `PROMPT_GET_RATIO` ([scenarios](../scenarios/README.md)).
 
 ## Next
 - Run `mcpload capacity` and `--workload` from the GitHub Action (CLI-only today).

@@ -46,5 +46,5 @@ The [threat model](docs/THREAT_MODEL.md) explains what data goes where and what 
 - **Keep secrets out of command lines and URLs.** Export `MCP_TOKEN`, `OAUTH_CLIENT_SECRET` and `MCPLOAD_KEY` as environment variables instead of passing them with `--env` / `--key`, where other local users can see them in the process list. In the GitHub Action, pass them from `secrets` in the `env` input (or `api-key`), never in `url` or `extra-args`.
 - **Treat reports as shareable, not secret, but review them before you publish.** `report.json` and `report.html` don't contain tokens, tool arguments or tool results, but they do contain the target URL (with credentials redacted), tool names, timings and the git commit.
 - **Use `--chaos-restart` and `--sampler docker` only on a machine and containers you control.** Both need access to the Docker daemon, which is root-equivalent.
-- **Pin versions in CI** (`atul121001/mcpload/action@v0.4.0`, `ghcr.io/atul121001/mcpload:0.4.0`, `MCPLOAD_VERSION=v0.4.0` for the install scripts) and don't run the Action from `pull_request_target` on untrusted pull requests.
+- **Pin versions in CI** (`atul121001/mcpload/action@v0.5.0`, `ghcr.io/atul121001/mcpload:0.5.0`, `MCPLOAD_VERSION=v0.5.0` for the install scripts) and don't run the Action from `pull_request_target` on untrusted pull requests.
 - **Never expose the demo servers** to a network.

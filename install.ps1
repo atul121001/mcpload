@@ -8,7 +8,7 @@
 # rights needed.
 #
 # Settings (environment variables):
-#   MCPLOAD_VERSION      release to install, e.g. v0.4.0 (default: latest)
+#   MCPLOAD_VERSION      release to install, e.g. v0.5.0 (default: latest)
 #   MCPLOAD_INSTALL_DIR  where releases are unpacked (default: %LOCALAPPDATA%\mcpload)
 #   MCPLOAD_NO_PATH=1    don't change PATH (just unpack)
 #
@@ -52,7 +52,7 @@ function Install-Mcpload {
             }
         }
         if (-not $tag) {
-            throw 'could not find the latest release (GitHub unreachable?); set $env:MCPLOAD_VERSION = "v0.4.0" to pick one'
+            throw 'could not find the latest release (GitHub unreachable?); set $env:MCPLOAD_VERSION = "v0.5.0" to pick one'
         }
     }
     if (-not $tag.StartsWith('v')) { $tag = "v$tag" }

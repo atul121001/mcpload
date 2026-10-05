@@ -9,7 +9,7 @@
 # there. On Linux add --add-host=host.docker.internal:host-gateway to reach a
 # server on the host.
 #
-# Build: docker build -t mcpload:dev .   (add --build-arg VERSION=v0.4.0 to stamp a version)
+# Build: docker build -t mcpload:dev .   (add --build-arg VERSION=v0.5.0 to stamp a version)
 
 ARG GO_VERSION=1.26
 # Same versions as .github/workflows/release.yml. (Not K6_VERSION: xk6 reads that env var too.)
