@@ -85,8 +85,9 @@ mcpload result: PASS
 mcpload run --url http://localhost:3004/mcp --scenario lb-check --duration 20s
 ```
 ```text
-  FAIL     session_not_found  2525 of 6669 requests (37.862%) got 404 session-not-found: requests for an
-                              Mcp-Session-Id reached a replica that does not hold the session ...
+  FAIL     session_not_found  2525 of 6669 requests (37.862%) got 404
+                              session-not-found: requests for an Mcp-Session-Id
+                              reached a replica that does not hold the session ...
 mcpload result: FAIL
 ```
 
@@ -128,10 +129,12 @@ Memory of the leaking demo server during a 6-minute soak. It climbs under steady
 ![Memory chart of the leaking demo server: memory rises from about 120 MiB to 370 MiB under steady load and stays there after the load stops. Marked FAIL.](docs/images/leaky-memory.png)
 
 ```text
-  FAIL     memory_leak        RSS grew 64.14 MiB/min (R²=1.00) under constant load, above the 1 MiB/min limit,
-                              and did not recover in cool-down (187.85 MiB above the post-warm-up baseline).
-  FAIL     session_leak       Active sessions grew 60.00/min (R²=1.00) under constant load, above the 0.5/min
-                              limit, and did not recover in cool-down.
+  FAIL     memory_leak        RSS grew 64.14 MiB/min (R²=1.00) under constant load,
+                              above the 1 MiB/min limit, and did not recover in
+                              cool-down (187.85 MiB above the post-warm-up baseline).
+  FAIL     session_leak       Active sessions grew 60.00/min (R²=1.00) under constant
+                              load, above the 0.5/min limit, and did not recover in
+                              cool-down.
   PASS     fd_leak            Open file descriptors flat under constant load.
   PASS     latency_drift      Client p95 stable.
   PASS     threshold          All 17 thresholds passed.
@@ -150,8 +153,10 @@ mcpload capacity steps (p95/p99: all tools/call; errors: all requests):
   Agents     p95     p99  Errors             req/s  Slowest tool p95
        5  306 ms  413 ms  0.31%               42.2  slow 529 ms
       10  513 ms  643 ms  0.41%               78.7  slow 673 ms
-      20  849 ms  941 ms  1.38% timeout 8    108.3  slow 966 ms       <- breaks budget: `slow` error rate 6.93% > 1%, all `timeout` (+5 more)
-      40  984 ms  997 ms  7.06% timeout 153  148.8  flaky 989 ms      over budget: `slow` error rate 68.39% > 1%, all `timeout` (+8 more)
+      20  849 ms  941 ms  1.38% timeout 8    108.3  slow 966 ms       <- breaks budget
+      40  984 ms  997 ms  7.06% timeout 153  148.8  flaky 989 ms      over budget
+  20: `slow` error rate 6.93% > 1%, all `timeout` (+5 more)
+  40: `slow` error rate 68.39% > 1%, all `timeout` (+8 more)
 max sustainable concurrency: 10 agents (budgets broke at 20)
 ```
 
