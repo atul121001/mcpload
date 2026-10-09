@@ -180,7 +180,11 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   var failedV = verdicts.filter(function (v) { return v.status === 'fail'; });
   var warnV = verdicts.filter(function (v) { return v.status === 'warn'; });
   var overall = (failedT.length || failedV.length) ? 'fail' : (warnV.length ? 'warn' : 'pass');
-  document.title = (overall === 'fail' ? 'FAIL' : 'PASS') + ' · ' + (run.target.label || run.target.url) + ' · mcpload';
+  // The target: an endpoint URL, or for a stdio run the server command (quoted like a shell would need it).
+  function cmdText(argv) { return argv.map(function (a) { return a === '' ? "''" : !/[\s'"\\]/.test(a) ? a : a.indexOf("'") < 0 ? "'" + a + "'" : '"' + a.replace(/[\\"]/g, '\\$&') + '"'; }).join(' '); }
+  var targetText = run.target.url || (run.target.command && run.target.command.length ? cmdText(run.target.command) : '');
+  var isStdio = run.target.transport === 'stdio' || (!run.target.url && !!(run.target.command && run.target.command.length));
+  document.title = (overall === 'fail' ? 'FAIL' : 'PASS') + ' · ' + (run.target.label || targetText) + ' · mcpload';
 
   // ---------- threshold helpers ----------
   // k6 metric name without the tag selector, e.g. "mcp_req_duration{tool:x}" -> "mcp_req_duration".
@@ -210,8 +214,8 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
     ? [failedV.length ? failedV.length + ' verdict' + (failedV.length > 1 ? 's' : '') + ' failed' : '', failedT.length ? failedT.length + ' threshold' + (failedT.length > 1 ? 's' : '') + ' breached' : ''].filter(Boolean).join(' · ')
     : overall === 'warn' ? warnV.length + ' warning' + (warnV.length > 1 ? 's' : '') : 'all verdicts and thresholds passed';
   h.push('<header class="top"><div><div class="muted small">mcpload ' + esc(run.scenario) + ' report</div>');
-  h.push('<h1>' + esc(run.target.label || run.target.url) + '</h1>');
-  h.push('<div class="sub mono">' + esc(run.target.url) + '</div></div>');
+  h.push('<h1>' + esc(run.target.label || targetText) + '</h1>');
+  h.push('<div class="sub mono">' + (isStdio ? 'stdio: ' : '') + esc(targetText) + '</div></div>');
   h.push('<div class="overall ' + overall + '" role="status"><span aria-hidden="true">' + ICON[overall === 'warn' ? 'warn' : overall] + '</span><div>' + overallText + '<small>' + esc(overallSub) + '</small></div></div></header>');
   var meta = [
     ['Run', '<span class="mono">' + esc(run.id) + '</span>'],
@@ -481,7 +485,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
   var hasRss = S.server.rssBytes && S.server.rssBytes.length === S.t.length && S.server.sampler !== 'none';
   h.push('<h2>Server memory</h2>');
   if (hasRss) h.push('<section class="card chart" id="c-mem"></section>');
-  else h.push('<section class="card empty">No server-side samples (sampler: ' + esc(S.server.sampler) + '). Memory verdicts need <code>--sampler docker</code> or <code>prometheus</code>.</section>');
+  else h.push('<section class="card empty">No server-side samples (sampler: ' + esc(S.server.sampler) + '). Memory verdicts need <code>--sampler docker</code>, <code>prometheus</code> or, for a stdio server, <code>process</code>.</section>');
   var extra = [];
   if (S.server.activeSessions && S.server.activeSessions.length === S.t.length) extra.push('c-sess');
   if (S.server.openFds && S.server.openFds.length === S.t.length) extra.push('c-fds');

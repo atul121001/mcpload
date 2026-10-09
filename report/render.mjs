@@ -38,7 +38,10 @@ if (!re.test(template)) {
   console.error('template is missing <script type="application/json" id="report-data">');
   process.exit(1);
 }
-const label = report.run?.target?.label || report.run?.target?.url || 'report';
+// A stdio run has a command instead of a url (cmd/mcpload report.Target.Display quotes words alike).
+const quoteArg = (a) => (a === '' ? "''" : !/[\s'"\\]/.test(a) ? a : !a.includes("'") ? `'${a}'` : `"${a.replace(/[\\"]/g, '\\$&')}"`);
+const command = Array.isArray(report.run?.target?.command) ? report.run.target.command.map(quoteArg).join(' ') : '';
+const label = report.run?.target?.label || report.run?.target?.url || command || 'report';
 const title = `mcpload · ${label} · ${report.run?.scenario ?? ''}`.replace(/[<>&]/g, '');
 const html = template
   .replace(re, (_, open, close) => `${open}${json}${close}`)

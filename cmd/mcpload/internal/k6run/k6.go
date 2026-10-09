@@ -166,9 +166,14 @@ func Inspect(ctx context.Context, bin, script string, env []string) (*Options, e
 
 // RunConfig configures one `k6 run`.
 type RunConfig struct {
-	Bin         string
-	Script      string
-	Env         []string // KEY=VALUE, passed as -e
+	Bin    string
+	Script string
+	Env    []string // KEY=VALUE, passed as -e
+	// OSEnv are KEY=VALUE pairs added to the k6 process environment (after
+	// the inherited one, so they win). The script sees them in __ENV too
+	// (k6 run includes system env vars) without them showing on the k6
+	// command line, which is where secrets such as MCP_COMMAND_ENV go.
+	OSEnv       []string
 	NDJSONPath  string   // --out json=<path>
 	SummaryPath string   // --summary-export=<path>
 	ExtraArgs   []string // extra k6 run flags, before the script
@@ -233,7 +238,7 @@ func Run(c RunConfig) (Result, error) {
 // script) plus K6_NO_USAGE_REPORT (see EngineEnv).
 func (c RunConfig) command() *exec.Cmd {
 	cmd := exec.Command(c.Bin, c.Args()...)
-	cmd.Env = EngineEnv(os.Environ())
+	cmd.Env = append(EngineEnv(os.Environ()), c.OSEnv...)
 	return cmd
 }
 
