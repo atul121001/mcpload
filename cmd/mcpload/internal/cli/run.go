@@ -727,8 +727,8 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		// Sessions lost to the restart are expected; recovery judges them.
 		snfOutage = min(snf, r.Chaos.Recovery.ErrorsByType["session_not_found"])
 	}
-	snfV := analysis.SessionNotFoundVerdict(float64(snf-snfOutage), float64(s.Reqs))
-	if snfOutage > 0 {
+	snfV := analysis.SessionNotFoundVerdict(r.Run.Protocol, float64(snf-snfOutage), float64(s.Reqs))
+	if snfOutage > 0 && snfV.Status != report.StatusSkipped {
 		if snf == snfOutage {
 			snfV.Message = "No 404 session-not-found responses outside the chaos restart."
 		}
@@ -738,7 +738,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		analysis.ThresholdVerdict(r.Thresholds),
 		analysis.GeneratorVerdict(r))
 	if r.Sessions = longSessions(agg); r.Sessions != nil || longLived {
-		r.Verdicts = append(r.Verdicts, analysis.SessionSurvivalVerdict(r.Sessions))
+		r.Verdicts = append(r.Verdicts, analysis.SessionSurvivalVerdict(r.Run.Protocol, r.Sessions))
 	}
 	if r.Chaos != nil || scenario == reconnectStormScenario {
 		r.Verdicts = append(r.Verdicts, analysis.RecoveryVerdict(r.Chaos))

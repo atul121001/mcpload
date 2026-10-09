@@ -74,6 +74,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/report"
 )
@@ -304,6 +305,32 @@ func round(v float64, d int) float64 {
 
 func skipped(id, signal, why string) report.Verdict {
 	return report.Verdict{ID: id, Status: report.StatusSkipped, Signal: signal, Message: "Skipped: " + why + "."}
+}
+
+// ProtocolStateless is the first stateless MCP protocol revision. It mirrors
+// ProtocolStateless in xk6-mcpload/client/types.go (a separate Go module that
+// cmd/mcpload does not import).
+const ProtocolStateless = "2026-07-28"
+
+// IsStateless reports whether a run's protocol version uses the stateless
+// (2026-07-28+) transport, which has no sessions. It mirrors IsStateless in
+// xk6-mcpload/client/types.go; in addition it returns false for anything that
+// is not a YYYY-MM-DD date ("auto", "unknown", ""), which plain string
+// comparison would otherwise rank after "2026-07-28".
+func IsStateless(protocol string) bool {
+	if len(protocol) != len("2006-01-02") {
+		return false
+	}
+	if _, err := time.Parse("2006-01-02", protocol); err != nil {
+		return false
+	}
+	return protocol >= ProtocolStateless
+}
+
+// statelessSkipped is the verdict for a session verdict on a stateless run:
+// a pass there would be vacuous, since no session can be lost.
+func statelessSkipped(id, signal string) report.Verdict {
+	return skipped(id, signal, "the stateless protocol ("+ProtocolStateless+") has no sessions")
 }
 
 // leakSpec describes one leak signal.
@@ -775,9 +802,16 @@ func ThresholdVerdict(ths []report.Threshold) report.Verdict {
 
 // SessionNotFoundVerdict judges mcp_errors{error_type:session_not_found}:
 // any occurrence (count > 0) is a fail. total is the total request count
-// (used only for the message; may be 0).
-func SessionNotFoundVerdict(count, total float64) report.Verdict {
-	v := report.Verdict{ID: report.VerdictSessionNotFound, Signal: "mcp_errors{error_type:session_not_found}", Status: report.StatusPass}
+// (used only for the message; may be 0). protocol is the run's protocol
+// (report.run.protocol): on a stateless run (IsStateless) with no such error
+// the verdict is skipped, because there are no sessions to lose and a pass
+// would say nothing; a 404 that did occur is still reported as a fail.
+func SessionNotFoundVerdict(protocol string, count, total float64) report.Verdict {
+	const id, signal = report.VerdictSessionNotFound, "mcp_errors{error_type:session_not_found}"
+	if count <= 0 && IsStateless(protocol) {
+		return statelessSkipped(id, signal)
+	}
+	v := report.Verdict{ID: id, Signal: signal, Status: report.StatusPass}
 	if count > 0 {
 		v.Status = report.StatusFail
 		if total > 0 {

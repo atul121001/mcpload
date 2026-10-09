@@ -153,7 +153,7 @@ func TestSessionSurvival(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := LongSessions(c.ends, 18, c.early, c.late)
-		v := SessionSurvivalVerdict(s)
+		v := SessionSurvivalVerdict("2025-11-25", s)
 		if v.ID != report.VerdictSessionSurvival || v.Status != c.status || !strings.Contains(v.Message, c.msg) {
 			t.Errorf("%s: got %s %q, want %s containing %q", c.name, v.Status, v.Message, c.status, c.msg)
 		}
