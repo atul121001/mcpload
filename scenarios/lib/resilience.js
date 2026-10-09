@@ -6,25 +6,28 @@ export const CALL_ID_KEY = 'io.mcpload/callId';
 
 // Error types that mean the transport or the session is gone, not that one call failed.
 const TRANSPORT = ['http', 'timeout'];
+// Error types that mean the session itself is gone: the server dropped it, or (stdio) its process exited.
+const GONE = ['session_not_found', 'process_exit'];
 
 /**
  * Why a session must be treated as broken after a batch of call errors (each `{type}` or null for a success),
  * or '' when it is still usable:
  *   - any session_not_found: the server no longer has the session (restart, idle reaping, another replica);
+ *   - any process_exit: the stdio server process of the session exited;
  *   - every call failed with a transport error (http without a JSON-RPC answer, timeout): the server is
  *     unreachable. One failed call among successes is not enough.
  * Tool errors (tool_iserror) and JSON-RPC errors never break a session.
  */
 export function breakCause(errors) {
   if (!errors || errors.length === 0) return '';
-  for (const e of errors) if (e && e.type === 'session_not_found') return 'session_not_found';
+  for (const e of errors) if (e && GONE.indexOf(e.type) >= 0) return e.type;
   if (errors.every((e) => e && TRANSPORT.indexOf(e.type) >= 0)) return errors[0].type;
   return '';
 }
 
 /** Whether a call that failed with `error` should be retried on a new session (RETRY_ON_ERROR). */
 export function retryable(error) {
-  return !!error && (error.type === 'session_not_found' || TRANSPORT.indexOf(error.type) >= 0);
+  return !!error && (GONE.indexOf(error.type) >= 0 || TRANSPORT.indexOf(error.type) >= 0);
 }
 
 /**

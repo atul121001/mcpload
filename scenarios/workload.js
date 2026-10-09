@@ -82,7 +82,7 @@ export const options = {
 export function setup() {
   const total = WORKLOAD.flows.reduce((a, f) => a + f.weight, 0);
   const flows = WORKLOAD.flows.map((f) => `${f.name} ${Math.round((100 * f.weight) / total)}% (${f.steps.map((s) => s.name).join(' -> ')})`);
-  console.log(`workload ${WORKLOAD.name} -> ${config.url} (protocol ${config.protocol}): ${flows.join('; ')}`);
+  console.log(`workload ${WORKLOAD.name} -> ${config.target} (protocol ${config.protocol}): ${flows.join('; ')}`);
 }
 
 let logged = 0;

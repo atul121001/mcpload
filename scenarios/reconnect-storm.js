@@ -57,7 +57,7 @@ export const options = {
 export function setup() {
   let prefix = env('CALL_ID_PREFIX', '');
   if (!prefix) for (let i = 0; i < 8; i++) prefix += Math.floor(Math.random() * 16).toString(16);
-  console.log(`reconnect-storm: ${VUS} agents -> ${config.url} for ${DURATION}; reconnect backoff ${BACKOFF_MS} ms (max ${BACKOFF_MAX_MS}, jitter ${JITTER}); retry on error ${RETRY_ON_ERROR ? `on (${RETRY_MAX} attempts)` : 'off'}; call ids ${prefix}-<vu>-<n>`);
+  console.log(`reconnect-storm: ${VUS} agents -> ${config.target} for ${DURATION}; reconnect backoff ${BACKOFF_MS} ms (max ${BACKOFF_MAX_MS}, jitter ${JITTER}); retry on error ${RETRY_ON_ERROR ? `on (${RETRY_MAX} attempts)` : 'off'}; call ids ${prefix}-<vu>-<n>`);
   return { prefix };
 }
 

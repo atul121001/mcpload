@@ -41,7 +41,8 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **CI** | ✅ GitHub Action with a PR comment and HTML report | `jmeter -n` plus assertions | `k6 run` plus thresholds | Export to other tools |
 | **Compare with main: per-tool Δ** | ✅ `mcpload compare` / `baseline-branch: main`: p95/p99/error rate per tool vs the last `main` run, with noise floors | ❌ | ❌ | ❌ |
 | **Resources and prompts** | ✅ `readResource` / `getPrompt`, tagged per resource and prompt; mixed into agent sessions with `RESOURCE_READ_RATIO` / `PROMPT_GET_RATIO` ([scenarios](../scenarios/README.md)) | ✅ | ✅ | Not in docs |
-| **stdio and SSE servers** | ❌ streamable HTTP only | ✅ | ✅ | ✅ |
+| **stdio servers** | ✅ `--command` (v0.6.0, unreleased): one process per session, start-up time, `stdout_pollution` and `process_exit` verdicts, per-process memory sampler ([guide](guide/stdio.md)) | ✅ | ✅ | ✅ |
+| **SSE servers** | ❌ | ✅ | ✅ | ✅ |
 
 ## What that means in practice
 
@@ -55,6 +56,6 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 - Use **MCP Inspector or MCPJam** to debug a single request.
 - Use **mcp-eval or mcpbr** to check that agents pick the right tools.
-- Use **the JMeter plugin or xk6-mcp** to load-test local stdio servers or SSE servers. mcpload supports only streamable HTTP so far.
+- Use **the JMeter plugin or xk6-mcp** to load-test SSE servers. mcpload supports streamable HTTP and (from v0.6.0, unreleased) stdio.
 
 These tools work well alongside mcpload.

@@ -35,6 +35,7 @@ What mcpload checks, which test to run when, and how to read the result.
 | You changed timeouts, restarts or deploys | `reconnect-storm` with `--chaos-restart`, plus `--calls-url` to count lost and duplicated calls | 2–5 min |
 | Agents keep sessions open for long | `long-lived` | 10+ min |
 | Your tools are slow or cancellable | `isolation`, and `agent-session` with `CANCEL_RATE` | 2–5 min |
+| Your server runs locally over stdio (v0.6.0, unreleased) | `--command` with `agent-session`, `isolation` and `long-lived`; see [stdio servers](stdio.md) | 2–20 min |
 
 Every option is in [scenarios/README.md](../../scenarios/README.md).
 

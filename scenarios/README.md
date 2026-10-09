@@ -39,6 +39,17 @@ On Windows, use `k6.exe` below. For a soak run, use the `mcpload` CLI rather tha
 
 Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`. The new build of the skew targets (`skew-new`) also lists `new_tool`.
 
+## stdio targets
+
+*v0.6.0, unreleased.* With `MCP_COMMAND` set, `lib/config.js` gives `new mcp.Client(...)` `command`, `args`, `env` and `cwd` instead of `url`, and drops `MCP_HEADERS`, `MCP_TOKEN` and OAuth (HTTP-only). Start-up lines print `stdio: <command line>` (never the env values) instead of the URL. Each session is one server process, so `connect()` includes starting it. `lb-check.js`, `version-skew.js` and `oauth-refresh.js` stop at init with an error: they need an HTTP target. A session whose process exited (error type `process_exit`) counts as broken in `long-lived.js` and `reconnect-storm.js`, like `session_not_found`.
+
+```sh
+./k6 run -e 'MCP_COMMAND=["node","demo-servers/ts-server/server.mjs","--stdio"]' scenarios/agent-session.js
+./k6 run -e 'MCP_COMMAND=["node","demo-servers/ts-server/server.mjs","--stdio"]' -e 'MCP_COMMAND_ENV={"PERSONA":"blocking"}' scenarios/isolation.js
+```
+
+With the CLI: `mcpload run --command "node server.mjs --stdio" [--command-env K=V] [--command-cwd DIR]`. Guide: [docs/guide/stdio.md](../docs/guide/stdio.md).
+
 ## Which tools get called
 
 Each session lists the server's tools, then chooses from them like this:
@@ -66,6 +77,9 @@ If a tool needs meaningful values, such as a real ID, set them in `TOOL_ARGS`.
 | Var | Default | Meaning |
 |---|---|---|
 | `MCP_URL` | `http://localhost:3001/mcp` | target endpoint |
+| `MCP_COMMAND` | – | stdio target instead of `MCP_URL` (v0.6.0, unreleased): JSON array of the program and its arguments, e.g. `["node","server.mjs","--stdio"]`. Each session starts its own process. Set by `mcpload run --command`. See [stdio targets](#stdio-targets) |
+| `MCP_COMMAND_ENV` | – | JSON object of strings added to the server process's environment (values are never logged) |
+| `MCP_COMMAND_CWD` | – | working folder of the server process |
 | `MCP_PROTOCOL` | `auto` | `auto`, `2026-07-28`, `2025-06-18`, … |
 | `MCP_TOKEN` | – | static bearer token |
 | `OAUTH_TOKEN_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | – | client-credentials OAuth; takes precedence over `MCP_TOKEN` |
@@ -388,7 +402,7 @@ The id is `<CALL_ID_PREFIX>-<vu>-<n>`; mcpload sets a fresh prefix per run. A se
 for f in scenarios/lib/*.js scenarios/*.js; do node --check "$f"; done
 ```
 
-The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, workload flows and templates, step schedules, version-skew classification, break detection, reconnect backoff, call ids) have unit tests that need only Node, not k6:
+The pure helpers (schema placeholders, tool selection, budget coverage, fractional rates, workflow plans, workload flows and templates, step schedules, version-skew classification, break detection, reconnect backoff, call ids, the MCP_URL / MCP_COMMAND target options) have unit tests that need only Node, not k6:
 
 ```sh
 node scenarios/lib/schema-args.test.mjs
@@ -396,4 +410,7 @@ node scenarios/lib/workflow.test.mjs
 node scenarios/lib/workload.test.mjs
 node scenarios/lib/skew.test.mjs
 node scenarios/lib/resilience.test.mjs
+node scenarios/lib/cancel.test.mjs
+node scenarios/lib/content.test.mjs
+node scenarios/lib/config.test.mjs
 ```

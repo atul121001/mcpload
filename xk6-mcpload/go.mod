@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	go.k6.io/k6/v2 v2.3.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -39,7 +40,6 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect

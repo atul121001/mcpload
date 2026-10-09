@@ -15,9 +15,10 @@
 //   ./k6 run -e MCP_URL=http://localhost:3005/mcp -e MCP_PROTOCOL=2026-07-28 scenarios/lb-check.js   # stateless-2026: expected PASS
 //   VUS (10), DURATION (1m), STEPS sequential calls per session (8), LB_MIN_OK (0.99)
 import { check, sleep } from 'k6';
-import { config, buildThresholds, env, envNum } from './lib/config.js';
+import { config, buildThresholds, env, envNum, requireHttp } from './lib/config.js';
 import { makeClient, toolTable, pick, checkToolTable, callTools } from './lib/session.js';
 
+requireHttp('lb-check', 'it tests session affinity behind a load balancer; a stdio session is one process');
 const client = makeClient();
 const STEPS = envNum('STEPS', 8);
 
@@ -61,7 +62,7 @@ function errTypeOf(e) {
 let announced = false;
 
 export function setup() {
-  console.log(`lb-check -> ${config.url} (protocol ${config.protocol}, ${STEPS} sequential calls per session)`);
+  console.log(`lb-check -> ${config.target} (protocol ${config.protocol}, ${STEPS} sequential calls per session)`);
 }
 
 export default function () {

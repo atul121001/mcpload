@@ -165,6 +165,9 @@ func (s *Session) postResponse(ctx context.Context, id json.RawMessage, result j
 			msg.Result = json.RawMessage("{}")
 		}
 	}
+	if s.stdio != nil {
+		return 0, s.stdio.write(msg)
+	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return 0, &Error{Type: ErrJSONRPC, Message: "encoding response: " + err.Error()}

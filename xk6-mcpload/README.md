@@ -1,6 +1,6 @@
 # xk6-mcpload
 
-k6 extension (`import mcp from 'k6/x/mcpload'`) for load testing remote MCP servers over streamable HTTP.
+k6 extension (`import mcp from 'k6/x/mcpload'`) for load testing MCP servers over streamable HTTP or stdio.
 Apache-2.0. Targets `go.k6.io/k6/v2` (v2.3.0) and Go 1.26+.
 
 ## Build
@@ -89,8 +89,49 @@ export default function () {
 ```
 
 `error.type` (and the `error_type` tag) is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`,
-`session_not_found`, `header_mismatch`, `auth`, `cancelled`. A result with `isError: true` has `isError: true` **and**
+`session_not_found`, `header_mismatch`, `auth`, `cancelled`, and over stdio `process_spawn` and `process_exit`. A result with `isError: true` has `isError: true` **and**
 `error.type === 'tool_iserror'`. `mcp_errors` can also carry `unsupported_request` (see below).
+
+### stdio servers
+
+Set `command` instead of `url` to launch the server as a subprocess and speak newline-delimited JSON-RPC over its
+stdin/stdout (MCP's stdio transport). Each `connect()` starts one process; `close()` closes its stdin, waits 2 s
+and then kills the whole process tree (children of launchers such as `npx` / `uvx` included).
+
+```js
+const client = new mcp.Client({
+  command: 'node',                 // the program, started directly (never through a shell)
+  args: ['server.mjs', '--quiet'], // optional array of strings
+  // or: command: ['node', 'server.mjs', '--quiet']  (program + args; `args`, if also given, are appended)
+  env: { LOG_LEVEL: 'error' },     // optional; added to k6's own environment (numbers/booleans become strings)
+  cwd: './servers/demo',           // optional working directory of the process
+  timeout: '30s',                  // same options as over HTTP: protocol, timeout, cancelWait, sampling, ...
+});
+
+export default function () {
+  const s = client.connect();      // spawns the process, then initialize
+  s.transport;                     // 'stdio' ('http' for a url client); client.transport too
+  s.pid;                           // process id of the server (absent over HTTP)
+  s.callTool('echo', { x: 1 });
+  s.close();                       // always close: an unclosed session keeps its process running
+}
+```
+
+- `url` and `command` are mutually exclusive (setting both throws). `args`, `env` and `cwd` need `command`;
+  `headers`, `auth` and `servedByHeader` are HTTP options and throw with `command`.
+- `protocol: 'auto'` sends `initialize` directly (no `server/discover` probe over stdio); explicit versions
+  are honoured.
+- If the process cannot be started, `connect()` throws with type `process_spawn`. If it exits (or closes its
+  stdout) while requests are pending, they fail with `process_exit`; the message carries the exit status and the
+  tail of the server's stderr.
+- Lines on stdout that are not JSON-RPC messages (a log written to stdout corrupts the protocol) are skipped and
+  counted in `mcp_stdout_invalid_lines`.
+- There is no HTTP status, TTFB or stream over stdio: samples carry no `status` tag and there is no
+  `mcp_req_ttfb` / `mcp_stream_duration`.
+- When the environment variable `MCPLOAD_PID_DIR` is set (in k6's environment), a file named after each live
+  server process's PID (content: the PID and a newline) is written there after the spawn and removed when the
+  process exits, so a supervisor (the `mcpload` CLI) can sample the processes' CPU and memory. Best effort:
+  errors are ignored.
 
 ### Resources and prompts
 
@@ -214,8 +255,9 @@ server's Prometheus metrics for the `cancellation` verdict.
 
 ## Metrics
 
-Tags: `method`, `tool`, `resource`, `prompt`, `protocol`, `status`, `error_type` (empty tags are omitted) plus
-the VU's tags. A successful request has **no** `error_type` tag; a failed one carries it on all of its samples,
+Tags: `transport`, `method`, `tool`, `resource`, `prompt`, `protocol`, `status`, `error_type` (empty tags are
+omitted) plus the VU's tags. `transport` is `http` or `stdio` on every sample except the two process-wide gauges
+(`mcp_sessions_open`, `mcp_processes_open`). Over stdio the `status` tag is omitted (there is no HTTP status). A successful request has **no** `error_type` tag; a failed one carries it on all of its samples,
 including `mcp_req_duration`, so success-only latency can be selected by the tag's absence.
 
 `tool` is set on `tools/call`, `resource` on `resources/read` and `prompt` on `prompts/get` (each request has at
@@ -235,7 +277,7 @@ Call `listResources()` / `listResourceTemplates()` on a session before reading i
 
 | Metric | Type | Notes |
 |---|---|---|
-| `mcp_req_duration` | Trend (time) | per HTTP exchange (JSON-RPC round trip; `DELETE` for session close) |
+| `mcp_req_duration` | Trend (time) | per HTTP exchange or stdio message (JSON-RPC round trip; `DELETE` for session close over HTTP) |
 | `mcp_req_ttfb` | Trend (time) | time to first response byte |
 | `mcp_stream_duration` | Trend (time) | SSE responses: response headers → matching event |
 | `mcp_connect_duration` | Trend (time) | whole `connect()` (`method` = `initialize` or `server/discover`) |
@@ -249,6 +291,10 @@ Call `listResources()` / `listResourceTemplates()` on a session before reading i
 | `mcp_cancellations` | Counter | one per call made with `cancelAfterMs` and per timed-out request the client cancels; `reason` = `client` / `timeout`, `outcome` = `cancelled` / `late_response` / `send_failed` / `completed` (the call finished first; nothing sent), `status` = the notification POST's status, `error_type` on `send_failed` |
 | `mcp_cancel_duration` | Trend (time) | time to send a cancel: decision to cancel → `notifications/cancelled` answered (stateful) or stream closed (2026-07-28) |
 | `mcp_cancel_late_response` | Trend (time) | cancel sent → a response for the cancelled request arrived anyway (stateful only) |
+| `mcp_process_spawn_duration` | Trend (time) | stdio: time to start the server process (not until it answers); `error_type=process_spawn` when it did not start. Also included in `mcp_connect_duration` |
+| `mcp_processes_open` | Gauge | stdio: process-wide live server processes (see below) |
+| `mcp_stdout_invalid_lines` | Counter | stdio: lines on the server's stdout that are not JSON-RPC messages (skipped) |
+| `mcp_process_exits` | Counter | stdio: server process exits; `expected` = `true` (after `close()` or a failed `connect()`) / `false` (the process died on its own), `exit_code` (`-1` when killed by a signal) |
 
 `mcp_sessions_open` is the number of sessions currently open in this k6 process — every VU, Client and scenario
 together: +1 on a successful `connect()`, −1 on the first `close()` (stateless sessions count too). Each change is
@@ -257,8 +303,14 @@ tags), so the gauge's last value is the current count. `close()` after the VU's 
 decrements the count; its own sample is dropped by k6, and the next push from any VU carries the correct value.
 Sessions a script never closes stay counted.
 
+`mcp_processes_open` works the same way for stdio server processes: +1 when a process starts, −1 when it exits
+(for any reason). Process exits and invalid stdout lines are detected by background goroutines and may happen
+after the JS call that caused them returned; they are pushed with the tags and context of the session's latest
+call, and dropped (the gauge count is still updated) if that call's iteration has already ended.
+
 ## Layout
 
 - `client/` — wire client (pure Go, no k6 imports): JSON/SSE parsing, session state, headers, auth, timings.
-- `metrics.go` — metric registration (`vu.InitEnv().Registry`) and sample emission (`metrics.PushIfNotDone`).
+- `metrics.go` — metric registration (`vu.InitEnv().Registry`) and sample emission (`pushSafe`: drops samples once the
+  iteration's context has ended, never blocks or panics for late events).
 - `module.go` — `modules.Register("k6/x/mcpload", …)`, per-VU instance, JS bindings.

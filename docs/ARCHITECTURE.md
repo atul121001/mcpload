@@ -1,6 +1,6 @@
 # Architecture: mcpload
 
-mcpload is an open-source load and soak testing harness for remote MCP servers that use streamable HTTP. It is a Go k6 extension. A CLI wraps it: the CLI samples the server's resources during a run, returns leak and regression verdicts, and writes a portable report.
+mcpload is an open-source load and soak testing harness for MCP servers: remote servers over streamable HTTP and, from v0.6.0 (unreleased), local servers over stdio (§1 D8). It is a Go k6 extension. A CLI wraps it: the CLI samples the server's resources during a run, returns leak and regression verdicts, and writes a portable report.
 
 ## 1. Key decisions
 
@@ -48,10 +48,25 @@ Memory, file descriptors and session counts live on the server. The `mcpload` CL
 ### D7. One program for users: the engine is embedded
 Users install and run only `mcpload`. Release builds (`go build -tags embedengine`, see `.github/workflows/release.yml`) embed the platform's k6 + xk6-mcpload binary (the "engine") and the `scenarios/` folder with `go:embed`. On first use mcpload extracts them to the user cache folder under a name derived from their SHA-256 (atomic write, hash checked on reuse) and runs the engine from there. Builds without the tag (development, `go test`) embed nothing and fall back to a `k6` in the current folder, next to the mcpload executable, or on `PATH`; `--engine` / `$MCPLOAD_ENGINE` override both. Details in [cmd/mcpload/README.md](../cmd/mcpload/README.md#the-engine). Install scripts (`install.sh`, `install.ps1`) and the Homebrew formula (`packaging/homebrew/`) only ever put `mcpload` on `PATH`.
 
+### D8. stdio transport (v0.6.0, unreleased)
+A local MCP server is a subprocess that speaks newline-delimited JSON-RPC on stdin and stdout and logs on stderr. With `command` set instead of `url`, the client (`client/stdio.go`) starts that program directly (never through a shell) for every session, so **one session is one process**, as in desktop clients. The process gets its own process group (Unix) or job object (Windows), so closing the session stops launcher trees such as `npx` and `uvx` too: the client closes stdin, waits up to 2 s, then kills.
+
+Everything above the wire (handshake, tools, resources, prompts, `callParallel`, cancellation, server-to-client requests, metrics) is shared with HTTP; only the exchange of one message differs. Transport-specific rules:
+- `protocol: "auto"` sends `initialize` directly (`server/discover` probing is an HTTP rule); explicit versions are honoured.
+- No HTTP status (always 0) and no TTFB.
+- Cancellation always sends `notifications/cancelled` on stdin; a late response is still observed on stdout for `cancelWait`.
+- Server-to-client requests may arrive at any time; they are answered on stdin.
+- A stdout line that is not a JSON-RPC message (a log on stdout corrupts the protocol) is skipped and counted (`mcp_stdout_invalid_lines`, verdict `stdout_pollution`).
+- When the process exits, every pending request fails with error type `process_exit` (exit code and the tail of stderr in the message).
+
+The CLI passes the target to scenarios as `MCP_COMMAND` (JSON array: program and arguments), `MCP_COMMAND_ENV` (JSON object, added to the inherited environment, which leaves out `MCPLOAD_KEY`, `MCP_TOKEN` and `OAUTH_CLIENT_SECRET`) and `MCP_COMMAND_CWD`; `scenarios/lib/config.js` turns them into the client options. Its default sampler for stdio is `process` (§6). `lb-check`, `version-skew`, `--chaos-restart` and `--calls-url` need an HTTP target and are rejected.
+
+Numbers from a stdio run measure the server process and the host it shares with the load generator, not a network, and are not comparable with HTTP latencies. User guide: [stdio servers](guide/stdio.md).
+
 ## 2. Components
 ```
 xk6-mcpload/            Go module → JS import "k6/x/mcpload"
-  client/               wire client: POST, JSON/SSE parsing, session state, headers, auth
+  client/               wire client: POST, JSON/SSE parsing, session state, headers, auth; stdio subprocesses (stdio.go)
   metrics.go            custom metric registration and sample emission
   module.go             RootModule / per-VU ModuleInstance, JS bindings
 scenarios/              JS library: agent-session, agent-workflow, burst, soak, long-lived, reconnect-storm, lb-check, isolation, step-load, version-skew, oauth-refresh
@@ -72,6 +87,8 @@ import mcp from 'k6/x/mcpload';
 
 const client = new mcp.Client({
   url: __ENV.MCP_URL,
+  // or a local server over stdio (v0.6.0, unreleased): url is then not needed
+  // command: 'node', args: ['server.mjs'], env: { K: 'V' }, cwd: './my-server',
   protocol: 'auto',                  // 'auto' | '2026-07-28' | '2025-06-18' | ...
   headers: { 'X-Tenant': 'load' },
   auth: { type: 'oauth', tokenUrl, clientId, clientSecret },   // or { type: 'bearer', token }
@@ -95,7 +112,7 @@ export default function () {
 ```
 
 ## 4. Metrics
-Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_type`. `resources/read` samples also carry `resource` and `prompts/get` samples `prompt`. `prompt` is the prompt name; `resource` is the server-declared name of the URI (or of the resource template it matches) when the session listed them, else a fallback of scheme, host and at most the first path segment (never the query or user info). Each takes at most 50 distinct values per k6 process; later values are tagged `other`. Details: [xk6-mcpload/README.md](../xk6-mcpload/README.md#metrics).
+Each sample carries the tags `method`, `tool`, `protocol`, `status`, `error_type` and (v0.6.0, unreleased) `transport` (`stdio` or `http`). `resources/read` samples also carry `resource` and `prompts/get` samples `prompt`. `prompt` is the prompt name; `resource` is the server-declared name of the URI (or of the resource template it matches) when the session listed them, else a fallback of scheme, host and at most the first path segment (never the query or user info). Each takes at most 50 distinct values per k6 process; later values are tagged `other`. Details: [xk6-mcpload/README.md](../xk6-mcpload/README.md#metrics).
 
 | Metric | Type | Notes |
 |---|---|---|
@@ -105,7 +122,7 @@ Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_t
 | `mcp_connect_duration` | Trend | the `initialize` or `server/discover` call |
 | `mcp_oauth_refresh_duration` | Trend | token fetch or refresh |
 | `mcp_reqs` | Counter | |
-| `mcp_errors` | Counter | `error_type` is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`, `session_not_found`, `header_mismatch`, `auth` |
+| `mcp_errors` | Counter | `error_type` is one of `http`, `jsonrpc`, `tool_iserror`, `timeout`, `session_not_found`, `header_mismatch`, `auth`; over stdio also `process_spawn`, `process_exit` |
 | `mcp_tool_error_rate` | Rate | counts `isError: true` results as failures |
 | `mcp_sessions_open` | Gauge | client-side open sessions |
 | `mcp_server_requests` | Counter | server-to-client requests read from response streams (`method` = the server's method) |
@@ -113,6 +130,10 @@ Each sample carries the tags `method`, `tool`, `protocol`, `status` and `error_t
 | `mcp_cancellations` | Counter | cancelled calls, tagged `reason` and `outcome` |
 | `mcp_cancel_duration` | Trend | time to send a cancel |
 | `mcp_cancel_late_response` | Trend | cancel to a late response (stateful) |
+| `mcp_process_spawn_duration` | Trend | stdio: time to start the server process |
+| `mcp_processes_open` | Gauge | stdio: server processes running |
+| `mcp_stdout_invalid_lines` | Counter | stdio: stdout lines that are not JSON-RPC messages |
+| `mcp_process_exits` | Counter | stdio: server process exits, tagged `expected` and `exit_code` |
 
 CI budgets use standard k6 thresholds:
 ```js
@@ -136,6 +157,7 @@ thresholds: {
 **Samplers** (set with `--sampler`):
 - `docker`: the Docker stats API, for local demo servers.
 - `prometheus`: scrapes `process_resident_memory_bytes`, heap, open file descriptors and active sessions.
+- `process` (stdio, the default there; v0.6.0, unreleased): RSS and open file descriptors of the server processes mcpload started.
 - `none`: client-side signals only.
 
 **Run shape:** warm-up (10%), then constant load (30–60 minutes), then a cool-down with no load.
@@ -160,6 +182,7 @@ All demo servers bind to 127.0.0.1 only. Some are intentionally vulnerable or br
 | `lb-stateful` | 2 stateful replicas behind round-robin nginx, **no** sticky sessions | `session_not_found` flagged |
 | `stateless-2026` | go-sdk v1.8 server, 2026-07-28 protocol, same LB | pass |
 | `mock-oauth` | token issuer with 30-second expiry | refresh storm measured |
+| `ts-server --stdio` | the TS image over stdio (v0.6.0, unreleased), personas `normal`, `blocking`, `leaky`, `noisy` | pass; `tool_isolation`, memory growth per process and `stdout_pollution` expected on the bad personas |
 
 **Calibration rule:** before a verdict ships, it must be true on the bad target and false on the good one.
 

@@ -4,6 +4,10 @@
 // environment variables (k6 -e NAME=value or the process environment).
 //
 //   MCP_URL        target endpoint                      (default http://localhost:3001/mcp)
+//   MCP_COMMAND    stdio target instead of MCP_URL: JSON array, program + args, e.g. ["node","server.mjs","--stdio"].
+//                  Each session starts its own server process (no shell). Set by `mcpload run --command`.
+//   MCP_COMMAND_ENV  JSON object of strings added to the server process environment (values are never logged)
+//   MCP_COMMAND_CWD  working directory of the server process
 //   MCP_PROTOCOL   auto | 2026-07-28 | 2025-06-18 | ...  (default auto)
 //   MCP_TOKEN      static bearer token (auth type bearer)
 //   OAUTH_TOKEN_URL, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET   client-credentials OAuth (wins over MCP_TOKEN)
@@ -105,10 +109,71 @@ function envResponder(name) {
   return envObject(name);
 }
 
+/**
+ * stdio target from MCP_COMMAND / MCP_COMMAND_ENV / MCP_COMMAND_CWD, or undefined when MCP_COMMAND is unset.
+ * `get(name)` returns the raw variable (undefined when unset or empty). Returns { command, args, env?, cwd? }.
+ */
+export function parseCommandConfig(get) {
+  const raw = get('MCP_COMMAND');
+  if (raw === undefined) return undefined;
+  let argv;
+  try {
+    argv = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`MCP_COMMAND must be a JSON array (program + args), e.g. ["node","server.mjs"]: ${e.message}`);
+  }
+  if (!Array.isArray(argv) || argv.length === 0 || argv.some((a) => typeof a !== 'string') || argv[0] === '') {
+    throw new Error('MCP_COMMAND must be a non-empty JSON array of strings (program + args)');
+  }
+  const out = { command: argv[0], args: argv.slice(1) };
+  const envRaw = get('MCP_COMMAND_ENV');
+  if (envRaw !== undefined) {
+    let e;
+    try {
+      e = JSON.parse(envRaw);
+    } catch (err) {
+      // The message of a JSON parse error can quote the input: keep values out of it.
+      throw new Error('MCP_COMMAND_ENV must be a valid JSON object');
+    }
+    if (e === null || typeof e !== 'object' || Array.isArray(e)) throw new Error('MCP_COMMAND_ENV must be a JSON object');
+    for (const [k, v] of Object.entries(e)) {
+      if (typeof v !== 'string') throw new Error(`MCP_COMMAND_ENV value for '${k}' must be a string`);
+    }
+    if (Object.keys(e).length > 0) out.env = e;
+  }
+  const cwd = get('MCP_COMMAND_CWD');
+  if (cwd !== undefined) out.cwd = cwd;
+  return out;
+}
+
+/** Human-readable target for log lines: the URL, or "stdio: <command line>" (env values are never included). */
+export function describeTarget(url, stdio) {
+  if (!stdio) return url;
+  const quote = (a) => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a);
+  const line = [stdio.command].concat(stdio.args).map(quote).join(' ');
+  return `stdio: ${line}` + (stdio.cwd ? ` (cwd ${stdio.cwd})` : '');
+}
+
+/** Options for new mcp.Client(...) that select the target: { url } or { command, args, env?, cwd? }. */
+export function targetOptions(url, stdio) {
+  if (!stdio) return { url };
+  const o = { command: stdio.command, args: stdio.args.slice() };
+  if (stdio.env) o.env = Object.assign({}, stdio.env);
+  if (stdio.cwd !== undefined) o.cwd = stdio.cwd;
+  return o;
+}
+
 const userBudgets = envObject('TOOL_BUDGETS') || {};
+const stdioTarget = parseCommandConfig((name) => env(name, undefined));
+const targetUrl = env('MCP_URL', 'http://localhost:3001/mcp');
 
 export const config = {
-  url: env('MCP_URL', 'http://localhost:3001/mcp'),
+  url: targetUrl,
+  // stdio target ({ command, args, env?, cwd? }) when MCP_COMMAND is set, else undefined (HTTP to `url`).
+  stdio: stdioTarget,
+  transport: stdioTarget ? 'stdio' : 'http',
+  // For log lines: the URL or "stdio: <command line>".
+  target: describeTarget(targetUrl, stdioTarget),
   protocol: env('MCP_PROTOCOL', 'auto'),
   headers: envJSON('MCP_HEADERS', {}),
   auth: buildAuth(),
@@ -152,17 +217,24 @@ if (config.toolMix && !Object.values(config.toolMix).some((w) => w > 0)) {
 
 /** Options object for new mcp.Client(...). `overrides` are shallow-merged on top. */
 export function clientOptions(overrides) {
-  const o = {
-    url: config.url,
+  const o = Object.assign(targetOptions(config.url, config.stdio), {
     protocol: config.protocol,
-    headers: config.headers,
     timeout: config.timeout,
     includePayloads: config.includePayloads,
-  };
-  if (config.auth) o.auth = config.auth;
+  });
+  // Headers and auth are HTTP-only.
+  if (!config.stdio) {
+    o.headers = config.headers;
+    if (config.auth) o.auth = config.auth;
+  }
   if (config.cancelWait !== undefined) o.cancelWait = config.cancelWait;
   for (const k of ['sampling', 'elicitation', 'roots']) if (config[k] !== undefined) o[k] = config[k];
   return Object.assign(o, overrides || {});
+}
+
+/** Throws at init when the target is a stdio command: for scenarios that only make sense over HTTP. */
+export function requireHttp(scenario, why) {
+  if (config.stdio) throw new Error(`${scenario} needs an HTTP target (MCP_URL), not MCP_COMMAND: ${why}`);
 }
 
 /** Budget for one tool: {p95, p99, errRate}. */
