@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // SchemaVersion is the major schema version this package writes.
@@ -27,6 +28,8 @@ const (
 	SamplerDocker     = "docker"
 	SamplerPrometheus = "prometheus"
 	SamplerNone       = "none"
+	// SamplerProcess sums the local server processes of a stdio run.
+	SamplerProcess = "process"
 )
 
 // Verdict ids.
@@ -48,6 +51,8 @@ const (
 	VerdictCancellation    = "cancellation"
 	VerdictRegression      = "regression"
 	VerdictWorkload        = "workload"
+	VerdictStdoutPollution = "stdout_pollution"
+	VerdictProcessExit     = "process_exit"
 )
 
 // VerdictIDs lists every verdict id the schema allows.
@@ -56,7 +61,7 @@ var VerdictIDs = []string{
 	VerdictErrorDrift, VerdictSessionNotFound, VerdictThreshold, VerdictGenerator,
 	VerdictToolIsolation, VerdictCapacity, VerdictVersionSkew, VerdictSessionSurvival,
 	VerdictRecovery, VerdictCallIntegrity, VerdictCancellation, VerdictRegression,
-	VerdictWorkload,
+	VerdictWorkload, VerdictStdoutPollution, VerdictProcessExit,
 }
 
 // Verdict statuses.
@@ -480,11 +485,61 @@ type Generator struct {
 	CPUMaxPct *float64 `json:"cpuMaxPct"`
 }
 
-// Target is the system under test.
+// Target is the system under test: an MCP endpoint URL (transport http) or
+// a local server process (transport stdio) started from Command (program and
+// arguments, credential-looking values redacted; its environment is never
+// recorded). URL is required unless Command is set. Transport is absent in
+// reports written before stdio support (those are all http).
 type Target struct {
-	URL   string `json:"url"`
-	Label string `json:"label,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Command   []string `json:"command,omitempty"`
+	Transport string   `json:"transport,omitempty"`
+	Label     string   `json:"label,omitempty"`
 }
+
+// Transports (run.target.transport).
+const (
+	TransportHTTP  = "http"
+	TransportStdio = "stdio"
+)
+
+// IsStdio reports whether the run drove a local server process over stdio.
+func (t Target) IsStdio() bool {
+	return t.Transport == TransportStdio || (t.Transport == "" && t.URL == "" && len(t.Command) > 0)
+}
+
+// Display is the target on one line: the URL, or the command with the words
+// that need it quoted.
+func (t Target) Display() string {
+	if t.URL != "" || len(t.Command) == 0 {
+		return t.URL
+	}
+	return QuoteCommand(t.Command)
+}
+
+// QuoteCommand joins program and arguments for display, single-quoting words
+// that are empty or contain whitespace, quotes or backslashes (double-quoting
+// those that contain a single quote).
+func QuoteCommand(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		switch {
+		case a == "":
+			out[i] = "''"
+		case !strings.ContainsFunc(a, needsQuote):
+			out[i] = a
+		case !strings.Contains(a, "'"):
+			out[i] = "'" + a + "'"
+		default:
+			out[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(a) + `"`
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// needsQuote marks the characters QuoteCommand quotes a word for (the HTML
+// template and report/render.mjs use the same rule).
+func needsQuote(r rune) bool { return unicode.IsSpace(r) || r == '\'' || r == '"' || r == '\\' }
 
 // Git is the revision of the system under test. SHA must match ^[0-9a-f]{7,64}$.
 type Git struct {
@@ -849,8 +904,22 @@ func (r *Report) Check() error {
 	nonEmpty("run.k6Version", run.K6Version)
 	nonEmpty("run.load.executor", run.Load.Executor)
 	nonNeg("run.durationS", run.DurationS)
-	if !reURI.MatchString(run.Target.URL) {
-		add("run.target.url must be an absolute URI (got %q)", run.Target.URL)
+	tg := run.Target
+	// url is required unless the target is a command (stdio).
+	if (tg.URL != "" || len(tg.Command) == 0) && !reURI.MatchString(tg.URL) {
+		add("run.target.url must be an absolute URI (got %q)", tg.URL)
+	}
+	switch tg.Transport {
+	case "", TransportHTTP:
+		if tg.Transport == TransportHTTP && tg.URL == "" {
+			add("run.target.url is required when run.target.transport is http")
+		}
+	case TransportStdio:
+		if len(tg.Command) == 0 {
+			add("run.target.command is required when run.target.transport is stdio")
+		}
+	default:
+		add("run.target.transport must be http|stdio (got %q)", tg.Transport)
 	}
 	if run.Git != nil && !reGitSHA.MatchString(run.Git.SHA) {
 		add("run.git.sha must match ^[0-9a-f]{7,64}$ (got %q)", run.Git.SHA)
@@ -1090,9 +1159,9 @@ func (r *Report) Check() error {
 	// Optional series are omitted from JSON when empty, so an empty one counts as absent.
 	check("client.droppedIterations", s.Client.DroppedIterations, true)
 	switch s.Server.Sampler {
-	case SamplerDocker, SamplerPrometheus, SamplerNone:
+	case SamplerDocker, SamplerPrometheus, SamplerProcess, SamplerNone:
 	default:
-		add("series.server.sampler must be docker|prometheus|none (got %q)", s.Server.Sampler)
+		add("series.server.sampler must be docker|prometheus|process|none (got %q)", s.Server.Sampler)
 	}
 	noSampler := s.Server.Sampler == SamplerNone
 	if s.Server.RSSBytes == nil {

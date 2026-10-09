@@ -24,12 +24,13 @@ import (
 // (execute). --refine adds a second k6 run between the last passing and the
 // first breaking step of the first pass.
 
-const capacitySynopsis = "mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--factor 2 | --steps 10,25,50] [--step-duration 1m] [--refine N] [--target N] [flags]"
+const capacitySynopsis = "mcpload capacity --url <mcp url> | --command \"<server command>\" [--from 10] [--to 1000] [--factor 2 | --steps 10,25,50] [--step-duration 1m] [--refine N] [--target N] [flags]"
 
 // capacityRunFlags are the run flags the capacity subcommand shares (same
 // variables, defaults and help text).
 var capacityRunFlags = []string{"url", "protocol", "k6", "sampler", "container", "prom-url", "interval", "env",
-	"label", "git-sha", "git-ref", "out", "html", "upload-url", "key", "include-payloads", "k6-out", "wait-ready"}
+	"label", "git-sha", "git-ref", "out", "html", "upload-url", "key", "include-payloads", "k6-out", "wait-ready",
+	"command", "command-env", "command-cwd", "transport"}
 
 // stepEnvKeys are the step-load knobs the capacity flags own; --env must not set them.
 var stepEnvKeys = []string{"STEPS", "START", "STEP_FACTOR", "MAX_VUS", "STEP_DURATION", "MIN_AGENTS"}
@@ -249,7 +250,7 @@ func refinePass(o *runOpts, bin string, env []string, levels []int, origin time.
 	logf("refine: second k6 run with steps %s agents (between the last passing and the first breaking step)", joinInts(levels, ", "))
 	var cpuMon *sampler.CPUMonitor
 	res, err := k6run.Run(k6run.RunConfig{
-		Bin: bin, Script: o.scenario, Env: renv,
+		Bin: bin, Script: o.scenario, Env: renv, OSEnv: o.osEnv,
 		NDJSONPath: ndjson, SummaryPath: filepath.Join(dir, "summary.json"),
 		Stdout: stdout, Stderr: stderr,
 		OnStart: func(pid int) {

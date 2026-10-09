@@ -57,6 +57,16 @@ type runOpts struct {
 	failOnRegression                bool
 	workload                        string
 	set                             map[string]bool
+	// stdio transport: --command (split into argv), --command-env,
+	// --command-cwd and --transport.
+	command, commandCwd, transport string
+	commandEnv                     multiFlag
+
+	argv   []string          // --command split into program and arguments
+	cmdEnv map[string]string // --command-env; values are never printed or stored
+	stdio  bool              // resolved transport is stdio
+	osEnv  []string          // added to the k6 process environment (set by execute)
+	pidDir string            // MCPLOAD_PID_DIR of a stdio run (set by execute)
 
 	wl     *workload.Workload // loaded from --workload
 	wlFile string             // its normalized JSON (WORKLOAD_FILE), written by execute
@@ -66,19 +76,23 @@ type runOpts struct {
 	hints  stepHints
 }
 
-const runSynopsis = "mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]"
+const runSynopsis = "mcpload run --url <mcp url> | --command \"<server command>\" [--scenario <file.js|name>] [flags]"
 
 func runFlags(o *runOpts, stderr io.Writer) *flag.FlagSet {
 	fs := newFlagSet("run", runSynopsis, stderr)
 	fs.StringVar(&o.scenario, "scenario", "", "scenario script (e.g. scenarios/soak.js) or bundled scenario name (e.g. soak, lb-check), looked up as scenarios/<name>.js in the current folder, then next to mcpload, then among the scenarios built into mcpload (default agent-session)")
-	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to the scenario as MCP_URL (required)")
+	fs.StringVar(&o.url, "url", "", "MCP endpoint URL, passed to the scenario as MCP_URL (this or --command is required)")
+	fs.StringVar(&o.command, "command", "", "stdio: the MCP server command, e.g. \"node server.mjs\"; each session starts its own process. Split like a shell splits words (quotes, backslash escapes) but never run through a shell; passed to the scenario as MCP_COMMAND")
+	fs.Var(&o.commandEnv, "command-env", "stdio: K=V environment variable for the server processes (repeatable; values are never printed or written to the report)")
+	fs.StringVar(&o.commandCwd, "command-cwd", "", "stdio: working directory of the server processes (default: the current directory)")
+	fs.StringVar(&o.transport, "transport", "auto", "auto | http | stdio (auto: stdio when --command is set, else http)")
 	fs.StringVar(&o.protocol, "protocol", "auto", "MCP protocol version or 'auto' (MCP_PROTOCOL)")
 	// Advanced, hidden from -h: run a different engine (a k6 built with
 	// xk6-mcpload) instead of the one embedded in mcpload. Also $MCPLOAD_ENGINE.
 	fs.StringVar(&o.k6, "engine", "", "engine binary: a k6 built with xk6-mcpload (default: the engine embedded in mcpload)")
 	fs.StringVar(&o.k6, "k6", "", "same as --engine")
 	hideFlags(fs, "engine", "k6")
-	fs.StringVar(&o.samplerKind, "sampler", "none", "server sampler: none | docker | prometheus")
+	fs.StringVar(&o.samplerKind, "sampler", "none", "server sampler: none | docker | prometheus | process (process: RSS and open fds/handles of the stdio server processes; the default with --command)")
 	fs.StringVar(&o.container, "container", "", "container name or id for --sampler docker")
 	fs.StringVar(&o.promURL, "prom-url", "", "Prometheus text endpoint (e.g. http://host:3001/metrics) for --sampler prometheus")
 	fs.DurationVar(&o.interval, "interval", 10*time.Second, "sampling and series bucket interval")
@@ -138,8 +152,8 @@ func (o *runOpts) validate(pos []string) error {
 	if len(pos) > 0 {
 		return fmt.Errorf("unexpected arguments: %v", pos)
 	}
-	if o.url == "" {
-		return errors.New("--url is required")
+	if err := o.validateTransport(); err != nil {
+		return err
 	}
 	if o.workload != "" {
 		// Fail before k6 starts, naming the flow, step and field at fault.
@@ -158,8 +172,15 @@ func (o *runOpts) validate(pos []string) error {
 		return err
 	}
 	o.scenario = scenario
+	if o.stdio && !o.set["sampler"] {
+		o.samplerKind = report.SamplerProcess
+	}
 	switch o.samplerKind {
 	case "none":
+	case report.SamplerProcess:
+		if !o.stdio {
+			return errors.New("--sampler process samples the server processes of a stdio run; it needs --command")
+		}
 	case "docker":
 		if o.container == "" {
 			return errors.New("--sampler docker needs --container")
@@ -169,7 +190,7 @@ func (o *runOpts) validate(pos []string) error {
 			return errors.New("--sampler prometheus needs --prom-url")
 		}
 	default:
-		return fmt.Errorf("--sampler must be none, docker or prometheus (got %q)", o.samplerKind)
+		return fmt.Errorf("--sampler must be none, docker, prometheus or process (got %q)", o.samplerKind)
 	}
 	if o.waitReady < 0 {
 		return errors.New("--wait-ready must not be negative")
@@ -243,7 +264,13 @@ func (o *runOpts) k6Env() ([]string, map[string]string) {
 		k, v, _ := strings.Cut(kv, "=")
 		put(k, v)
 	}
-	put("MCP_URL", o.url)
+	if o.stdio {
+		for _, kv := range o.stdioEnv() {
+			put(kv[0], kv[1])
+		}
+	} else {
+		put("MCP_URL", o.url)
+	}
 	if o.set["protocol"] || m["MCP_PROTOCOL"] == "" {
 		put("MCP_PROTOCOL", o.protocol)
 	}
@@ -340,6 +367,8 @@ func newSampler(o *runOpts) sampler.Sampler {
 		return sampler.NewDocker(o.container)
 	case "prometheus":
 		return sampler.NewPrometheus(o.promURL, sampler.DefaultPromNames())
+	case report.SamplerProcess:
+		return sampler.NewProcess(o.pidDir)
 	}
 	return sampler.NewNone()
 }
@@ -397,6 +426,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	if scenario == "" {
 		scenario = strings.TrimSuffix(filepath.Base(o.scenario), filepath.Ext(o.scenario))
 	}
+	if o.stdio && slices.Contains(httpOnlyScenarios, scenario) {
+		return 0, fmt.Errorf("the %s scenario tests HTTP replicas behind a load balancer; it does not apply to a stdio server (--command)", scenario)
+	}
 	soak := scenario == "soak"
 	var soakPh report.Phases
 	if soak {
@@ -433,7 +465,9 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		env = append(env, "CALL_ID_PREFIX="+callPrefix)
 	}
 
-	if o.waitReady > 0 {
+	if o.waitReady > 0 && o.stdio {
+		logf("--wait-ready: skipped for a stdio server (--command): there is no endpoint to wait for; each session starts its own server process")
+	} else if o.waitReady > 0 {
 		probe, err := newReadyProbe(envMap)
 		if err != nil {
 			return 0, err
@@ -448,6 +482,18 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+	}
+
+	if o.stdio {
+		if w := o.commandLookupWarning(); w != "" {
+			logf("%s", w)
+		}
+		// The engine records its live server processes here (process sampler).
+		if o.pidDir, err = os.MkdirTemp("", "mcpload-pids-*"); err != nil {
+			return 0, err
+		}
+		defer os.RemoveAll(o.pidDir)
+		o.osEnv = o.stdioOSEnv(o.pidDir)
 	}
 
 	// Server sampler: fail fast on misconfiguration with one probe sample.
@@ -509,9 +555,22 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 
 	var cpuMon *sampler.CPUMonitor
 	var stopChaos func() chaosRun
-	logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, redactURL(o.url), smp.Kind(), o.interval)
+	target := o.targetOf()
+	if o.stdio {
+		logf("engine k6 %s, scenario %s, target (stdio) %s, sampler %s every %s", k6Version, o.scenario, target.Display(), smp.Kind(), o.interval)
+		if len(o.cmdEnv) > 0 {
+			keys := make([]string, 0, len(o.cmdEnv))
+			for k := range o.cmdEnv {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			logf("server environment adds %s (values not shown)", strings.Join(keys, ", "))
+		}
+	} else {
+		logf("engine k6 %s, scenario %s, target %s, sampler %s every %s", k6Version, o.scenario, target.Display(), smp.Kind(), o.interval)
+	}
 	res, err := k6run.Run(k6run.RunConfig{
-		Bin: bin, Script: o.scenario, Env: env,
+		Bin: bin, Script: o.scenario, Env: env, OSEnv: o.osEnv,
 		NDJSONPath: ndjson, SummaryPath: summaryPath,
 		Stdout: stdout, Stderr: stderr,
 		OnStart: func(pid int) {
@@ -635,7 +694,7 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 			DurationS: round3(durationS),
 			Scenario:  scenario,
 			Protocol:  protocol,
-			Target:    report.Target{URL: redactURL(o.url), Label: o.label},
+			Target:    target,
 			K6Version: k6Version,
 			Load:      toLoad(opts.LoadShape()),
 			Generator: gen,
@@ -737,6 +796,10 @@ func execute(o *runOpts, stdout, stderr io.Writer) (int, error) {
 	r.Verdicts = append(r.Verdicts, snfV,
 		analysis.ThresholdVerdict(r.Thresholds),
 		analysis.GeneratorVerdict(r))
+	if o.stdio {
+		pin := processInput(agg.Processes())
+		r.Verdicts = append(r.Verdicts, analysis.StdoutPollutionVerdict(pin), analysis.ProcessExitVerdict(pin))
+	}
 	if r.Sessions = longSessions(agg); r.Sessions != nil || longLived {
 		r.Verdicts = append(r.Verdicts, analysis.SessionSurvivalVerdict(r.Sessions))
 	}

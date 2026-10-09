@@ -31,11 +31,11 @@ const (
 // errUsage marks errors that should print the subcommand usage.
 var errUsage = errors.New("usage")
 
-const usageText = `mcpload - load and soak testing for remote MCP servers
+const usageText = `mcpload - load and soak testing for MCP servers (remote over HTTP, or local over stdio)
 
 Usage:
-  mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
-  mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--refine 2] [flags]
+  mcpload run --url <mcp url> | --command "<server command>" [--scenario <file.js|name>] [flags]
+  mcpload capacity --url <mcp url> | --command "<server command>" [--from 10] [--to 1000] [--refine 2] [flags]
   mcpload render <report.json> <out.html>
   mcpload validate <report.json>
   mcpload upload --url <upload server base url> --key <api key> <report.json>
