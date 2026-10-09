@@ -8,8 +8,10 @@
 //            -e OAUTH_TOKEN_URL=http://localhost:3006/token \
 //            -e OAUTH_CLIENT_ID=mcpload -e OAUTH_CLIENT_SECRET=secret scenarios/oauth-refresh.js
 //   VUS (50), DURATION (3m, several token lifetimes), REFRESH_P95_MS (500), AUTH_MAX_ERRORS (1)
-import { buildThresholds, config, env, envNum } from './lib/config.js';
+import { buildThresholds, config, env, envNum, requireHttp } from './lib/config.js';
 import { agentSession, makeClient } from './lib/session.js';
+
+requireHttp('oauth-refresh', 'OAuth applies to HTTP transports only');
 
 const auth =
   config.auth && config.auth.type === 'oauth'

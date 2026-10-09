@@ -85,7 +85,7 @@ export const options = {
 };
 
 export function setup() {
-  console.log(`long-lived: ${VUS} sessions to ${config.url}; phases (s): warm-up 0-${W}, load ${W}-${W + L}, cool-down ${W + L}-${W + L + C}; think ${THINK_MS} ms, idle ${IDLE_MS} ms, ping after ${PING_EVERY || 'never'} s quiet`);
+  console.log(`long-lived: ${VUS} sessions to ${config.target}; phases (s): warm-up 0-${W}, load ${W}-${W + L}, cool-down ${W + L}-${W + L + C}; think ${THINK_MS} ms, idle ${IDLE_MS} ms, ping after ${PING_EVERY || 'never'} s quiet`);
   return phases;
 }
 

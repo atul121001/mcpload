@@ -142,6 +142,30 @@ docker run -d --rm --name mcpload-chaos-ts -p 127.0.0.1:3019:3000 -e TRACK_CALLS
 docker stop mcpload-chaos-ts
 ```
 
+### stdio mode (TS image)
+
+*v0.6.0, unreleased.* `--stdio` runs the same tools, resources and prompt over the MCP stdio transport (the SDK's `StdioServerTransport`): newline-delimited JSON-RPC on stdin and stdout, one session per process, no HTTP port and no `/metrics`. Every log goes to stderr. Pick a persona with `--persona <name>` (or `--persona=<name>`) or `PERSONA=<name>`; `LEAK=1` also selects `leaky`. An unknown persona exits with code 2.
+
+| Persona | `serverInfo.name` | Behaviour | What mcpload should show |
+|---|---|---|---|
+| `normal` (default) | `ts-stdio` | `slow` sleeps asynchronously, so concurrent calls on one process overlap | pass |
+| `blocking` | `ts-stdio-blocking` | synchronous CPU work: `slow` busy-waits `ms` (and ignores cancellation), every other tool busy-waits `BLOCK_MS` (10). A `fast` call sent right after a 300 ms `slow` call on the same process waits ~300 ms | head-of-line blocking: `tool_isolation` with `--scenario isolation` |
+| `leaky` | `ts-stdio-leaky` | every `tools/call` retains `LEAK_CALL_BYTES` (102400) forever | the process's RSS grows with the calls it served (`--scenario long-lived`, `process` sampler) |
+| `noisy` | `ts-stdio-noisy` | writes a line to **stdout** at start and on every `NOISY_EVERY`-th (1) `tools/call`: lines that are not JSON-RPC | `stdout_pollution` |
+
+`TRACK_CALLS`, `DEDUPE`, `POOL_SIZE`, `IGNORE_CANCEL`, `FLAKY_RATE` and `BIG_BYTES` work as over HTTP; `REQUIRE_AUTH_URL`, `HANG_UNKNOWN`, `PORT` and `SESSION_IDLE_MS` are HTTP-only. The process exits when its stdin closes. HTTP mode (no `--stdio`) is unchanged.
+
+```sh
+cd demo-servers/ts-server && npm ci && cd ../..        # local Node 22
+./mcpload run --command "node demo-servers/ts-server/server.mjs --stdio"
+./mcpload run --command "node demo-servers/ts-server/server.mjs --stdio --persona blocking" --scenario isolation
+./mcpload run --command "node demo-servers/ts-server/server.mjs --stdio" --command-env PERSONA=noisy
+
+# or from the image (its ENTRYPOINT is node server.mjs, so arguments reach the server)
+docker build -t mcpload-demo/ts-server:local demo-servers/ts-server
+./mcpload run --command "docker run -i --rm -e PERSONA=leaky mcpload-demo/ts-server:local --stdio" --scenario long-lived
+```
+
 ## curl examples
 
 Every POST needs `Content-Type: application/json` and `Accept: application/json, text/event-stream`.

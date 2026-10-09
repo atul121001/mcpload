@@ -24,7 +24,7 @@ export const options = {
 };
 
 export function setup() {
-  console.log(`agent-session -> ${config.url} (protocol ${config.protocol}, parallel ${config.parallel}, rounds ${config.rounds.min}-${config.rounds.max})`);
+  console.log(`agent-session -> ${config.target} (protocol ${config.protocol}, parallel ${config.parallel}, rounds ${config.rounds.min}-${config.rounds.max})`);
 }
 
 export default function () {

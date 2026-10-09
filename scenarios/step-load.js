@@ -52,7 +52,7 @@ export const options = {
 
 export function setup() {
   console.log(
-    `step-load -> ${config.url}: steps ${LEVELS.join(', ')} VUs, ${HOLD_S}s each after a ${RAMP_S}s ramp (${SCHED.totalS}s)` +
+    `step-load -> ${config.target}: steps ${LEVELS.join(', ')} VUs, ${HOLD_S}s each after a ${RAMP_S}s ramp (${SCHED.totalS}s)` +
       (ABORT_ERR_RATE > 0 ? `, stop when a VU sees > ${ABORT_ERR_RATE * 100}% failed calls in a step` : ''),
   );
 }

@@ -14,6 +14,8 @@ test('breakCause', () => {
     { name: 'jsonrpc errors never break', in: [err('jsonrpc')], want: '' },
     { name: 'one session_not_found breaks', in: [null, err('session_not_found'), null], want: 'session_not_found' },
     { name: 'session_not_found wins over transport', in: [err('http'), err('session_not_found')], want: 'session_not_found' },
+    { name: 'one process_exit breaks (stdio)', in: [null, err('process_exit')], want: 'process_exit' },
+    { name: 'process_exit wins over transport', in: [err('timeout'), err('process_exit')], want: 'process_exit' },
     { name: 'all transport errors break', in: [err('http'), err('http')], want: 'http' },
     { name: 'timeouts break', in: [err('timeout')], want: 'timeout' },
     { name: 'one transport error among successes does not', in: [err('http'), null], want: '' },
@@ -26,7 +28,7 @@ test('retryable', () => {
   assert.equal(retryable(null), false);
   assert.equal(retryable(err('tool_iserror')), false);
   assert.equal(retryable(err('jsonrpc')), false);
-  for (const t of ['http', 'timeout', 'session_not_found']) assert.equal(retryable(err(t)), true, t);
+  for (const t of ['http', 'timeout', 'session_not_found', 'process_exit']) assert.equal(retryable(err(t)), true, t);
 });
 
 test('backoffMs', () => {
