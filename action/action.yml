@@ -215,7 +215,7 @@ runs:
         VERSION=""
         case "${ACTION_REF:-}" in v[0-9]*.[0-9]*.[0-9]*) VERSION="$ACTION_REF" ;; esac
         if [ -z "$VERSION" ]; then
-          D="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || true)"
+          D="$(git -C "$ROOT" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || true)"
           case "$D" in
             v[0-9]*) VERSION="$D" ;;
             "") ;;
@@ -224,7 +224,10 @@ runs:
         fi
         [ -n "$VERSION" ] || VERSION="dev+$REF"
         VERSION="$(printf '%s' "$VERSION" | tr -c 'A-Za-z0-9.+_-' '_' | cut -c1-64)"
-        KEY="mcpload-bin-v1-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-xk6$XK6_VERSION-$HASH-$REF-$VERSION"
+        # k6 doesn't carry the version, so its cache survives new commits (dev versions change with every sha);
+        # mcpload (one small dependency, quick to build) is cached per version.
+        K6_KEY="mcpload-k6-v2-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-xk6$XK6_VERSION-$HASH-$REF"
+        KEY="mcpload-cli-v2-$RUNNER_OS-$RUNNER_ARCH-go$GO_VERSION-$HASH-$REF-$VERSION"
         BIN="$RUNNER_TEMP/mcpload-bin"
         # A previous invocation in the same job already built these binaries.
         PREBUILT=false
@@ -233,48 +236,70 @@ runs:
           echo "root=$ROOT"
           echo "bin=$BIN"
           echo "exe=$EXE"
+          echo "k6-key=$K6_KEY"
           echo "key=$KEY"
           echo "version=$VERSION"
           echo "prebuilt=$PREBUILT"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Restore k6 + mcpload binaries
-      id: cache
+    - name: Restore k6
+      id: cache-k6
       if: steps.paths.outputs.prebuilt != 'true'
       uses: actions/cache@v4
       with:
-        path: ${{ steps.paths.outputs.bin }}
+        path: ${{ steps.paths.outputs.bin }}/k6${{ steps.paths.outputs.exe }}
+        key: ${{ steps.paths.outputs.k6-key }}
+
+    - name: Restore mcpload
+      id: cache-cli
+      if: steps.paths.outputs.prebuilt != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.bin }}/mcpload${{ steps.paths.outputs.exe }}
         key: ${{ steps.paths.outputs.key }}
 
     - name: Set up Go
-      if: steps.paths.outputs.prebuilt != 'true' && steps.cache.outputs.cache-hit != 'true'
+      if: steps.paths.outputs.prebuilt != 'true' && (steps.cache-k6.outputs.cache-hit != 'true' || steps.cache-cli.outputs.cache-hit != 'true')
       uses: actions/setup-go@v5
       with:
         go-version: ${{ inputs.go-version }}
         cache: false
 
-    - name: Build k6 (xk6-mcpload) and mcpload
-      if: steps.paths.outputs.prebuilt != 'true' && steps.cache.outputs.cache-hit != 'true'
+    - name: Build k6 (xk6-mcpload)
+      if: steps.paths.outputs.prebuilt != 'true' && steps.cache-k6.outputs.cache-hit != 'true'
       shell: bash
       env:
         ROOT: ${{ steps.paths.outputs.root }}
         BIN: ${{ steps.paths.outputs.bin }}
         EXE: ${{ steps.paths.outputs.exe }}
-        KEY: ${{ steps.paths.outputs.key }}
-        VERSION: ${{ steps.paths.outputs.version }}
         XK6_VERSION: ${{ inputs.xk6-version }}
       run: |
         set -euo pipefail
         mkdir -p "$BIN"
-        echo "::group::xk6 build"
         go install "go.k6.io/xk6@$XK6_VERSION"
         XK6="$(go env GOPATH)/bin/xk6$EXE"
         (cd "$ROOT/xk6-mcpload" && "$XK6" build --with "github.com/atul121001/mcpload/xk6-mcpload=." --output "$BIN/k6$EXE")
-        echo "::endgroup::"
-        echo "::group::go build mcpload"
+
+    - name: Build mcpload
+      if: steps.paths.outputs.prebuilt != 'true' && steps.cache-cli.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ROOT: ${{ steps.paths.outputs.root }}
+        BIN: ${{ steps.paths.outputs.bin }}
+        EXE: ${{ steps.paths.outputs.exe }}
+        VERSION: ${{ steps.paths.outputs.version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$BIN"
         (cd "$ROOT/cmd/mcpload" && go build -trimpath -ldflags "-X main.version=$VERSION" -o "$BIN/mcpload$EXE" .)
-        echo "::endgroup::"
-        printf '%s' "$KEY" > "$BIN/.key"
+
+    - name: Mark binaries built
+      if: steps.paths.outputs.prebuilt != 'true'
+      shell: bash
+      env:
+        BIN: ${{ steps.paths.outputs.bin }}
+        KEY: ${{ steps.paths.outputs.key }}
+      run: printf '%s' "$KEY" > "$BIN/.key"
 
     - name: Check binaries
       shell: bash
