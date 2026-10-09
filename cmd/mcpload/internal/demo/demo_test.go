@@ -26,6 +26,10 @@ func TestImageTag(t *testing.T) {
 		"":                 "latest",
 		"v0.3.0-dirty+abc": "latest",
 		"main":             "latest",
+		// versions the GitHub Action stamps on non-release builds (git describe / dev+<sha>)
+		"v0.5.0-3-gabc1234":       "latest",
+		"v0.5.0-3-gabc1234-dirty": "latest",
+		"dev+abc1234":             "latest",
 	} {
 		if got := ImageTag(v); got != want {
 			t.Errorf("ImageTag(%q) = %q, want %q", v, got, want)

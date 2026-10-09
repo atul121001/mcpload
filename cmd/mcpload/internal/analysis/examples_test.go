@@ -17,7 +17,7 @@ func exampleVerdicts(r *report.Report) ([]report.Verdict, *report.Capacity) {
 	var cp *report.Capacity
 	vs := Verdicts(r, DefaultConfig())
 	vs = append(vs,
-		SessionNotFoundVerdict(float64(r.Summary.ByErrorType["session_not_found"]), float64(r.Summary.Reqs)),
+		SessionNotFoundVerdict(r.Run.Protocol, float64(r.Summary.ByErrorType["session_not_found"]), float64(r.Summary.Reqs)),
 		ThresholdVerdict(r.Thresholds),
 		GeneratorVerdict(r))
 	if c := r.Capacity; c != nil {

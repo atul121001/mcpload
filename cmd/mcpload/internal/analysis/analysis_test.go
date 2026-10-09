@@ -3,6 +3,7 @@ package analysis
 import (
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atul121001/mcpload/cmd/mcpload/internal/report"
@@ -110,7 +111,7 @@ func TestVerdictsSkipped(t *testing.T) {
 		t.Errorf("docker: %s %s", m["memory_leak"].Status, m["fd_leak"].Status)
 	}
 	// The resulting report must still pass Check.
-	r.Verdicts = append(Verdicts(r, DefaultConfig()), ThresholdVerdict(r.Thresholds), SessionNotFoundVerdict(0, 10))
+	r.Verdicts = append(Verdicts(r, DefaultConfig()), ThresholdVerdict(r.Thresholds), SessionNotFoundVerdict(r.Run.Protocol, 0, 10))
 	if err := r.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +167,61 @@ func TestHelpers(t *testing.T) {
 	if v := ThresholdVerdict(load(t, "healthy.json").Thresholds); v.Status != report.StatusPass {
 		t.Error("healthy thresholds should pass")
 	}
-	if SessionNotFoundVerdict(3, 1000).Status != report.StatusFail || SessionNotFoundVerdict(0, 1000).Status != report.StatusPass {
+	if SessionNotFoundVerdict("2025-11-25", 3, 1000).Status != report.StatusFail || SessionNotFoundVerdict("2025-11-25", 0, 1000).Status != report.StatusPass {
 		t.Error("session_not_found")
+	}
+}
+
+func TestIsStateless(t *testing.T) {
+	for v, want := range map[string]bool{
+		"2026-07-28": true, "2027-01-01": true,
+		"2025-11-25": false, "2025-06-18": false,
+		"": false, "auto": false, "unknown": false, "2026-13-99": false,
+	} {
+		if got := IsStateless(v); got != want {
+			t.Errorf("IsStateless(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// Session verdicts are judged on stateful protocols and skipped on the
+// stateless one (a pass there would be vacuous: there are no sessions).
+func TestSessionVerdictsByProtocol(t *testing.T) {
+	const skipMsg = "Skipped: the stateless protocol (2026-07-28) has no sessions."
+	alive := SessionEnd{LifetimeS: 600}
+	dead := SessionEnd{LifetimeS: 302, Died: true, Cause: "session_not_found"}
+	healthy := LongSessions([]SessionEnd{alive, alive}, 0, nil, nil)
+	dying := LongSessions([]SessionEnd{alive, dead}, 1, nil, nil)
+	cases := []struct {
+		name, protocol, status, msg string
+		v                           func(protocol string) report.Verdict
+	}{
+		{"snf stateful clean", "2025-11-25", report.StatusPass, "No 404 session-not-found responses.", func(p string) report.Verdict { return SessionNotFoundVerdict(p, 0, 1000) }},
+		{"snf stateful 404s", "2025-11-25", report.StatusFail, "3 of 1000 requests", func(p string) report.Verdict { return SessionNotFoundVerdict(p, 3, 1000) }},
+		{"snf stateless clean", "2026-07-28", report.StatusSkipped, skipMsg, func(p string) report.Verdict { return SessionNotFoundVerdict(p, 0, 1000) }},
+		// A 404 that did happen is never hidden, whatever the protocol.
+		{"snf stateless 404s", "2026-07-28", report.StatusFail, "3 of 1000 requests", func(p string) report.Verdict { return SessionNotFoundVerdict(p, 3, 1000) }},
+		{"snf unknown protocol", "unknown", report.StatusPass, "No 404", func(p string) report.Verdict { return SessionNotFoundVerdict(p, 0, 1000) }},
+		{"survival stateful healthy", "2025-11-25", report.StatusPass, "All 2 sessions stayed open", func(p string) report.Verdict { return SessionSurvivalVerdict(p, healthy) }},
+		{"survival stateful deaths", "2025-11-25", report.StatusFail, "1 of 2 sessions died", func(p string) report.Verdict { return SessionSurvivalVerdict(p, dying) }},
+		{"survival stateful none", "2025-11-25", report.StatusSkipped, "no long-lived session", func(p string) report.Verdict { return SessionSurvivalVerdict(p, nil) }},
+		{"survival stateless", "2026-07-28", report.StatusSkipped, skipMsg, func(p string) report.Verdict { return SessionSurvivalVerdict(p, healthy) }},
+		{"survival stateless none", "2026-07-28", report.StatusSkipped, skipMsg, func(p string) report.Verdict { return SessionSurvivalVerdict(p, nil) }},
+	}
+	for _, c := range cases {
+		v := c.v(c.protocol)
+		if v.Status != c.status || !strings.Contains(v.Message, c.msg) {
+			t.Errorf("%s: got %s %q, want %s containing %q", c.name, v.Status, v.Message, c.status, c.msg)
+		}
+	}
+	// A skipped session verdict leaves the overall result a pass.
+	r := load(t, "healthy.json")
+	r.Run.Protocol = "2026-07-28"
+	r.Verdicts = append(Verdicts(r, DefaultConfig()), SessionNotFoundVerdict(r.Run.Protocol, 0, 10), SessionSurvivalVerdict(r.Run.Protocol, nil))
+	if err := r.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed(r) || report.HasWarnings(r) {
+		t.Error("skipped session verdicts must not fail or warn the run")
 	}
 }

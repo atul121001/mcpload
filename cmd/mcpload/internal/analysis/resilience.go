@@ -141,9 +141,14 @@ func countList(m map[string]int64) string {
 	return strings.Join(parts, ", ")
 }
 
-// SessionSurvivalVerdict judges report.sessions (nil: skipped).
-func SessionSurvivalVerdict(s *report.Sessions) report.Verdict {
+// SessionSurvivalVerdict judges report.sessions (nil: skipped). protocol is
+// the run's protocol (report.run.protocol); on a stateless run (IsStateless)
+// the verdict is skipped, because the stateless protocol has no sessions.
+func SessionSurvivalVerdict(protocol string, s *report.Sessions) report.Verdict {
 	const id, signal = report.VerdictSessionSurvival, "mcp_session_lifetime"
+	if IsStateless(protocol) {
+		return statelessSkipped(id, signal)
+	}
 	if s == nil || s.Total == 0 {
 		return skipped(id, signal, "no long-lived session ended (scenario long-lived)")
 	}

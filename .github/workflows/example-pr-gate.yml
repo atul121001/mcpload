@@ -5,12 +5,17 @@
 # way and pin the Action to a release tag or a full commit SHA, e.g.
 # `uses: atul121001/mcpload/action@vX.Y.Z` or `@<40-char commit SHA>`, rather than a moving branch like @main.
 #
-#  1. ts-healthy (port 3001): agent-session for 1 minute, must stay inside the budgets and must not be
-#     slower than main (baseline-branch: main) -> gates the PR. Pushes to main run the same job, and
-#     their report artifact (mcpload-ts-healthy) is the baseline the next PRs compare with. Until main
-#     has one, the comparison is skipped with a notice.
-#  2. lb-stateful (port 3004): calibration check. Two replicas without sticky sessions must be
-#     flagged (session_not_found), so this step uses fail-on: never and asserts result == 'fail'.
+# Two legs, one per protocol family, so a regression in either transport path is caught:
+#  stateful  - ts-healthy (port 3001, TS SDK, sessions): protocol auto must resolve to 2025-11-25.
+#              Calibration: lb-stateful (3004, two replicas, no sticky sessions) must be flagged
+#              (session_not_found), so that step uses fail-on: never and asserts result == 'fail'.
+#  stateless - stateless-2026 (3005, two go-sdk replicas behind round-robin nginx): protocol auto must
+#              resolve to 2026-07-28. Calibration: lb-check on the same round-robin LB must PASS
+#              (no sessions, so any replica can serve any request).
+# Each leg runs agent-session for 1 minute; it must stay inside the budgets and must not be slower than
+# main (baseline-branch: main). Pushes to main run the same jobs, and their report artifacts
+# (mcpload-ts-healthy, mcpload-stateless-2026) are the baselines the next PRs compare with. Until main
+# has one, the comparison is skipped with a notice.
 name: example-pr-gate
 
 on:
@@ -18,7 +23,7 @@ on:
     paths-ignore:
       - '**.md'
   push:
-    branches: [main] # produces the baseline report for PRs
+    branches: [main] # produces the baseline reports for PRs
     paths-ignore:
       - '**.md'
   workflow_dispatch:
@@ -34,16 +39,47 @@ concurrency:
 
 jobs:
   mcp-load-gate:
+    name: mcp-load-gate (${{ matrix.leg }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: stateful
+            services: ts-healthy lb-stateful
+            ports: 3001 3004
+            url: http://localhost:3001/mcp
+            protocol: '2025-11-25'
+            container: mcpload-demo-ts-healthy-1
+            label: ts-healthy
+            artifact: mcpload-ts-healthy # keep: main's existing baseline artifact
+            lb-url: http://localhost:3004/mcp
+            lb-label: lb-stateful
+            lb-expect: fail
+          - leg: stateless
+            services: stateless-2026
+            ports: 3005
+            url: http://localhost:3005/mcp
+            protocol: '2026-07-28'
+            container: mcpload-demo-stateless-2026-a-1
+            label: stateless-2026
+            artifact: mcpload-stateless-2026
+            lb-url: http://localhost:3005/mcp
+            lb-label: stateless-2026-lb
+            lb-expect: pass
     steps:
       - uses: actions/checkout@v4
 
       - name: Start demo MCP servers
         working-directory: demo-servers
+        env:
+          SERVICES: ${{ matrix.services }}
+          PORTS: ${{ matrix.ports }}
         run: |
-          docker compose up -d --build ts-healthy lb-stateful
-          for port in 3001 3004; do
+          # shellcheck disable=SC2086 # word-split the service and port lists
+          docker compose up -d --build $SERVICES
+          for port in $PORTS; do
             for i in $(seq 1 60); do
               curl -fsS "http://localhost:$port/healthz" >/dev/null 2>&1 && { echo "port $port up"; break; }
               [ "$i" = 60 ] && { echo "::error::port $port did not become healthy"; docker compose logs; exit 1; }
@@ -51,11 +87,11 @@ jobs:
             done
           done
 
-      - name: Load gate (ts-healthy)
+      - name: Load gate (${{ matrix.label }})
         id: gate
         uses: ./action
         with:
-          url: http://localhost:3001/mcp
+          url: ${{ matrix.url }}
           scenario: agent-session
           vus: '10'
           duration: 1m
@@ -65,33 +101,49 @@ jobs:
           env: |
             TOOL_BUDGETS={"flaky":{"errRate":0.2}}
           sampler: docker
-          container: mcpload-demo-ts-healthy-1
-          label: ts-healthy
-          artifact-name: mcpload-ts-healthy
+          container: ${{ matrix.container }}
+          label: ${{ matrix.label }}
+          artifact-name: ${{ matrix.artifact }}
           baseline-branch: main # per-tool Δ vs main's last successful run; a regression fails the gate
           comment-on-pr: 'true'
           upload-url: ${{ vars.MCPLOAD_URL }}
           api-key: ${{ secrets.MCPLOAD_KEY }}
 
-      - name: Calibration (lb-stateful must be flagged)
+      - name: Assert the negotiated protocol
+        if: always() && steps.gate.outputs.report-path != ''
+        env:
+          REPORT: ${{ steps.gate.outputs.report-path }}
+          WANT: ${{ matrix.protocol }}
+        run: |
+          [ -f "$REPORT" ] || { echo "no report (the gate step errored)"; exit 0; }
+          got="$(jq -r '.run.protocol // empty' "$REPORT")"
+          echo "protocol: got=$got want=$WANT"
+          if [ "$got" != "$WANT" ]; then
+            echo "::error::protocol auto resolved to '$got', expected '$WANT' (silent fallback?)"
+            exit 1
+          fi
+
+      - name: Calibration (${{ matrix.lb-label }} must ${{ matrix.lb-expect }})
         id: lb
         uses: ./action
         with:
-          url: http://localhost:3004/mcp
+          url: ${{ matrix.lb-url }}
           scenario: lb-check
           duration: 30s
-          label: lb-stateful
-          artifact-name: mcpload-lb-stateful
+          label: ${{ matrix.lb-label }}
+          artifact-name: mcpload-${{ matrix.lb-label }}
           fail-on: never
 
-      - name: Assert lb-stateful was flagged
+      - name: Assert the calibration result
         env:
           PASSED: ${{ steps.lb.outputs.passed }}
           RESULT: ${{ steps.lb.outputs.result }}
+          WANT: ${{ matrix.lb-expect }}
+          LABEL: ${{ matrix.lb-label }}
         run: |
-          echo "lb-stateful: result=$RESULT passed=$PASSED"
-          if [ "$RESULT" != "fail" ]; then
-            echo "::error::expected lb-stateful to fail with session_not_found, got result=$RESULT"
+          echo "$LABEL: result=$RESULT passed=$PASSED (want $WANT)"
+          if [ "$RESULT" != "$WANT" ]; then
+            echo "::error::expected $LABEL to $WANT, got result=$RESULT"
             exit 1
           fi
 
