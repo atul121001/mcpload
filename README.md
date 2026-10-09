@@ -219,14 +219,14 @@ Exit codes: `0` pass, `1` fail, `2` the test couldn't run. Every flag: [CLI refe
 
 - [Install and try it](docs/guide/getting-started.md) · [Test your own server](docs/guide/testing-your-server.md) · [Run with Docker](docs/guide/testing-your-server.md#run-with-docker)
 - [Scenarios and verdicts](docs/guide/scenarios-and-verdicts.md) · [Find your capacity](docs/guide/capacity.md) · [Workload profiles](docs/guide/workloads.md)
-- [Use mcpload in CI](docs/guide/ci.md) · [Advanced: custom scenarios and metrics](docs/guide/advanced.md)
+- [Use mcpload in CI](docs/guide/ci.md) · [Advanced: custom scenarios and metrics](docs/guide/advanced.md) · [Local (stdio) servers](docs/guide/stdio.md)
 - [How it compares](docs/COMPARISON.md) · [FAQ](docs/FAQ.md) · [Architecture](docs/ARCHITECTURE.md) · [Calibration](docs/CALIBRATION.md) · [Roadmap](docs/ROADMAP.md)
 
 All pages: [docs/](docs/README.md).
 
 ## Status
 
-Early release (v0.5). Commands and options may change before 1.0. Today mcpload tests **remote servers over streamable HTTP** (not stdio or SSE) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
+Early release (v0.5). Commands and options may change before 1.0. Today mcpload tests **remote and local (stdio) MCP servers** (stdio: [v0.6.0, unreleased](docs/guide/stdio.md); SSE is not supported) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
 
 ## Contributing
 

@@ -29,6 +29,21 @@
 // mcp_tool_duplicate_executions_total. DEDUPE=atomic skips a call id that already ran (an idempotency key);
 // DEDUPE=racy does the same check but records the id only after an await (DEDUPE_RACE_MS, 20), so two concurrent
 // calls with one id can both pass it: the non-atomic duplicate check.
+//
+// stdio (`node server.mjs --stdio`, or `docker run -i --rm <image> --stdio`): the same tools, resources and
+// prompt over the MCP stdio transport (StdioServerTransport): newline-delimited JSON-RPC on stdin/stdout, one
+// session per process, no HTTP listener and no /metrics. Every log goes to stderr (stdout is the protocol).
+// A persona is chosen with `--persona <name>` (or --persona=<name>) or PERSONA=<name>; LEAK=1 means leaky:
+//   normal    (default)  `slow` sleeps asynchronously: calls on one process overlap
+//   blocking             tools do synchronous CPU work: `slow` busy-waits `ms` and every other tool BLOCK_MS (10),
+//                        so on one single-threaded process every call queues behind the one running
+//                        (head-of-line blocking; `--scenario isolation` flags it)
+//   leaky                every tools/call retains LEAK_CALL_BYTES (102400) forever: the process RSS grows with
+//                        the calls it served
+//   noisy                writes a log line to stdout at start and on every NOISY_EVERY-th (1) tools/call: lines
+//                        that are not JSON-RPC, i.e. protocol corruption (mcpload counts them as invalid lines)
+// TRACK_CALLS, DEDUPE, POOL_SIZE, IGNORE_CANCEL, FLAKY_RATE and BIG_BYTES work as over HTTP; REQUIRE_AUTH_URL,
+// HANG_UNKNOWN, PORT and SESSION_IDLE_MS are HTTP-only. The process exits when stdin closes.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID, randomFillSync } from 'node:crypto';
 import express from 'express';
@@ -36,10 +51,35 @@ import client from 'prom-client';
 import { z } from 'zod';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { isInitializeRequest, CancelledNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
+// ---- transport and stdio persona (see the header) ----
+const argv = process.argv.slice(2);
+const STDIO = argv.includes('--stdio');
+function argValue(name) {
+  const i = argv.indexOf(name);
+  if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
+  const eq = argv.find((a) => a.startsWith(name + '='));
+  return eq === undefined ? undefined : eq.slice(name.length + 1);
+}
+const PERSONAS = ['normal', 'blocking', 'leaky', 'noisy'];
+const PERSONA = STDIO ? (argValue('--persona') || process.env.PERSONA || (process.env.LEAK === '1' ? 'leaky' : 'normal')) : 'normal';
+if (STDIO) {
+  // stdout carries the protocol: every console method writes to stderr.
+  for (const m of ['log', 'info', 'warn', 'debug']) console[m] = console.error;
+  if (!PERSONAS.includes(PERSONA)) {
+    console.error(`unknown persona '${PERSONA}' (one of ${PERSONAS.join(', ')})`);
+    process.exit(2);
+  }
+}
+const BLOCKING = PERSONA === 'blocking';
+const BLOCK_MS = Number(process.env.BLOCK_MS ?? 10);
+const LEAK_CALL_BYTES = Number(process.env.LEAK_CALL_BYTES ?? 102_400);
+const NOISY_EVERY = Math.max(1, Number(process.env.NOISY_EVERY ?? 1));
+
 const PORT = Number(process.env.PORT ?? 3000);
-const LEAK = process.env.LEAK === '1';
+const LEAK = !STDIO && process.env.LEAK === '1'; // HTTP: per session (stdio uses PERSONA=leaky, per call)
 const REQUIRE_AUTH_URL = process.env.REQUIRE_AUTH_URL || '';
 const FLAKY_RATE = Number(process.env.FLAKY_RATE ?? 0.1);
 const BIG_BYTES = Number(process.env.BIG_BYTES ?? 200_000);
@@ -50,7 +90,7 @@ const IGNORE_CANCEL = process.env.IGNORE_CANCEL === '1';
 const SESSION_IDLE_MS = LEAK ? 0 : Number(process.env.SESSION_IDLE_MS ?? 300_000);
 const SERVER_NAME =
   process.env.SERVER_NAME ??
-  (LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : IGNORE_CANCEL ? 'ts-ignore-cancel' : 'ts-healthy');
+  (STDIO ? (PERSONA === 'normal' ? 'ts-stdio' : `ts-stdio-${PERSONA}`) : LEAK ? 'ts-leaky' : REQUIRE_AUTH_URL ? 'ts-oauth' : POOL_SIZE > 0 ? 'ts-pooled' : IGNORE_CANCEL ? 'ts-ignore-cancel' : 'ts-healthy');
 const REPLICA = process.env.HOSTNAME ?? 'local';
 const TRACK_CALLS = process.env.TRACK_CALLS === '1';
 const CALL_LOG = process.env.CALL_LOG ?? '/tmp/mcpload-calls.log';
@@ -93,6 +133,24 @@ async function pooled(fn) {
 }
 
 const knownTools = new Set(); // filled by registerTool
+
+/** Synchronous CPU work for `ms` milliseconds: nothing else runs on this process meanwhile. */
+function busyWait(ms) {
+  const end = performance.now() + ms;
+  let x = 0;
+  while (performance.now() < end) x = (x * 31 + 7) % 1_000_003;
+  return x;
+}
+
+// stdio personas, applied when a tools/call starts (see the header).
+let toolCalls = 0;
+const leakedPerCall = []; // leaky: buffers that are never released
+function stdioPersona(tool) {
+  toolCalls++;
+  if (PERSONA === 'blocking' && tool !== 'slow') busyWait(BLOCK_MS);
+  else if (PERSONA === 'leaky') leakedPerCall.push(randomFillSync(Buffer.allocUnsafe(LEAK_CALL_BYTES))); // touch every page
+  else if (PERSONA === 'noisy' && toolCalls % NOISY_EVERY === 0) process.stdout.write(`[noisy] handling tools/call ${tool} (#${toolCalls})\n`);
+}
 
 // Static resources: [name, uri, title, text].
 const DEMO_DOCS = [
@@ -190,6 +248,7 @@ function createMcpServer() {
     knownTools.add(name);
     return register(name, meta, (...a) => {
       const extra = a[a.length - 1];
+      if (PERSONA !== 'normal') stdioPersona(name);
       return cancellable(name, extra, onCancel, () => pooled(() => tracked(extra, () => handler(...a))));
     });
   };
@@ -204,6 +263,10 @@ function createMcpServer() {
     },
     async ({ ms }, extra) => {
       const d = ms ?? 300;
+      if (BLOCKING) {
+        busyWait(d); // stdio blocking persona: holds the only thread, cannot be cancelled
+        return text(`busy ${d}ms`);
+      }
       // Stops when cancelled; IGNORE_CANCEL ignores the abort signal altogether (also when the session closes).
       await (IGNORE_CANCEL ? sleep(d) : abortableSleep(d, extra.signal));
       return text(`slept ${d}ms`);
@@ -346,7 +409,7 @@ function dropSession(id) {
   s.server.close().catch(() => {});
 }
 
-if (SESSION_IDLE_MS > 0) {
+if (SESSION_IDLE_MS > 0 && !STDIO) {
   setInterval(() => {
     const cutoff = Date.now() - SESSION_IDLE_MS;
     for (const [id, s] of sessions) if (s.lastSeen < cutoff) { s.transport.close().catch(() => {}); dropSession(id); }
@@ -355,7 +418,7 @@ if (SESSION_IDLE_MS > 0) {
 
 // ---- metrics ----
 const register = client.register;
-client.collectDefaultMetrics({ register }); // process_resident_memory_bytes, nodejs_heap_size_used_bytes, ...
+if (!STDIO) client.collectDefaultMetrics({ register }); // process_resident_memory_bytes, nodejs_heap_size_used_bytes, ...
 new client.Gauge({ name: 'nodejs_heap_used_bytes', help: 'V8 heap used (process.memoryUsage().heapUsed).', collect() { this.set(process.memoryUsage().heapUsed); } });
 new client.Gauge({ name: 'nodejs_external_memory_bytes_current', help: 'External (Buffer) memory.', collect() { this.set(process.memoryUsage().external); } });
 new client.Gauge({ name: 'mcp_active_sessions', help: 'Sessions currently held in the session map.', collect() { this.set(sessions.size); } });
@@ -466,9 +529,21 @@ const sessionRequest = async (req, res) => {
 app.get('/mcp', sessionRequest);
 app.delete('/mcp', sessionRequest);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms, ignoreCancel=${IGNORE_CANCEL}` +
+if (STDIO) {
+  // One session per process: one McpServer on stdin/stdout.
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error(`${SERVER_NAME} on stdio (pid ${process.pid}, persona=${PERSONA}, ignoreCancel=${IGNORE_CANCEL}` +
     (TRACK_CALLS ? `, tracking calls in ${CALL_LOG} (${executions.size} known), dedupe=${DEDUPE}` : '') + ')');
-});
+  if (PERSONA === 'noisy') process.stdout.write(`${SERVER_NAME} started (pid ${process.pid})\n`); // the classic mistake
+  // The client closed our stdin: it is gone, so are we.
+  process.stdin.on('end', () => server.close().finally(() => process.exit(0)));
+} else {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`${SERVER_NAME} listening on :${PORT} (LEAK=${LEAK}, auth=${REQUIRE_AUTH_URL || 'off'}, idle=${SESSION_IDLE_MS}ms, ignoreCancel=${IGNORE_CANCEL}` +
+      (TRACK_CALLS ? `, tracking calls in ${CALL_LOG} (${executions.size} known), dedupe=${DEDUPE}` : '') + ')');
+  });
+}
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));

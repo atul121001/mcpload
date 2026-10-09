@@ -54,7 +54,7 @@ export const options = {
 export function setup() {
   if (!SLOW.length) throw new Error('SLOW_TOOLS is empty: name the slow tool(s) to compare against');
   console.log(
-    `isolation -> ${config.url}: ${PHASE_S}s solo (mix without ${SLOW.join(', ')}), then ${PHASE_S}s mixed, ${VUS} VUs each`,
+    `isolation -> ${config.target}: ${PHASE_S}s solo (mix without ${SLOW.join(', ')}), then ${PHASE_S}s mixed, ${VUS} VUs each`,
   );
 }
 

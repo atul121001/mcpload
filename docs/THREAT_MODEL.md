@@ -2,7 +2,7 @@
 
 This document is for people who need to decide whether mcpload is safe to run in their environment: security reviewers, platform teams and careful users. It describes what mcpload touches, what data goes where, what is stored or logged, the defaults, and what we recommend. It also lists the [known limitations](#known-limitations) we haven't fixed.
 
-It describes mcpload **v0.5.x**. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+It describes mcpload **v0.5.x**, plus the stdio transport that will ship in v0.6.0 ([section 12](#12-local-stdio-servers-mcpload-runs-your-command), unreleased). To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 ## Contents
 
@@ -20,6 +20,7 @@ It describes mcpload **v0.5.x**. To report a vulnerability, see [SECURITY.md](..
 - [9. Embedded engine and scenario extraction](#9-embedded-engine-and-scenario-extraction)
 - [10. GitHub Action](#10-github-action)
 - [11. Demo servers](#11-demo-servers)
+- [12. Local (stdio) servers: mcpload runs your command](#12-local-stdio-servers-mcpload-runs-your-command)
 - [Known limitations](#known-limitations)
 
 ## The system in one picture
@@ -29,6 +30,7 @@ It describes mcpload **v0.5.x**. To report a vulnerability, see [SECURITY.md](..
                                                          |
   mcpload CLI --starts--> engine (k6 + xk6-mcpload)      |
     |                       runs a scenario script ------+--> MCP server under test   (--url)
+    |                         '-- starts as subprocesses ---> local MCP server     (--command, v0.6.0)
     |                       (JavaScript, sees the env) --+--> OAuth token endpoint    (OAUTH_TOKEN_URL)
     |-- --wait-ready probe ------------------------------+--> MCP server under test
     |-- --sampler prometheus ----------------------------+--> /metrics URL            (--prom-url)
@@ -62,6 +64,7 @@ Nothing is sent anywhere except to the URLs you configure. mcpload has no teleme
 | Actor | Trusted? | Notes |
 |---|---|---|
 | You, the operator, and the files you pass (`--scenario`, `--workload`, `--baseline`, env) | trusted | A scenario script is code. Anything you pass on the command line is assumed to be intended. |
+| The command you give to `--command` (stdio, v0.6.0) | trusted, like any program you run | mcpload runs it with your permissions and environment. Its *output* (stdout, stderr) is treated like any MCP server's: not trusted. See [section 12](#12-local-stdio-servers-mcpload-runs-your-command). |
 | The MCP server under test | **not trusted** for the client's safety | In CI it is often built from the pull request being tested, so its responses, tool names and error messages are attacker-controllable whenever the PR is. See [section 4](#4-a-malicious-or-compromised-mcp-server). |
 | The OAuth token endpoint, the Prometheus endpoint, the `--calls-url` endpoint | trusted for their own purpose | They get credentials (token endpoint) or influence verdicts. |
 | The upload server (`--upload-url`) | trusted with report contents and the API key | |
@@ -310,6 +313,19 @@ The servers in `demo-servers/` and the `ghcr.io/atul121001/mcpload-demo-*` image
 - Keep it that way: never change the bindings to `0.0.0.0`, never run them on a shared or internet-facing host, and never use their images or credentials for anything else.
 - With Docker's `--network host`, or from another container on the same Docker network, they are reachable without going through those bindings.
 - Issues in the demo servers are out of scope for security reports (see [SECURITY.md](../SECURITY.md#scope)).
+
+## 12. Local (stdio) servers: mcpload runs your command
+
+*v0.6.0, unreleased.* With `--command` (or `command` in a script) mcpload starts a program on your machine and speaks MCP over its stdin and stdout ([guide](guide/stdio.md)).
+
+- **Same trust as running it yourself.** The program runs with your user's permissions, in `--command-cwd` (default: the current folder), once per session: `--vus 50` means up to 50 copies at once. A launcher such as `npx -y <package>` or `uvx <package>` downloads and runs whatever that package name resolves to at the time. Only give mcpload commands you would run yourself, and pin package versions.
+- **No shell.** The program and its arguments are started directly, so shell syntax in `--command` (`;`, `|`, `$(...)`, globbing) is not interpreted.
+- **Environment.** The server process inherits mcpload's environment, including any credentials you exported for mcpload (`MCP_TOKEN`, `OAUTH_CLIENT_SECRET`, `MCPLOAD_KEY`, cloud credentials), plus the `--command-env` variables. Don't export secrets the server should not see into the shell you run mcpload from.
+- **Env values are never logged.** `--command-env` values are not printed and not written to `report.json`, `report.html` or metric tags. As with `--env`, a value on mcpload's own command line is visible to other local users ([L1](#known-limitations)); export it instead when that matters.
+- **Arguments are not secret.** The command and its arguments are recorded in `report.json` (`run.target.command`) and printed in the scenario's start-up line, and they are visible in the process list. **Don't put secrets in arguments**; pass them through the environment.
+- **Server output.** Lines on stdout that are not JSON-RPC are skipped and counted, never executed. The last part of the server's stderr (up to 2 KiB) is included in the error message when the process exits or fails to start, so whatever the server logs there (including a secret it prints) can reach the run output and CI logs. Response size limits are the same as over HTTP (none for successful responses; see [section 4](#4-a-malicious-or-compromised-mcp-server)); stdout lines over 16 MiB are skipped.
+- **Clean-up.** Each process gets its own process group (Unix) or job object (Windows); closing a session closes stdin, waits up to 2 s, then kills the whole tree. A `docker run` command is a client of the Docker daemon: killing it does not always stop the container, so use `-i --rm` and a server that exits when stdin closes.
+- **Not on a shared runner with untrusted input.** In CI, a `--command` built from a pull request runs that pull request's code on the runner, with the job's environment. That is no different from running the PR's tests, but keep secrets out of such jobs.
 
 ---
 

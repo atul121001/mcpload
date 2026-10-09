@@ -90,7 +90,7 @@ export const options = {
 
 export function setup() {
   const plan = PLAN.steps.map((st) => `${st.name}(${st.calls.map((c) => c.tool + (c.repeat > 1 ? `x${c.repeat}` : c.forEach ? '*' : '')).join(',')})`);
-  console.log(`agent-workflow -> ${config.url} (protocol ${config.protocol}): ${plan.join(' -> ')}`);
+  console.log(`agent-workflow -> ${config.target} (protocol ${config.protocol}): ${plan.join(' -> ')}`);
 }
 
 let logged = 0;

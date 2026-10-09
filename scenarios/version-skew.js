@@ -41,10 +41,12 @@
 //                                                            replica that answered the handshake (cached: none sent)
 import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
-import { config, env, envNum } from './lib/config.js';
+import { config, env, envNum, requireHttp } from './lib/config.js';
 import { makeClient } from './lib/session.js';
 import { planTools, pick } from './lib/tools.js';
 import { classifyFailure, parseTtlMs, ToolListCache } from './lib/skew.js';
+
+requireHttp('version-skew', 'it targets mixed server versions behind one URL');
 
 const STEPS = Math.max(1, Math.floor(envNum('STEPS', 6)));
 const FAIL_FAST_MS = envNum('FAIL_FAST_MS', 2000);
@@ -113,7 +115,7 @@ function toolTable(listed) {
 
 export function setup() {
   console.log(
-    `version-skew -> ${config.url} (protocol ${config.protocol}${REMEMBER ? ', remembered across sessions' : ', negotiated per session'}, ` +
+    `version-skew -> ${config.target} (protocol ${config.protocol}${REMEMBER ? ', remembered across sessions' : ', negotiated per session'}, ` +
       `${STEPS} calls per session, tools/list cache ${TTL_MS ? `${TTL_MS} ms` : 'off'}, fast < ${FAIL_FAST_MS} ms, hang >= ${HANG_MS} ms or timeout ${config.timeout})`,
   );
 }
