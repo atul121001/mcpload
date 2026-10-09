@@ -464,6 +464,9 @@ func TestFreshSessionDoesNotForget(t *testing.T) {
 // TTFB is recorded (race-free) when headers arrive but the body times out.
 func TestTTFBOnErrorPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Headers after a few ms, so that TTFB is above the clock resolution
+		// (it measured 0 on Windows when they came back at once).
+		time.Sleep(5 * time.Millisecond)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()

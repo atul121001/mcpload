@@ -40,6 +40,27 @@ jobs:
           path: xk6-mcpload/k6
           retention-days: 7
 
+  # The stdio transport starts and kills server processes with OS-specific code
+  # (process groups on Unix, job objects on Windows): test the client there too.
+  go-os:
+    name: go client (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: xk6-mcpload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: xk6-mcpload/go.mod
+          cache-dependency-path: xk6-mcpload/go.sum
+      - run: go vet ./client/
+      - run: go test ./client/
+
   report:
     name: report (schema + examples)
     runs-on: ubuntu-latest
