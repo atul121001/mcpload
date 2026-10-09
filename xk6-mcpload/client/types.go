@@ -62,6 +62,17 @@ const (
 	// ErrCancelled: the client cancelled the call itself (CallOptions.CancelAfter).
 	// It is not a server error: such calls are not counted in mcp_errors.
 	ErrCancelled = "cancelled"
+	// ErrProcessSpawn: the stdio server process could not be started.
+	ErrProcessSpawn = "process_spawn"
+	// ErrProcessExit: the stdio server process exited (or closed its stdout)
+	// while the request was pending, or before it was sent.
+	ErrProcessExit = "process_exit"
+)
+
+// Transports (RequestStats.Transport, ConnectStats.Transport).
+const (
+	TransportHTTP  = "http"
+	TransportStdio = "stdio"
 )
 
 // IsStateless reports whether a protocol version uses the stateless
@@ -165,14 +176,16 @@ type ToolResult struct {
 	Cancelled bool
 }
 
-// RequestStats describes one HTTP exchange performed by the client.
+// RequestStats describes one exchange performed by the client: an HTTP
+// request, or one message (and its response) over stdio.
 type RequestStats struct {
 	Method    string // JSON-RPC method, or "DELETE" for session termination
 	Tool      string // tool name for tools/call, else ""
 	Resource  string // `resource` tag of resources/read (see resources.go), else ""
 	Prompt    string // `prompt` tag of prompts/get (see resources.go), else ""
 	Protocol  string
-	Status    int    // HTTP status; 0 when no response was received
+	Transport string // TransportStdio, or "" for streamable HTTP
+	Status    int    // HTTP status; 0 when no response was received, and always 0 over stdio
 	ErrorType string // "" on success
 	Start     time.Time
 	TTFB      time.Duration
@@ -186,10 +199,13 @@ type RequestStats struct {
 type ConnectStats struct {
 	Method    string // "initialize", "server/discover" or "" when no call was needed
 	Protocol  string
+	Transport string // TransportStdio, or "" for streamable HTTP
 	Status    int
 	ErrorType string
 	Start     time.Time
-	Duration  time.Duration
+	Duration  time.Duration // includes Spawn
+	// Spawn is the time to start the stdio server process (0 over HTTP).
+	Spawn time.Duration
 }
 
 // TokenStats describes one OAuth token fetch.

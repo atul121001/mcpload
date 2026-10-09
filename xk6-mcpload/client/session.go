@@ -18,6 +18,15 @@ const Version = "0.1.0"
 // Options configures a Session.
 type Options struct {
 	URL string
+	// Command, when set, selects the stdio transport (stdio.go): the program
+	// and its arguments, started directly (never through a shell). URL,
+	// Headers, Auth, HTTPClient, ProtocolCache and ServedByHeader are then
+	// unused.
+	Command []string
+	// Env is added to the inherited environment of the stdio server process.
+	Env map[string]string
+	// Dir is the working directory of the stdio server process ("" = ours).
+	Dir string
 	// Protocol is "auto", "2026-07-28" (stateless) or a stateful version such
 	// as "2025-06-18". Empty means "auto".
 	Protocol string
@@ -84,6 +93,8 @@ type Session struct {
 	fromCache atomic.Bool
 	// res remembers listed resources and templates (resources.go).
 	res resourceIndex
+	// stdio is the server process of a stdio session, nil over HTTP.
+	stdio *stdioConn
 }
 
 type observerKey struct{}
@@ -166,7 +177,26 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 
 	var err *Error
 	var status int
+	if len(opts.Command) > 0 {
+		cs.Transport = TransportStdio
+		if opts.Command[0] == "" {
+			err = &Error{Type: ErrProcessSpawn, Message: "empty command"}
+		} else {
+			s.stdio, err = startStdio(opts, obs)
+		}
+		cs.Spawn = time.Since(start)
+		if err != nil {
+			cs.ErrorType, cs.Duration = err.Type, time.Since(start)
+			obs.OnConnect(cs)
+			return nil, err
+		}
+		s.stdio.onServerRequest = s.answer
+	}
 	switch {
+	case s.stdio != nil && opts.Protocol == ProtocolAuto:
+		// No server/discover probe over stdio: that is an HTTP transport rule.
+		cs.Method = "initialize"
+		status, err = s.initialize(ctx, opts.FallbackVersion)
 	case opts.Protocol == ProtocolAuto && opts.ProtocolCache != nil:
 		pc := opts.ProtocolCache
 		if res, ok := pc.Load(opts.URL, opts.Protocol, opts.FallbackVersion); ok {
@@ -202,6 +232,9 @@ func Connect(ctx context.Context, opts Options) (*Session, error) {
 	cs.Duration = time.Since(start)
 	if err != nil {
 		cs.ErrorType = err.Type
+		if s.stdio != nil {
+			s.stdio.close()
+		}
 		obs.OnConnect(cs)
 		return nil, err
 	}
@@ -733,6 +766,10 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	obs := s.obs(ctx)
 	defer obs.OnSessionClose()
+	if s.stdio != nil {
+		s.stdio.close()
+		return nil
+	}
 	if s.stateless || s.sessionID == "" {
 		return nil
 	}

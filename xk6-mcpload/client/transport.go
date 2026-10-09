@@ -78,6 +78,9 @@ type exchangeResult struct {
 
 // post performs one JSON-RPC exchange. It never retries.
 func (s *Session) post(ctx context.Context, ex exchange) exchangeResult {
+	if s.stdio != nil {
+		return s.stdioPost(ctx, ex)
+	}
 	res := exchangeResult{stats: RequestStats{Method: ex.method, Tool: ex.tool, Protocol: s.protocolTag(ex)}}
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: ex.id, Method: ex.method, Params: ex.params})
 	if err != nil {
