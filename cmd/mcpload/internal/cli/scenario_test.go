@@ -11,6 +11,10 @@ import (
 // TestMain hides the built-in scenarios so lookups only see the test folders,
 // also in -tags embedengine builds; tests that need them call stubBuiltin.
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeK6Env) == "1" {
+		// Started by a test as the engine (see stdio_run_test.go).
+		os.Exit(fakeK6(os.Args[1:]))
+	}
 	builtinScenariosDir = func() (string, error) { return "", errors.New("no built-in scenarios in tests") }
 	os.Exit(m.Run())
 }

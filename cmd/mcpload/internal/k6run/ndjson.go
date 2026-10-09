@@ -166,6 +166,7 @@ type Aggregator struct {
 	// steps holds per-step aggregates keyed by the StepTag value (step-load).
 	steps  map[string]*stepAgg
 	cancel cancelAgg
+	proc   procAgg
 	// res holds what the long-lived and reconnect-storm verdicts need.
 	res         resilienceAgg
 	first, last time.Time
@@ -335,6 +336,8 @@ func (a *Aggregator) add(l *line) error {
 		if p := tags["protocol"]; p != "" && tags["error_type"] == "" && strings.HasPrefix(tags["status"], "2") {
 			a.protoOK[p]++
 		}
+	case MetricProcessSpawnDuration, MetricProcessesOpen, MetricStdoutInvalidLines, MetricProcessExits:
+		a.proc.add(l.Metric, v, tags)
 	case MetricCancellations, MetricCancelDuration, MetricCancelLate:
 		a.cancel.add(l.Metric, v, tags)
 	}

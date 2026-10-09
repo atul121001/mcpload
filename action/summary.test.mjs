@@ -37,6 +37,13 @@ assert.ok(wmd.includes('**No regression:**'));
 assert.ok(wmd.includes('> ⚠ scenario differs (baseline soak, current burst); the comparison may be unfair'));
 assert.ok(wmd.includes('| memory growth | 1.1 MiB | 8.2 MiB | +7.1 MiB (+645%) | not judged: needs 2+ min of load after the first 60 s |'));
 
+// A stdio run names the server command instead of a url.
+const stdio = JSON.parse(read('../report/examples/healthy.json'));
+stdio.run.target = { command: ['node', 'server.mjs', '--port', '0'], transport: 'stdio' };
+const smd = renderMarkdown(stdio);
+assert.ok(smd.includes('— node server.mjs --port 0'), smd.split('\n')[0]);
+assert.ok(smd.includes('**Target** stdio `node server.mjs --port 0`'));
+
 // The script writes regressed=true|false for the action output.
 const dir = mkdtempSync(join(tmpdir(), 'mcpload-summary-'));
 writeFileSync(join(dir, 'r.json'), JSON.stringify(report));

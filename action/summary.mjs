@@ -184,12 +184,15 @@ export function renderMarkdown(report, o = {}) {
   const res = overall(report);
   const run = report.run || {};
   const target = run.target || {};
-  const name = target.label || target.url || 'MCP server';
+  // A stdio run has the server command instead of a url.
+  const command = Array.isArray(target.command) ? target.command.join(' ') : '';
+  const where = target.url || command;
+  const name = target.label || where || 'MCP server';
   const verdictWord = res.passed ? (res.warnings ? 'PASS (with warnings)' : 'PASS') : 'FAIL';
   lines.push(`## ${o.title || 'mcpload'}: ${verdictWord} — ${cell(name)}`, '');
 
   const facts = [
-    `**Target** \`${cell(target.url || '?')}\``,
+    `**Target** ${!target.url && command ? 'stdio ' : ''}\`${cell(where || '?')}\``,
     `**Scenario** \`${cell(run.scenario || '?')}\``,
     `**Protocol** \`${cell(run.protocol || '?')}\``,
     `**Duration** ${fmtDur(run.durationS)}`,
