@@ -1,5 +1,5 @@
 // Package mcpload is a k6 extension (JS import "k6/x/mcpload") for load
-// testing remote MCP servers over streamable HTTP.
+// testing MCP servers over streamable HTTP or stdio.
 package mcpload
 
 import (
@@ -83,7 +83,19 @@ func (mi *ModuleInstance) newClient(call sobek.ConstructorCall) *sobek.Object {
 	must(rt, obj.Set("connect", c.connect))
 	must(rt, obj.Set("url", c.opts.URL))
 	must(rt, obj.Set("protocol", c.opts.Protocol))
+	must(rt, obj.Set("transport", c.transport()))
+	if len(c.opts.Command) > 0 {
+		must(rt, obj.Set("command", c.opts.Command))
+	}
 	return obj
+}
+
+// transport is the `transport` tag of the client's sessions.
+func (c *jsClient) transport() string {
+	if len(c.opts.Command) > 0 {
+		return client.TransportStdio
+	}
+	return client.TransportHTTP
 }
 
 func must(rt *sobek.Runtime, err error) {
@@ -94,17 +106,47 @@ func must(rt *sobek.Runtime, err error) {
 
 func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 	if common.IsNullish(v) {
-		return errors.New("options object with a url is required")
+		return errors.New("options object with a url or a command is required")
 	}
 	raw, ok := v.Export().(map[string]any)
 	if !ok {
 		return errors.New("options must be an object")
 	}
 	o := client.Options{Protocol: client.ProtocolAuto, Timeout: 30 * time.Second}
+	var args []string
 	for k, val := range raw {
 		switch k {
 		case "url":
-			o.URL = fmt.Sprint(val)
+			if val != nil {
+				o.URL = fmt.Sprint(val)
+			}
+		case "command":
+			if val == nil {
+				continue
+			}
+			cmd, err := parseCommand(val)
+			if err != nil {
+				return err
+			}
+			o.Command = cmd
+		case "args":
+			a, err := stringList(val)
+			if err != nil {
+				return fmt.Errorf("args must be an array of strings: %w", err)
+			}
+			args = a
+		case "env":
+			env, err := parseEnv(val)
+			if err != nil {
+				return err
+			}
+			o.Env = env
+		case "cwd":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("cwd must be a string, got %s", jsType(val))
+			}
+			o.Dir = s
 		case "protocol":
 			o.Protocol = fmt.Sprint(val)
 		case "fallbackVersion":
@@ -183,11 +225,129 @@ func (c *jsClient) parseOptions(rt *sobek.Runtime, v sobek.Value) error {
 	if err := client.ValidateFallbackVersion(o.FallbackVersion); err != nil {
 		return err
 	}
-	if o.URL == "" {
-		return errors.New("url is required")
+	if err := checkTransportOptions(raw, &o, args); err != nil {
+		return err
 	}
 	c.opts = o
 	return nil
+}
+
+// stdioOnly and httpOnly are the options that only make sense with one
+// transport; setting them with the other one is an error.
+var (
+	stdioOnly = []string{"args", "env", "cwd"}
+	httpOnly  = []string{"headers", "auth", "servedByHeader"}
+)
+
+// checkTransportOptions selects the transport: url (streamable HTTP) or
+// command (stdio), exactly one of them. args are appended to the command.
+func checkTransportOptions(raw map[string]any, o *client.Options, args []string) error {
+	hasURL := raw["url"] != nil
+	hasCmd := len(o.Command) > 0
+	switch {
+	case hasURL && hasCmd:
+		return errors.New("url and command are mutually exclusive: set url for a streamable HTTP server or command for a stdio server, not both")
+	case hasCmd:
+		for _, k := range httpOnly {
+			if raw[k] != nil {
+				return fmt.Errorf("%s is an HTTP option and cannot be used with command (stdio)", k)
+			}
+		}
+		o.Command = append(o.Command, args...)
+	default:
+		for _, k := range stdioOnly {
+			if raw[k] != nil {
+				return fmt.Errorf("%s needs command (it configures a stdio server process)", k)
+			}
+		}
+		if o.URL == "" {
+			return errors.New("url (streamable HTTP) or command (stdio) is required")
+		}
+	}
+	return nil
+}
+
+// parseCommand reads the command option: the program as a string, or the
+// program and its arguments as an array of strings. The program is started
+// directly, never through a shell.
+func parseCommand(v any) ([]string, error) {
+	switch t := v.(type) {
+	case string:
+		if t == "" {
+			return nil, errors.New("command must not be empty")
+		}
+		return []string{t}, nil
+	case []any:
+		l, err := stringList(t)
+		if err != nil {
+			return nil, fmt.Errorf("command must be a string or an array of strings: %w", err)
+		}
+		if len(l) == 0 || l[0] == "" {
+			return nil, errors.New("command array must start with a non-empty program name")
+		}
+		return l, nil
+	}
+	return nil, fmt.Errorf("command must be a string or an array of strings, got %s", jsType(v))
+}
+
+// stringList checks that v is an array of strings.
+func stringList(v any) ([]string, error) {
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("got %s", jsType(v))
+	}
+	out := make([]string, len(l))
+	for i, x := range l {
+		s, ok := x.(string)
+		if !ok {
+			return nil, fmt.Errorf("element %d is %s", i, jsType(x))
+		}
+		out[i] = s
+	}
+	return out, nil
+}
+
+// parseEnv reads the env option: an object of variables added to the
+// inherited environment. Numbers and booleans are converted to strings.
+func parseEnv(v any) (map[string]string, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("env must be an object of strings, got %s", jsType(v))
+	}
+	out := make(map[string]string, len(m))
+	for k, val := range m {
+		if k == "" || strings.ContainsAny(k, "=\x00") {
+			return nil, fmt.Errorf("env: invalid variable name %q", k)
+		}
+		switch t := val.(type) {
+		case string:
+			out[k] = t
+		case int64, float64, bool:
+			out[k] = fmt.Sprint(t)
+		default:
+			return nil, fmt.Errorf("env.%s must be a string, got %s", k, jsType(val))
+		}
+	}
+	return out, nil
+}
+
+// jsType names the JS type of an exported value, for error messages.
+func jsType(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "a string"
+	case int64, float64:
+		return "a number"
+	case bool:
+		return "a boolean"
+	case []any:
+		return "an array"
+	case map[string]any:
+		return "an object"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 func str(v any) string {
@@ -411,29 +571,46 @@ func (c *jsClient) connect() *sobek.Object {
 	if c.rememberProtocol {
 		opts.ProtocolCache = client.SharedProtocolCache
 	}
-	opts.HTTPClient = mi.httpClient()
-	opts.Observer = mi.emitter()
+	e := mi.emitter()
+	e.transport = c.transport()
+	var proc *procObserver
+	if len(opts.Command) > 0 {
+		opts.ProtocolCache = nil // keyed by URL; stdio never probes anyway
+		proc = newProcObserver(e)
+		opts.Observer = proc
+	} else {
+		opts.HTTPClient = mi.httpClient()
+		opts.Observer = e
+	}
 	s, err := client.Connect(mi.vu.Context(), opts)
 	if err != nil {
 		throwMCP(rt, client.AsError(err))
 	}
-	return newJSSession(mi, s, c.includePayloads)
+	return newJSSession(mi, s, c.includePayloads, proc)
 }
 
 type jsSession struct {
 	mi              *ModuleInstance
 	s               *client.Session
 	includePayloads bool
+	transport       string
+	// proc receives the stdio process events (nil over HTTP); every JS call
+	// points it at the call's emitter.
+	proc *procObserver
 }
 
-func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool) *sobek.Object {
+func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool, proc *procObserver) *sobek.Object {
 	rt := mi.vu.Runtime()
-	js := &jsSession{mi: mi, s: s, includePayloads: includePayloads}
+	js := &jsSession{mi: mi, s: s, includePayloads: includePayloads, transport: s.Transport(), proc: proc}
 	obj := rt.NewObject()
 	must(rt, obj.Set("protocol", s.Protocol()))
 	must(rt, obj.Set("sessionId", s.SessionID()))
 	must(rt, obj.Set("stateless", s.Stateless()))
 	must(rt, obj.Set("servedBy", s.ServedBy()))
+	must(rt, obj.Set("transport", s.Transport()))
+	if pid := s.PID(); pid != 0 {
+		must(rt, obj.Set("pid", pid))
+	}
 	must(rt, obj.Set("listTools", js.listTools))
 	must(rt, obj.Set("callTool", js.callTool))
 	must(rt, obj.Set("callParallel", js.callParallel))
@@ -447,7 +624,17 @@ func newJSSession(mi *ModuleInstance, s *client.Session, includePayloads bool) *
 	return obj
 }
 
-func (js *jsSession) ctx() (ctxObs client.Observer) { return js.mi.emitter() }
+// ctx returns the observer of one JS call: an emitter with the VU's current
+// tags and the session's transport. Over stdio, later process events go to
+// it too (see procObserver).
+func (js *jsSession) ctx() (ctxObs client.Observer) {
+	e := js.mi.emitter()
+	e.transport = js.transport
+	if js.proc != nil {
+		js.proc.use(e)
+	}
+	return e
+}
 
 func (js *jsSession) listTools() sobek.Value {
 	rt := js.mi.vu.Runtime()
