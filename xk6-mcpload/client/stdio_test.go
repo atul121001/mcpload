@@ -466,3 +466,20 @@ func TestStdioCloseKillsChildren(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestStdioEnvWithholdsCredentials(t *testing.T) {
+	t.Setenv("MCPLOAD_KEY", "k")
+	t.Setenv("MCP_TOKEN", "t")
+	t.Setenv("MCPLOAD_OTHER", "kept")
+	env := strings.Join(stdioEnv(map[string]string{"OAUTH_CLIENT_SECRET": "explicit"}), "\n")
+	for _, bad := range []string{"MCPLOAD_KEY=", "MCP_TOKEN="} {
+		if strings.Contains(env, bad) {
+			t.Errorf("%s inherited", bad)
+		}
+	}
+	for _, want := range []string{"MCPLOAD_OTHER=kept", "OAUTH_CLIENT_SECRET=explicit"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("%s missing", want)
+		}
+	}
+}

@@ -59,7 +59,7 @@ Everything above the wire (handshake, tools, resources, prompts, `callParallel`,
 - A stdout line that is not a JSON-RPC message (a log on stdout corrupts the protocol) is skipped and counted (`mcp_stdout_invalid_lines`, verdict `stdout_pollution`).
 - When the process exits, every pending request fails with error type `process_exit` (exit code and the tail of stderr in the message).
 
-The CLI passes the target to scenarios as `MCP_COMMAND` (JSON array: program and arguments), `MCP_COMMAND_ENV` (JSON object, added to the inherited environment) and `MCP_COMMAND_CWD`; `scenarios/lib/config.js` turns them into the client options. Its default sampler for stdio is `process` (§6). `lb-check`, `version-skew`, `--chaos-restart` and `--calls-url` need an HTTP target and are rejected.
+The CLI passes the target to scenarios as `MCP_COMMAND` (JSON array: program and arguments), `MCP_COMMAND_ENV` (JSON object, added to the inherited environment, which leaves out `MCPLOAD_KEY`, `MCP_TOKEN` and `OAUTH_CLIENT_SECRET`) and `MCP_COMMAND_CWD`; `scenarios/lib/config.js` turns them into the client options. Its default sampler for stdio is `process` (§6). `lb-check`, `version-skew`, `--chaos-restart` and `--calls-url` need an HTTP target and are rejected.
 
 Numbers from a stdio run measure the server process and the host it shares with the load generator, not a network, and are not comparable with HTTP latencies. User guide: [stdio servers](guide/stdio.md).
 

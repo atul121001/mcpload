@@ -16,7 +16,7 @@ Everything that works over HTTP above the wire works the same way: tool mixes, p
 
 - **One session is one process**, as in desktop MCP clients. Every time a simulated agent connects, mcpload starts your command; when the agent closes the session, mcpload closes the server's stdin, waits briefly for it to exit, then stops it. `--vus 20` means up to 20 copies of your server running at once, on the machine that runs mcpload.
 - **The command is started directly, never through a shell.** No pipes, `&&`, globbing or `$VARS` in `--command`. Launchers such as `npx` and `uvx` work; mcpload stops the whole process tree they start.
-- **Environment and folder.** The server inherits mcpload's environment. Add variables with `--command-env KEY=VALUE` (repeatable) and set its working folder with `--command-cwd DIR`.
+- **Environment and folder.** The server inherits mcpload's environment, except mcpload's own credentials (`MCPLOAD_KEY`, `MCP_TOKEN`, `OAUTH_CLIENT_SECRET`). Add variables with `--command-env KEY=VALUE` (repeatable) and set its working folder with `--command-cwd DIR`.
 - **Handshake.** `initialize` is sent straight away (the `server/discover` probe is an HTTP rule). Cancellation sends `notifications/cancelled` on stdin.
 - `--transport stdio` (or `http`, default `auto`) makes the choice explicit.
 

@@ -176,10 +176,30 @@ func startStdio(opts Options, obs Observer) (*stdioConn, *Error) {
 	return c, nil
 }
 
-// stdioEnv is the parent's environment plus env (sorted, so that the result
-// is deterministic; exec keeps the last value of a duplicated key).
+// withheldEnv are mcpload's own credentials: the upload key and the HTTP
+// target's token and OAuth secret. They mean nothing to a stdio server, so
+// they are not inherited (Options.Env can still pass them on purpose).
+var withheldEnv = []string{"MCPLOAD_KEY", "MCP_TOKEN", "OAUTH_CLIENT_SECRET"}
+
+// stdioEnv is the parent's environment, without withheldEnv, plus env
+// (sorted, so that the result is deterministic; exec keeps the last value of
+// a duplicated key).
 func stdioEnv(env map[string]string) []string {
-	out := os.Environ()
+	var out []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		withheld := false
+		for _, w := range withheldEnv {
+			// Windows environment names are case-insensitive.
+			if strings.EqualFold(name, w) {
+				withheld = true
+				break
+			}
+		}
+		if !withheld {
+			out = append(out, kv)
+		}
+	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
