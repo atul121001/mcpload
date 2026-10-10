@@ -141,7 +141,7 @@ func parseVersion(out string) string {
 
 // EnvArgs turns KEY=VALUE pairs into k6 `-e` flags.
 func EnvArgs(env []string) []string {
-	args := make([]string, 0, 2*len(env))
+	var args []string
 	for _, kv := range env {
 		args = append(args, "-e", kv)
 	}
