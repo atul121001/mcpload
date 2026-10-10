@@ -2,7 +2,7 @@
 
 This document is for people who need to decide whether mcpload is safe to run in their environment: security reviewers, platform teams and careful users. It describes what mcpload touches, what data goes where, what is stored or logged, the defaults, and what we recommend. It also lists the [known limitations](#known-limitations) we haven't fixed.
 
-It describes mcpload **v0.5.x**, plus the stdio transport that will ship in v0.6.0 ([section 12](#12-local-stdio-servers-mcpload-runs-your-command), unreleased). To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+It describes mcpload **v0.6.x**, including the stdio transport ([section 12](#12-local-stdio-servers-mcpload-runs-your-command)). To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 ## Contents
 
@@ -239,20 +239,20 @@ A name in `TOOL_MIX` that the server doesn't list is skipped with a warning and 
 
 Neither script uses `sudo` or administrator rights, and neither runs anything as another user.
 
-**What the checksum protects.** `checksums.txt` comes from the same GitHub release as the archive. The check catches a corrupted or truncated download and tampering between GitHub and you; it does **not** protect against a compromised release, because an attacker who can replace the archive can replace `checksums.txt` too. Release assets are not signed (no Sigstore/cosign signatures or GitHub artifact attestations as of v0.5.0). The Homebrew formula pins the same SHA-256 values.
+**What the checksum protects.** `checksums.txt` comes from the same GitHub release as the archive. The check catches a corrupted or truncated download and tampering between GitHub and you; it does **not** protect against a compromised release, because an attacker who can replace the archive can replace `checksums.txt` too. Release assets are not signed (no Sigstore/cosign signatures or GitHub artifact attestations as of v0.6.0). The Homebrew formula pins the same SHA-256 values.
 
 **Piping a script into a shell** (`curl ... | sh`, `irm ... | iex`) runs whatever the server returns, from the `main` branch. Both scripts wrap everything in a function that is called on the last line, so a truncated download does nothing. If you'd rather look first:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/atul121001/mcpload/main/install.sh
 less install.sh
-MCPLOAD_VERSION=v0.5.0 sh install.sh
+MCPLOAD_VERSION=v0.6.0 sh install.sh
 ```
 
 ```powershell
 irm https://raw.githubusercontent.com/atul121001/mcpload/main/install.ps1 -OutFile install.ps1
 notepad install.ps1
-$env:MCPLOAD_VERSION = 'v0.5.0'; .\install.ps1
+$env:MCPLOAD_VERSION = 'v0.6.0'; .\install.ps1
 ```
 
 **Recommendations:** pin `MCPLOAD_VERSION` (or download the script from a release tag rather than `main`) so that a later release can't change what you install; in high-assurance environments, download the release archive yourself and compare its SHA-256 with a value you recorded out of band, or build from source.
@@ -293,7 +293,7 @@ The Action uses `github-token` (default: the job's `GITHUB_TOKEN`) to list and u
 
 **`pull_request_target`.** Don't run mcpload from `pull_request_target` (or `workflow_run`) on code from untrusted pull requests. Those events run with a write token and your secrets; if the workflow checks out the PR, builds its server and passes secrets in `env`, the PR's code (its server, a `scenarios/` folder, a `docker-compose.yml`) runs with them. Use `pull_request`: PRs from forks then get a read-only token and no secrets, so posting the comment fails and the Action logs a warning instead.
 
-**Build from source.** The Action doesn't download release binaries. It builds the engine and the CLI from the action's own source at the ref you pinned (`uses: atul121001/mcpload/action@v0.5.0`), with `actions/setup-go` and `go install go.k6.io/xk6@<xk6-version>` (default `v1.4.14`); Go modules are fetched through the Go module proxy and verified against the Go checksum database. It doesn't pass a k6 version to `xk6 build`, so xk6 builds its default, the **latest** k6 release at build time (the release workflow and the Dockerfile pin k6 v2.3.0). The binaries are cached with `actions/cache` under a key that includes a hash of the source. Pin the action to a tag or, better, a full commit SHA.
+**Build from source.** The Action doesn't download release binaries. It builds the engine and the CLI from the action's own source at the ref you pinned (`uses: atul121001/mcpload/action@v0.6.0`), with `actions/setup-go` and `go install go.k6.io/xk6@<xk6-version>` (default `v1.4.14`); Go modules are fetched through the Go module proxy and verified against the Go checksum database. It doesn't pass a k6 version to `xk6 build`, so xk6 builds its default, the **latest** k6 release at build time (the release workflow and the Dockerfile pin k6 v2.3.0). The binaries are cached with `actions/cache` under a key that includes a hash of the source. Pin the action to a tag or, better, a full commit SHA.
 
 **Secrets.** Put credentials in the `env` input from `secrets` (`MCP_TOKEN=${{ secrets.MCP_TOKEN }}`) and the upload key in `api-key`. See [section 1](#1-tokens-and-credentials) for how they are passed and masked. Never put them in `url`, `label` or `extra-args`, which are echoed to the log. GitHub masks secrets in logs only; the PR comment, the job summary and the report artifact are not masked, which is why mcpload redacts URL credentials in the report.
 
@@ -316,7 +316,7 @@ The servers in `demo-servers/` and the `ghcr.io/atul121001/mcpload-demo-*` image
 
 ## 12. Local (stdio) servers: mcpload runs your command
 
-*v0.6.0, unreleased.* With `--command` (or `command` in a script) mcpload starts a program on your machine and speaks MCP over its stdin and stdout ([guide](guide/stdio.md)).
+*Since v0.6.0.* With `--command` (or `command` in a script) mcpload starts a program on your machine and speaks MCP over its stdin and stdout ([guide](guide/stdio.md)).
 
 - **Same trust as running it yourself.** The program runs with your user's permissions, in `--command-cwd` (default: the current folder), once per session: `--vus 50` means up to 50 copies at once. A launcher such as `npx -y <package>` or `uvx <package>` downloads and runs whatever that package name resolves to at the time. Only give mcpload commands you would run yourself, and pin package versions.
 - **No shell.** The program and its arguments are started directly, so shell syntax in `--command` (`;`, `|`, `$(...)`, globbing) is not interpreted.

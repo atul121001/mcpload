@@ -226,7 +226,7 @@ All pages: [docs/](docs/README.md).
 
 ## Status
 
-Early release (v0.5). Commands and options may change before 1.0. Today mcpload tests **remote and local (stdio) MCP servers** (stdio: [v0.6.0, unreleased](docs/guide/stdio.md); SSE is not supported) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
+Early release (v0.6). Commands and options may change before 1.0. Today mcpload tests **remote and local (stdio) MCP servers** (stdio since [v0.6.0](docs/guide/stdio.md); SSE is not supported) and **tools, resources and prompts**; its agents follow scripted plans rather than a real LLM, so runs are repeatable and free. Feedback and bug reports are welcome in [issues](https://github.com/atul121001/mcpload/issues).
 
 ## Contributing
 

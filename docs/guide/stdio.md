@@ -2,8 +2,6 @@
 
 [README](../../README.md) · [All docs](../README.md)
 
-> **v0.6.0 (unreleased).** stdio support is on the main branch but not in a release yet. Flags and metric names may still change before v0.6.0 ships.
-
 Most MCP servers people install today are local: a desktop client (Claude Desktop, an IDE, an agent framework) starts the server as a subprocess and talks to it over **stdin and stdout**. mcpload can test those servers too. You give it the command that starts your server instead of a URL:
 
 ```bash

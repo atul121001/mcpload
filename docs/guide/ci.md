@@ -27,7 +27,7 @@ jobs:
           comment-on-pr: 'true'
 ```
 
-`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.5.0` instead. All inputs and outputs are documented in [action/action.yml](../../action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](../../.github/workflows/example-pr-gate.yml) and [nightly soak](../../.github/workflows/example-nightly-soak.yml).
+`atul121001/mcpload-action` is the [GitHub Marketplace](https://github.com/atul121001/mcpload-action) entry for this repo's action. To pin an exact mcpload version, use `atul121001/mcpload/action@v0.6.0` instead. All inputs and outputs are documented in [action/action.yml](../../action/action.yml). If your server takes a while to start (loading models, filling connection pools), `wait-ready` (CLI: `--wait-ready 2m`) holds the test until it answers, and fails the step with exit code 2 if it never does. Working examples: [PR gate](../../.github/workflows/example-pr-gate.yml) and [nightly soak](../../.github/workflows/example-nightly-soak.yml).
 
 ## Compare with main
 
