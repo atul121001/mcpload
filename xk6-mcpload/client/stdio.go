@@ -415,12 +415,14 @@ func (c *stdioConn) wait() {
 		msg += "; stderr: " + tail
 	}
 	c.exitErr = &Error{Type: ErrProcessExit, Message: msg}
-	close(c.dead)
-	c.tree.release()
+	// Report before closing dead: Close returns once dead is closed, and an
+	// event that comes after the caller's iteration ended would be dropped.
 	if po, ok := c.obs.(ProcessObserver); ok {
 		po.OnProcessExit(ProcessExitStats{PID: c.pid, ExitCode: code, Expected: c.closing.Load(),
 			Lifetime: time.Since(c.started), StderrTail: tail})
 	}
+	close(c.dead)
+	c.tree.release()
 }
 
 // close ends the process: stdin is closed (the spec's shutdown signal), then

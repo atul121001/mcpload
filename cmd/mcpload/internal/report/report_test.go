@@ -252,6 +252,21 @@ func TestCheckStrictMatchesValidateMjs(t *testing.T) {
 		{"offset without colon valid", "", func(r *Report) { r.Run.StartedAt = "2026-09-29T15:00:00+0200" }},
 		{"bad verdict id", "verdicts[0].id", func(r *Report) { r.Verdicts[0].ID = "memory" }},
 		{"bad status", "status invalid", func(r *Report) { r.Verdicts[0].Status = "ok" }},
+		{"stdio target valid", "", func(r *Report) {
+			r.Run.Target = Target{Command: []string{"node", "server.mjs", "--token=REDACTED"}, Transport: TransportStdio, Label: "local"}
+			r.Series.Server.Sampler = SamplerProcess
+			r.Verdicts = append(r.Verdicts,
+				Verdict{ID: VerdictStdoutPollution, Status: StatusPass, Signal: "mcp_stdout_invalid_lines", Message: "ok"},
+				Verdict{ID: VerdictProcessExit, Status: StatusPass, Signal: "mcp_process_exits{expected:false}", Message: "ok"})
+		}},
+		{"http transport valid", "", func(r *Report) { r.Run.Target.Transport = TransportHTTP }},
+		{"no url nor command", "target.url", func(r *Report) { r.Run.Target = Target{Label: "x"} }},
+		{"stdio without command", "command is required", func(r *Report) { r.Run.Target.Transport = TransportStdio }},
+		{"http without url", "url is required", func(r *Report) {
+			r.Run.Target = Target{Command: []string{"node"}, Transport: TransportHTTP}
+		}},
+		{"bad transport", "transport must be", func(r *Report) { r.Run.Target.Transport = "ws" }},
+		{"bad sampler", "series.server.sampler", func(r *Report) { r.Series.Server.Sampler = "proc" }},
 		{"relative url", "target.url", func(r *Report) { r.Run.Target.URL = "/mcp" }},
 		{"url with space", "target.url", func(r *Report) { r.Run.Target.URL = "http://local host/mcp" }},
 		{"bad time", "startedAt", func(r *Report) { r.Run.StartedAt = "2026-09-29 13:00:00" }},

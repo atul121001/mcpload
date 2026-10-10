@@ -26,7 +26,7 @@ var (
 // RenderHTML writes the self-contained HTML report for r, injecting the JSON
 // exactly as report/render.mjs does: compact JSON with <, > and & escaped as
 // <, >, & inside <script type="application/json" id="report-data">
-// (first occurrence only), and <title> set to "mcpload · <label|url> · <scenario>"
+// (first occurrence only), and <title> set to "mcpload · <label|url|command> · <scenario>"
 // with <, >, & stripped. r is normalized first; it is not validated.
 func RenderHTML(r *Report, w io.Writer) error {
 	r.Normalize()
@@ -44,7 +44,7 @@ func RenderHTML(r *Report, w io.Writer) error {
 
 	label := r.Run.Target.Label
 	if label == "" {
-		label = r.Run.Target.URL
+		label = r.Run.Target.Display()
 	}
 	if label == "" {
 		label = "report"

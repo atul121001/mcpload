@@ -42,8 +42,8 @@ The HTML template is embedded too, so Node isn't needed.
 ## Commands
 
 ```text
-mcpload run --url <mcp url> [--scenario <file.js|name>] [flags]
-mcpload capacity --url <mcp url> [--from 10] [--to 1000] [--factor 2 | --steps 10,25,50] [--step-duration 1m] [--refine N] [--target N] [flags]
+mcpload run --url <mcp url> | --command "<server command>" [--scenario <file.js|name>] [flags]
+mcpload capacity --url <mcp url> | --command "<server command>" [--from 10] [--to 1000] [--factor 2 | --steps 10,25,50] [--step-duration 1m] [--refine N] [--target N] [flags]
 mcpload render <report.json> <out.html>
 mcpload validate <report.json>
 mcpload upload --url <upload server base url> --key <api key> <report.json>
@@ -65,9 +65,13 @@ mcpload version
 | Flag | Default | Meaning |
 |---|---|---|
 | `--scenario` | `agent-session` | k6 script path (e.g. `scenarios/soak.js`, used as is) or a bundled scenario name (e.g. `soak`, `lb-check`). See [Choosing a scenario](#choosing-a-scenario). |
-| `--url` | (required) | MCP endpoint, passed to k6 as `MCP_URL` |
+| `--url` | (this or `--command` is required) | MCP endpoint, passed to k6 as `MCP_URL` |
+| `--command` | | stdio: the command of a local MCP server, e.g. `"node server.mjs"`. Each session starts its own server process and talks JSON-RPC over its stdin/stdout. Mutually exclusive with `--url`. See [Local stdio servers](#local-stdio-servers). |
+| `--command-env K=V` | | stdio: an environment variable for the server processes, repeatable. The values are never printed or written to the report. |
+| `--command-cwd` | current directory | stdio: working directory of the server processes |
+| `--transport` | `auto` | `auto`, `http` or `stdio`. `auto` is `stdio` with `--command`, else `http`. |
 | `--protocol` | `auto` | `MCP_PROTOCOL` |
-| `--sampler` | `none` | `none`, `docker` or `prometheus` |
+| `--sampler` | `none` (`process` with `--command`) | `none`, `docker`, `prometheus` or `process` (stdio only: RSS and open fds/handles summed over the live server processes) |
 | `--container` | | container name or id, for `--sampler docker` |
 | `--prom-url` | | Prometheus text endpoint, e.g. `http://localhost:3001/metrics`, for `--sampler prometheus` |
 | `--interval` | `10s` | sampling interval, which is also the width of the series buckets (use ≥ 5s with docker) |
@@ -208,9 +212,30 @@ MCPLOAD_KEY=... ./mcpload upload --url https://reports.example.com report.json
 6. Server points are averaged into the same buckets: `t` = bucket start in seconds from run start. Docker fills only `rssBytes`. Prometheus fills `rssBytes`, `heapBytes` (`nodejs_heap_size_used_bytes`, the prom-client default, falling back to `nodejs_heap_used_bytes`), `openFds` and `activeSessions`, with `null` where a metric is missing.
    There are `ceil(durationS / interval)` buckets. A trailing bucket that covers less than half an interval is dropped from every series, client and server alike. Its rps would otherwise show a false drop and skew the fits. The samples in it still count in `summary` and `tools[]`, and the other buckets don't change.
 7. Phases: for `soak`, they come from `SOAK_MIN`, `WARMUP_MIN` and `COOLDOWN_MIN`; for `long-lived`, from `WARMUP_MIN` (1), `SESSION_MIN` (10) and `COOLDOWN_MIN` (2). Any other scenario uses `warmupEndS = 0` and `loadEndS = cooldownEndS = durationS`.
-8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found` (skipped on a stateless 2026-07-28+ run with no 404s, since that protocol has no sessions), then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. A `long-lived` run adds `session_survival`, a run with `--chaos-restart` (or of `reconnect-storm`) adds `recovery`, and a run whose calls carry call ids (or with `--calls-url`) adds `call_integrity`. In a `version-skew` run (or any run that emits the `mcp_skew_*` metrics) it adds `version_skew` (see below). A `workload` run (`--workload`, or any run with a `WORKLOAD_FILE` that emits the `mcp_workload_*` metrics) adds `workload` and writes `report.json` `workload`. mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
+8. Verdicts are `analysis.Verdicts` (memory, session and fd leak, latency and error drift), then `session_not_found` (skipped on a stateless 2026-07-28+ run with no 404s, since that protocol has no sessions), then `threshold`, then `generator`. The `generator` verdict checks whether k6 kept up: dropped iterations and k6 CPU. A `fail` there gives exit 1 like any other verdict. In a `step-load` run (or any run whose requests carry a `step` tag) mcpload adds `capacity`, writes the per-step table to `report.json` `capacity` and skips `latency_drift` and `error_drift`. A `long-lived` run adds `session_survival`, a run with `--chaos-restart` (or of `reconnect-storm`) adds `recovery`, and a run whose calls carry call ids (or with `--calls-url`) adds `call_integrity`. In a `version-skew` run (or any run that emits the `mcp_skew_*` metrics) it adds `version_skew` (see below). A `workload` run (`--workload`, or any run with a `WORKLOAD_FILE` that emits the `mcp_workload_*` metrics) adds `workload` and writes `report.json` `workload`. A stdio run (`--command`) adds `stdout_pollution` and `process_exit` (see [Local stdio servers](#local-stdio-servers)). mcpload then runs `report.Check()` and writes the JSON and the HTML. It uploads when asked, but not when `report.Check()` failed; in that case it prints why and exits 2. Finally it prints the verdict lines and exits.
 
 Docker (`MemUsage`, which is the cgroup) and Prometheus (`process_resident_memory_bytes`) report RSS on different scales. Compare slopes only within one sampler.
+
+## Local stdio servers
+
+Many MCP servers are local programs that speak JSON-RPC over stdin/stdout. `--command` tests one of those instead of an HTTP endpoint:
+
+```bash
+mcpload run --command "node server.mjs" --command-env API_KEY=$API_KEY --scenario soak --soak-min 10
+```
+
+- **Command.** `--command` is split into program and arguments like a POSIX shell splits words, but never run through a shell: no variables, globs, pipes or redirection (those characters reach the program as they are). Spaces separate words; `'...'` is literal; inside `"..."`, `\"` and `\\` stand for `"` and `\`; outside quotes a backslash escapes a following space, quote or backslash and is kept before anything else, so Windows paths such as `C:\servers\mcp.exe` need no doubling (put UNC paths `\\host\share` in single quotes). `""` or `''` is an empty argument. When the program is a bare name that isn't on `PATH`, mcpload warns before the run.
+- **What the scenario gets.** `MCP_COMMAND` (a JSON array: program and arguments) and `MCP_COMMAND_CWD` (with `--command-cwd`) as `-e` values, like `MCP_URL`, and `MCP_URL` set empty. `MCP_COMMAND_ENV` (a JSON object of the `--command-env` variables, `{}` without any) goes into the k6 process environment instead, so the values never appear on a command line; `k6 run` passes the OS environment to the script. mcpload logs the variable names only. `--env` can't set these keys.
+- **Processes.** The engine starts one server process per session and records each live one as a file named by its pid in `MCPLOAD_PID_DIR`, a temporary directory mcpload creates for the run and deletes afterwards.
+- **`process` sampler** (the default with `--command`, unless `--sampler` is given): every `--interval`, the sum over the live processes of their resident memory (`rssBytes`) and open file descriptors (`openFds`). Linux reads `VmRSS` from `/proc/<pid>/status` and counts `/proc/<pid>/fd`; Windows uses the working set (`GetProcessMemoryInfo`) and the handle count (`GetProcessHandleCount`); macOS and the BSDs run `ps -o pid=,rss=` once per sample and report no fd count (`fd_leak` is then skipped; `lsof` per process per sample costs too much). Before the first process starts the samples are `null`, not 0. The leak verdicts read these series as they read docker's. Only the listed pids count: a launcher such as `npx` or a `.cmd` shim measures the launcher, not the server it starts, so point `--command` at the server itself (`node server.mjs`). The sum follows the number of live sessions, so judge leaks on a constant-load window (soak).
+- **Report.** `run.target.command` (program and arguments, with credential-looking values such as `--token=...` or URL passwords replaced by `REDACTED`) and `run.target.transport: "stdio"` instead of `run.target.url`. The HTML report and the PR summary show the command.
+- **Not for stdio.** `--wait-ready` is skipped with a note (there is no endpoint to wait for). The `lb-check` and `version-skew` scenarios, `--chaos-restart` and `--calls-url` need an HTTP server and exit 2 with an explanation.
+- **Verdicts.** A stdio run adds `stdout_pollution` and `process_exit`, and the `generator` verdict notes that the server processes share the machine's CPU with k6 (a note only; the status still comes from k6's numbers):
+
+| Verdict | Signal | Rule |
+|---|---|---|
+| `stdout_pollution` | `mcp_stdout_invalid_lines` | `fail` when the server wrote any line to stdout that is not a JSON-RPC message (over stdio, logs and banners belong on stderr); the message gives the count. `skipped` when the engine reported no process metrics. |
+| `process_exit` | `mcp_process_exits{expected:false}` | `fail` when any server process exited while its session was in use (a crash); the message gives the count and the exit codes. `pass` names how many processes started, their spawn p95 and how many exited normally. `skipped` when the engine reported no process metrics. |
 
 ## Version skew and the version_skew verdict
 

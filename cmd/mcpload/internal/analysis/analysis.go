@@ -711,6 +711,8 @@ func Verdicts(r *report.Report, cfg Config) []report.Verdict {
 // requested load: dropped/(iterations+dropped) above 1% warns and above 10%
 // fails; run.generator.cpuMaxPct above 90 warns. It is skipped when neither
 // summary.iterations/droppedIterations nor run.generator CPU data is present.
+// On stdio runs the message also notes that the server processes share the
+// host CPU with k6 (a note only; it does not change the status).
 func GeneratorVerdict(r *report.Report) report.Verdict {
 	const id = report.VerdictGenerator
 	v := report.Verdict{ID: id, Status: report.StatusPass}
@@ -758,11 +760,19 @@ func GeneratorVerdict(r *report.Report) report.Verdict {
 		}
 	}
 	if len(msgs) == 0 {
-		return skipped(id, "summary.droppedIterations", "no iteration counts or load-generator CPU data")
+		v = skipped(id, "summary.droppedIterations", "no iteration counts or load-generator CPU data")
+		if r.Run.Target.IsStdio() {
+			v.Message += " " + stdioGeneratorNote
+		}
+		return v
 	}
 	v.Signal = "run.generator.cpuMaxPct"
 	if droppedSignal || (haveDropped && v.Status == report.StatusPass) {
 		v.Signal = "summary.droppedIterations"
+	}
+	if r.Run.Target.IsStdio() {
+		// A note, not a failure mode: the status stays what k6's numbers say.
+		msgs = append(msgs, stdioGeneratorNote)
 	}
 	v.Message = strings.Join(msgs, " ")
 	return v
