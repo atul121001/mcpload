@@ -15,7 +15,7 @@ xk6 build --with github.com/atul121001/mcpload/xk6-mcpload=./xk6-mcpload --outpu
 Or build straight from a release, without cloning:
 
 ```bash
-xk6 build v2.3.0 --with github.com/atul121001/mcpload/xk6-mcpload@v0.5.0
+xk6 build v2.3.0 --with github.com/atul121001/mcpload/xk6-mcpload@v0.6.0
 ```
 
 Tests: `cd xk6-mcpload && go test ./... && go vet ./...`
@@ -24,7 +24,7 @@ Tests: `cd xk6-mcpload && go test ./... && go vet ./...`
 
 | xk6-mcpload | k6 | Go |
 |---|---|---|
-| v0.1.x – v0.5.x | v2.3.0 (`go.k6.io/k6/v2`) | 1.26+ |
+| v0.1.x – v0.6.x | v2.3.0 (`go.k6.io/k6/v2`) | 1.26+ |
 
 k6 v1 and earlier are not supported. Extension releases are tagged `xk6-mcpload/vX.Y.Z` (Go submodule tags) alongside the mcpload `vX.Y.Z` release tags.
 

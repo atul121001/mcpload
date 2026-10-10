@@ -13,7 +13,7 @@
 - [Scenarios and verdicts](guide/scenarios-and-verdicts.md): what mcpload checks, which test to run when, the built-in scenarios, and how to read every check in the result.
 - [Find your capacity](guide/capacity.md): `mcpload capacity` and the estimated number of agents your server can take.
 - [Workload profiles](guide/workloads.md): weighted business flows with test data and per-flow budgets, in one YAML file.
-- [Local (stdio) servers](guide/stdio.md): load-test a server that runs as a subprocess (`--command`): start-up cost, head-of-line blocking, per-process leaks and stdout pollution. v0.6.0, unreleased.
+- [Local (stdio) servers](guide/stdio.md): load-test a server that runs as a subprocess (`--command`): start-up cost, head-of-line blocking, per-process leaks and stdout pollution. Since v0.6.0.
 - [Use mcpload in CI](guide/ci.md): the GitHub Action, comparing every pull request with `main`, and the "soak-tested" badge.
 - [Advanced](guide/advanced.md): custom JavaScript scenarios, the metrics, and the repository layout.
 
