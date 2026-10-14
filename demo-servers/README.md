@@ -89,7 +89,7 @@ The skew targets use their own image tags (`mcpload-demo/ts-server:skew`, `mcplo
 
 ### Without a clone: `mcpload demo` and the published images
 
-Each release publishes these servers to GHCR, for `linux/amd64` and `linux/arm64`, tagged with the release version (`0.5.0`) and `latest`:
+Each release publishes these servers to GHCR, for `linux/amd64` and `linux/arm64`, tagged with the release version (`0.6.0`) and `latest`:
 
 | Image | Built from | Used by |
 |---|---|---|
@@ -144,7 +144,7 @@ docker stop mcpload-chaos-ts
 
 ### stdio mode (TS image)
 
-*v0.6.0, unreleased.* `--stdio` runs the same tools, resources and prompt over the MCP stdio transport (the SDK's `StdioServerTransport`): newline-delimited JSON-RPC on stdin and stdout, one session per process, no HTTP port and no `/metrics`. Every log goes to stderr. Pick a persona with `--persona <name>` (or `--persona=<name>`) or `PERSONA=<name>`; `LEAK=1` also selects `leaky`. An unknown persona exits with code 2.
+*Since v0.6.0.* `--stdio` runs the same tools, resources and prompt over the MCP stdio transport (the SDK's `StdioServerTransport`): newline-delimited JSON-RPC on stdin and stdout, one session per process, no HTTP port and no `/metrics`. Every log goes to stderr. Pick a persona with `--persona <name>` (or `--persona=<name>`) or `PERSONA=<name>`; `LEAK=1` also selects `leaky`. An unknown persona exits with code 2.
 
 | Persona | `serverInfo.name` | Behaviour | What mcpload should show |
 |---|---|---|---|

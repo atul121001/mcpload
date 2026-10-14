@@ -17,7 +17,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 | | **mcpload** | [JMeter MCP plugin](https://github.com/Blazemeter/jmeter-mcp-plugin) (BlazeMeter) | [xk6-mcp](https://github.com/dgzlopes/xk6-mcp) (k6) | [mcp-bench](https://pkg.go.dev/github.com/tmc/mcp/exp/cmd-experimental/mcp-bench) |
 |---|---|---|---|---|
-| **Status** | Early release (v0.5) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
+| **Status** | Early release (v0.6) | v0.1.0 | Experimental, "not officially supported by Grafana Labs" | Experimental Go command |
 | **How you use it** | One command with ready-made scenarios | JMeter GUI test plan (Java 17+) | Write a k6 script | CLI |
 | **MCP sessions** | One per simulated agent, each with its own session ID | **One shared client for the whole test run**; every thread uses the same session | One per client your script creates | Concurrent clients |
 | **Several tool calls at once inside one session** | ✅ `callParallel` | ❌ synchronous client, one call per thread | ❌ `callTool` returns before the next call | Not in docs |
@@ -41,7 +41,7 @@ Three other projects send MCP traffic under load. This table comes from each pro
 | **CI** | ✅ GitHub Action with a PR comment and HTML report | `jmeter -n` plus assertions | `k6 run` plus thresholds | Export to other tools |
 | **Compare with main: per-tool Δ** | ✅ `mcpload compare` / `baseline-branch: main`: p95/p99/error rate per tool vs the last `main` run, with noise floors | ❌ | ❌ | ❌ |
 | **Resources and prompts** | ✅ `readResource` / `getPrompt`, tagged per resource and prompt; mixed into agent sessions with `RESOURCE_READ_RATIO` / `PROMPT_GET_RATIO` ([scenarios](../scenarios/README.md)) | ✅ | ✅ | Not in docs |
-| **stdio servers** | ✅ `--command` (v0.6.0, unreleased): one process per session, start-up time, `stdout_pollution` and `process_exit` verdicts, per-process memory sampler ([guide](guide/stdio.md)) | ✅ | ✅ | ✅ |
+| **stdio servers** | ✅ `--command` (v0.6.0): one process per session, start-up time, `stdout_pollution` and `process_exit` verdicts, per-process memory sampler ([guide](guide/stdio.md)) | ✅ | ✅ | ✅ |
 | **SSE servers** | ❌ | ✅ | ✅ | ✅ |
 
 ## What that means in practice
@@ -56,6 +56,6 @@ Three other projects send MCP traffic under load. This table comes from each pro
 
 - Use **MCP Inspector or MCPJam** to debug a single request.
 - Use **mcp-eval or mcpbr** to check that agents pick the right tools.
-- Use **the JMeter plugin or xk6-mcp** to load-test SSE servers. mcpload supports streamable HTTP and (from v0.6.0, unreleased) stdio.
+- Use **the JMeter plugin or xk6-mcp** to load-test SSE servers. mcpload supports streamable HTTP and (from v0.6.0) stdio.
 
 These tools work well alongside mcpload.

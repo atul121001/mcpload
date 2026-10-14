@@ -41,7 +41,7 @@ Every demo server exposes the tools `fast`, `slow`, `flaky`, `big` and `search`.
 
 ## stdio targets
 
-*v0.6.0, unreleased.* With `MCP_COMMAND` set, `lib/config.js` gives `new mcp.Client(...)` `command`, `args`, `env` and `cwd` instead of `url`, and drops `MCP_HEADERS`, `MCP_TOKEN` and OAuth (HTTP-only). Start-up lines print `stdio: <command line>` (never the env values) instead of the URL. Each session is one server process, so `connect()` includes starting it. `lb-check.js`, `version-skew.js` and `oauth-refresh.js` stop at init with an error: they need an HTTP target. A session whose process exited (error type `process_exit`) counts as broken in `long-lived.js` and `reconnect-storm.js`, like `session_not_found`.
+*Since v0.6.0.* With `MCP_COMMAND` set, `lib/config.js` gives `new mcp.Client(...)` `command`, `args`, `env` and `cwd` instead of `url`, and drops `MCP_HEADERS`, `MCP_TOKEN` and OAuth (HTTP-only). Start-up lines print `stdio: <command line>` (never the env values) instead of the URL. Each session is one server process, so `connect()` includes starting it. `lb-check.js`, `version-skew.js` and `oauth-refresh.js` stop at init with an error: they need an HTTP target. A session whose process exited (error type `process_exit`) counts as broken in `long-lived.js` and `reconnect-storm.js`, like `session_not_found`.
 
 ```sh
 ./k6 run -e 'MCP_COMMAND=["node","demo-servers/ts-server/server.mjs","--stdio"]' scenarios/agent-session.js
@@ -77,7 +77,7 @@ If a tool needs meaningful values, such as a real ID, set them in `TOOL_ARGS`.
 | Var | Default | Meaning |
 |---|---|---|
 | `MCP_URL` | `http://localhost:3001/mcp` | target endpoint |
-| `MCP_COMMAND` | – | stdio target instead of `MCP_URL` (v0.6.0, unreleased): JSON array of the program and its arguments, e.g. `["node","server.mjs","--stdio"]`. Each session starts its own process. Set by `mcpload run --command`. See [stdio targets](#stdio-targets) |
+| `MCP_COMMAND` | – | stdio target instead of `MCP_URL` (v0.6.0): JSON array of the program and its arguments, e.g. `["node","server.mjs","--stdio"]`. Each session starts its own process. Set by `mcpload run --command`. See [stdio targets](#stdio-targets) |
 | `MCP_COMMAND_ENV` | – | JSON object of strings added to the server process's environment (values are never logged) |
 | `MCP_COMMAND_CWD` | – | working folder of the server process |
 | `MCP_PROTOCOL` | `auto` | `auto`, `2026-07-28`, `2025-06-18`, … |
